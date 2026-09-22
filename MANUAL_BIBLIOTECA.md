@@ -72,12 +72,18 @@ Para facilitar o cadastramento de centenas de títulos sem digitação manual ex
    - Preenche imediatamente o título, autor, editora, data de publicação, descrição/sinopse e categoria.
    - Baixa a imagem oficial da capa em alta resolução.
 
-### 2.3 Cadastro Manual Detalhado
+### 2.3 Cadastro Manual Detalhado & Modos de Distribuição
 Campos disponíveis para controle patrimonial:
 - **Título da Obra** *(obrigatório)*
 - **Autor(a)** *(obrigatório)*
 - **Código de Tombamento / ISBN**: Identificador único do exemplar físico.
-- **Escola / Unidade Pertencente**: Vincula o livro à sua unidade escolar de origem.
+- **Alternador de Modo de Distribuição (quando a rede possui mais de 1 escola)**:
+  - **🏢 Entrada em Unidade Única**: Modo padrão e direto para o operador escolar cadastrar livros que chegaram para a sua própria escola.
+  - **🌐 Distribuir em Múltiplas Escolas**: Permite alocar e partilhar uma remessa de livros em várias escolas simultaneamente em um único cadastro mestre, definindo a quantidade e a estante de cada unidade.
+- **Detecção em Tempo Real de Obras Existentes (Anti-Redundância)**:
+  - Enquanto o usuário digita o título ou o código/ISBN, o sistema consulta a base em tempo real.
+  - Se a obra já existir na rede, exibe um painel explicativo informando o número de exemplares existentes e suas respectivas escolas, disponibilizando o botão **"Usar Dados Desta Obra"** para autopreenchimento imediato de sinopse, capa, editora e gênero.
+  - Ao salvar, os novos exemplares são integrados ao cadastro existente na unidade escolhida, prevenindo duplicações desnecessárias no catálogo unificado.
 - **Total de Exemplares**: Quantidade física total de livros recebidos.
 - **Gênero / Categoria**: Literatura Infantil, Contos, Poesia, Infantojuvenil, Didático, etc.
 - **Editora e Ano de Publicação**.
@@ -88,14 +94,23 @@ Campos disponíveis para controle patrimonial:
 
 ## 3. Gestão de Acervo Multi-Escola & Exemplares
 
-O sistema opera de forma unificada ou individualizada:
+O sistema opera no modelo **Obra Mestra vs. Exemplares Físicos Locais**:
 - **Filtro de Unidade Escolar**: No topo da biblioteca, o usuário pode escolher ver o acervo de uma escola específica ou a rede integrada.
+- **Estrutura de Obras e Cópias (`copiesBySchool`)**:
+  - Cada título bibliográfico possui um registro mestre compartilhado na rede escolar.
+  - O mapa `copiesBySchool` armazena para cada escola: `schoolName`, `totalCopies`, `availableCopies`, `location` (estante) e `code` patrimonial local.
+  - Isso garante que a rede tenha estatísticas globais centralizadas sem poluir o banco com múltiplos registros redundantes da mesma obra literária.
 - **Controle de Disponibilidade em Tempo Real**:
-  - `totalCopies`: Quantidade patrimonial física cadastrada.
-  - `availableCopies`: Quantidade livre na estante no momento.
-  - Quando um exemplar é emprestado a um aluno ou alocado em um Cantinho da Leitura, a quantidade disponível no acervo central é decrementada automaticamente.
+  - `totalCopies`: Quantidade patrimonial física total (soma de todas as escolas ou total da unidade filtrada).
+  - `availableCopies`: Quantidade livre na estante no momento para novos empréstimos.
+  - Quando um exemplar é emprestado a um aluno ou alocado em um Cantinho da Leitura, a quantidade disponível no acervo local é decrementada automaticamente.
   - Quando o livro é devolvido, a quantidade disponível é restabelecida imediatamente.
-- **Controle por Escola (`copiesBySchool`)**: Em redes com várias escolas compartilhando o mesmo sistema, o acervo registra a quantidade de exemplares pertencente a cada escola, garantindo que uma unidade não empreste exemplares físicos de outra sem remanejamento prévio.
+- **Segurança de Acesso e Trava por Unidade Escolar**:
+  - **Administradores da Rede**: Podem visualizar, cadastrar, editar exemplares e remanejar livros entre qualquer escola da rede.
+  - **Professores / Bibliotecários por Unidade**: As escolas sob sua responsabilidade são detectadas automaticamente através das turmas atribuídas ao seu perfil docente.
+  - **Proteção dos Dados Físicos**: Ao abrir a edição de um título que possui exemplares em outras escolas da rede, os campos de exemplares e estante das demais unidades ficam em **Modo Somente Leitura** com o selo de cadeado 🔒 (*"Outra Unidade (Somente Leitura)"*).
+  - O operador só pode alterar exemplares físicos, localização ou transferir livros da unidade onde possui atribuição ativa, garantindo a integridade patrimonial de cada unidade escolar.
+- **Remessas Coletivas no Cadastro**: No próprio momento do cadastramento da obra, o operador da rede pode distribuir exemplares entre as diferentes escolas cadastradas sem precisar repetir o processo escola por escola.
 
 ---
 

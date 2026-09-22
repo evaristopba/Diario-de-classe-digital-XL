@@ -27,13 +27,13 @@ import {
 import { School, ClassRoom, Student, Book, BookLoan, Teacher, BookMovement, SchoolCopyHolding, BookReservation, SchoolAcervoItem, ReadingCornerBook } from '../types';
 
 export const firebaseConfig = {
-  apiKey: "AIzaSyDBVGHr9RUJoFQfFcBAXm5elHuI0nKL4oQ",
-  authDomain: "diario-de-classe-1f878.firebaseapp.com",
-  databaseURL: "https://diario-de-classe-1f878-default-rtdb.firebaseio.com",
-  projectId: "diario-de-classe-1f878",
-  storageBucket: "diario-de-classe-1f878.firebasestorage.app",
-  messagingSenderId: "885884404967",
-  appId: "1:885884404967:web:a5a76bf6c0c7a15c624e42"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDBVGHr9RUJoFQfFcBAXm5elHuI0nKL4oQ",
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "diario-de-classe-1f878.firebaseapp.com",
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL || "https://diario-de-classe-1f878-default-rtdb.firebaseio.com",
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || "diario-de-classe-1f878",
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "diario-de-classe-1f878.firebasestorage.app",
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "885884404967",
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:885884404967:web:a5a76bf6c0c7a15c624e42"
 };
 
 // Initialize Firebase safely
@@ -525,16 +525,22 @@ export async function salvarLivro(livro: Omit<Book, 'id'>, id?: string): Promise
     // Atualização de obra existente
     const snap = await get(ref(rtdb, `diario-classe/biblioteca/livros/${id}`));
     const current = snap.exists() ? (snap.val() as Book) : null;
-    const currentHoldings: Record<string, SchoolCopyHolding> = (current && current.copiesBySchool) ? { ...current.copiesBySchool } : {};
+    let currentHoldings: Record<string, SchoolCopyHolding> = {};
 
-    // Atualiza a escola específica nos holdings
-    currentHoldings[schoolId] = {
-      schoolName,
-      totalCopies: inputTotal,
-      availableCopies: inputAvail,
-      code: livro.code || currentHoldings[schoolId]?.code || '',
-      location: livro.location || currentHoldings[schoolId]?.location || ''
-    };
+    if (livro.copiesBySchool && Object.keys(livro.copiesBySchool).length > 0) {
+      // Usa a distribuição por escola configurada no formulário
+      currentHoldings = { ...livro.copiesBySchool };
+    } else {
+      currentHoldings = (current && current.copiesBySchool) ? { ...current.copiesBySchool } : {};
+      // Atualiza a escola específica nos holdings caso não tenha sido passado copiesBySchool
+      currentHoldings[schoolId] = {
+        schoolName,
+        totalCopies: inputTotal,
+        availableCopies: inputAvail,
+        code: livro.code || currentHoldings[schoolId]?.code || '',
+        location: livro.location || currentHoldings[schoolId]?.location || ''
+      };
+    }
 
     // Recalcula totais consolidados da rede
     const consolidatedTotal = Object.values(currentHoldings).reduce((acc, h) => acc + (Number(h.totalCopies) || 0), 0);
@@ -552,15 +558,17 @@ export async function salvarLivro(livro: Omit<Book, 'id'>, id?: string): Promise
     // 1. Grava no catálogo geral de títulos
     await update(ref(rtdb, `diario-classe/biblioteca/livros/${id}`), cleanFirebaseData(dataToSave));
 
-    // 2. Grava no estoque físico da escola específica (biblioteca/acervos/$schoolId/$bookId)
-    await set(ref(rtdb, `diario-classe/biblioteca/acervos/${schoolId}/${id}`), cleanFirebaseData({
-      totalCopies: inputTotal,
-      availableCopies: inputAvail,
-      code: livro.code || '',
-      schoolName,
-      location: livro.location || '',
-      updatedAt: now
-    }));
+    // 2. Grava/atualiza no estoque físico de cada escola envolvida em acervos/$sId/$id
+    for (const [sId, h] of Object.entries(currentHoldings)) {
+      await set(ref(rtdb, `diario-classe/biblioteca/acervos/${sId}/${id}`), cleanFirebaseData({
+        totalCopies: Number(h.totalCopies) || 0,
+        availableCopies: Number(h.availableCopies) || 0,
+        code: h.code || livro.code || '',
+        schoolName: h.schoolName || '',
+        location: h.location || '',
+        updatedAt: now
+      }));
+    }
 
     return id;
   } else {
@@ -594,20 +602,58 @@ export async function salvarLivro(livro: Omit<Book, 'id'>, id?: string): Promise
     }
 
     if (existingBookId && existingBookData) {
-      // Obra já catalogada! Apenas soma/atribui os exemplares desta escola à obra existente
+      // Obra já catalogada! Apenas soma/atribui os exemplares das escolas à obra existente
       const holdings: Record<string, SchoolCopyHolding> = existingBookData.copiesBySchool ? { ...existingBookData.copiesBySchool } : {};
-      const prev: SchoolCopyHolding = holdings[schoolId] || { schoolName, totalCopies: 0, availableCopies: 0, code: '', location: '' };
+      
+      if (livro.copiesBySchool && Object.keys(livro.copiesBySchool).length > 0) {
+        // Se vier distribuição detalhada por escola
+        for (const [sId, h] of Object.entries(livro.copiesBySchool)) {
+          const prevH: SchoolCopyHolding = holdings[sId] || { schoolName: h.schoolName || '', totalCopies: 0, availableCopies: 0, code: '', location: '' };
+          const addedTotal = Number(h.totalCopies) || 0;
+          const addedAvail = Number(h.availableCopies) || 0;
+          const mergedTotal = prevH.totalCopies + addedTotal;
+          const mergedAvail = prevH.availableCopies + addedAvail;
 
-      const newSchoolTotal = prev.totalCopies + inputTotal;
-      const newSchoolAvail = prev.availableCopies + inputAvail;
+          holdings[sId] = {
+            schoolName: h.schoolName || prevH.schoolName || '',
+            totalCopies: mergedTotal,
+            availableCopies: mergedAvail,
+            code: h.code || prevH.code || livro.code || existingBookData.code || '',
+            location: h.location || prevH.location || ''
+          };
 
-      holdings[schoolId] = {
-        schoolName,
-        totalCopies: newSchoolTotal,
-        availableCopies: newSchoolAvail,
-        code: livro.code || prev.code || existingBookData.code,
-        location: livro.location || prev.location || ''
-      };
+          await set(ref(rtdb, `diario-classe/biblioteca/acervos/${sId}/${existingBookId}`), cleanFirebaseData({
+            totalCopies: mergedTotal,
+            availableCopies: mergedAvail,
+            code: holdings[sId].code,
+            schoolName: holdings[sId].schoolName,
+            location: holdings[sId].location,
+            updatedAt: now
+          }));
+        }
+      } else {
+        // Entrada em uma única escola padrão
+        const prev: SchoolCopyHolding = holdings[schoolId] || { schoolName, totalCopies: 0, availableCopies: 0, code: '', location: '' };
+        const newSchoolTotal = prev.totalCopies + inputTotal;
+        const newSchoolAvail = prev.availableCopies + inputAvail;
+
+        holdings[schoolId] = {
+          schoolName,
+          totalCopies: newSchoolTotal,
+          availableCopies: newSchoolAvail,
+          code: livro.code || prev.code || existingBookData.code,
+          location: livro.location || prev.location || ''
+        };
+
+        await set(ref(rtdb, `diario-classe/biblioteca/acervos/${schoolId}/${existingBookId}`), cleanFirebaseData({
+          totalCopies: newSchoolTotal,
+          availableCopies: newSchoolAvail,
+          code: livro.code || prev.code || existingBookData.code,
+          schoolName,
+          location: livro.location || prev.location || '',
+          updatedAt: now
+        }));
+      }
 
       const consolidatedTotal = Object.values(holdings).reduce((acc, h) => acc + (Number(h.totalCopies) || 0), 0);
       const consolidatedAvail = Object.values(holdings).reduce((acc, h) => acc + (Number(h.availableCopies) || 0), 0);
@@ -625,33 +671,30 @@ export async function salvarLivro(livro: Omit<Book, 'id'>, id?: string): Promise
         updatedAt: now
       }));
 
-      // Grava no acervo da escola
-      await set(ref(rtdb, `diario-classe/biblioteca/acervos/${schoolId}/${existingBookId}`), cleanFirebaseData({
-        totalCopies: newSchoolTotal,
-        availableCopies: newSchoolAvail,
-        code: livro.code || prev.code || existingBookData.code,
-        schoolName,
-        location: livro.location || prev.location || '',
-        updatedAt: now
-      }));
-
       return existingBookId;
     } else {
       // Nova obra no catálogo
-      const initialHoldings: Record<string, SchoolCopyHolding> = {};
-      initialHoldings[schoolId] = {
-        schoolName,
-        totalCopies: inputTotal,
-        availableCopies: inputAvail,
-        code: livro.code || '',
-        location: livro.location || ''
-      };
+      let initialHoldings: Record<string, SchoolCopyHolding> = {};
+      if (livro.copiesBySchool && Object.keys(livro.copiesBySchool).length > 0) {
+        initialHoldings = { ...livro.copiesBySchool };
+      } else {
+        initialHoldings[schoolId] = {
+          schoolName,
+          totalCopies: inputTotal,
+          availableCopies: inputAvail,
+          code: livro.code || '',
+          location: livro.location || ''
+        };
+      }
+
+      const consolidatedTotal = Object.values(initialHoldings).reduce((acc, h) => acc + (Number(h.totalCopies) || 0), 0);
+      const consolidatedAvail = Object.values(initialHoldings).reduce((acc, h) => acc + (Number(h.availableCopies) || 0), 0);
 
       const dataToSave: Book = {
         ...livro,
         copiesBySchool: initialHoldings,
-        totalCopies: inputTotal,
-        availableCopies: inputAvail,
+        totalCopies: consolidatedTotal,
+        availableCopies: consolidatedAvail,
         createdAt: now,
         updatedAt: now
       };
@@ -660,15 +703,17 @@ export async function salvarLivro(livro: Omit<Book, 'id'>, id?: string): Promise
       await set(newRef, cleanFirebaseData(dataToSave));
       const bookId = newRef.key!;
 
-      // Grava no acervo da escola
-      await set(ref(rtdb, `diario-classe/biblioteca/acervos/${schoolId}/${bookId}`), cleanFirebaseData({
-        totalCopies: inputTotal,
-        availableCopies: inputAvail,
-        code: livro.code || '',
-        schoolName,
-        location: livro.location || '',
-        updatedAt: now
-      }));
+      // Grava no acervo de cada escola que recebeu exemplares
+      for (const [sId, h] of Object.entries(initialHoldings)) {
+        await set(ref(rtdb, `diario-classe/biblioteca/acervos/${sId}/${bookId}`), cleanFirebaseData({
+          totalCopies: Number(h.totalCopies) || 0,
+          availableCopies: Number(h.availableCopies) || 0,
+          code: h.code || livro.code || '',
+          schoolName: h.schoolName || '',
+          location: h.location || '',
+          updatedAt: now
+        }));
+      }
 
       return bookId;
     }
@@ -862,6 +907,13 @@ export async function renovarEmprestimo(
 }
 
 /**
+ * Exclui um registro individual de empréstimo (útil para limpeza de dados de teste ou devoluções concluídas).
+ */
+export async function excluirEmprestimo(loanId: string): Promise<void> {
+  await remove(ref(rtdb, `diario-classe/biblioteca/emprestimos/${loanId}`));
+}
+
+/**
  * Carrega a lista de escolas cadastradas.
  */
 export async function carregarEscolas(): Promise<School[]> {
@@ -1008,6 +1060,20 @@ export async function registrarMovimentacaoLivro(params: {
   const movRef = push(ref(rtdb, 'diario-classe/biblioteca/movimentacoes'));
   await set(movRef, cleanFirebaseData(movData));
   return movRef.key!;
+}
+
+/**
+ * Exclui um registro individual do histórico de movimentações da biblioteca.
+ */
+export async function excluirMovimentacaoLivro(id: string): Promise<void> {
+  await remove(ref(rtdb, `diario-classe/biblioteca/movimentacoes/${id}`));
+}
+
+/**
+ * Limpa todo o histórico de movimentações da biblioteca (para reiniciar em produção).
+ */
+export async function limparTodasMovimentacoes(): Promise<void> {
+  await remove(ref(rtdb, 'diario-classe/biblioteca/movimentacoes'));
 }
 
 /**

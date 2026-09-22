@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Book, BookLoan, ClassRoom, Student, ModalConfig, School, BookMovement, SchoolCopyHolding } from '../types';
 import {
   carregarLivros,
@@ -14,7 +14,10 @@ import {
   getCurrentAuthUid,
   carregarEscolas,
   carregarMovimentacoesLivros,
-  registrarMovimentacaoLivro
+  registrarMovimentacaoLivro,
+  excluirMovimentacaoLivro,
+  limparTodasMovimentacoes,
+  excluirEmprestimo
 } from '../lib/firebase';
 import { checkBookDeleteIntegrity } from '../lib/referentialIntegrity';
 import { formatFriendlyError } from '../lib/errorHandler';
@@ -55,7 +58,8 @@ import {
   X,
   Building2,
   ArrowRightLeft,
-  HelpCircle
+  HelpCircle,
+  Lock
 } from 'lucide-react';
 import {
   scanBookWithAI,
@@ -70,6 +74,14 @@ import { LibraryManualModal } from './LibraryManualModal';
 interface LibraryScreenProps {
   currentYear: string;
   setModal: (config: ModalConfig) => void;
+}
+
+interface SchoolHoldingItem {
+  totalCopies: number;
+  availableCopies: number;
+  location?: string;
+  schoolName?: string;
+  code?: string;
 }
 
 type TabMode = 'circulacao' | 'acervo' | 'cantinho' | 'historico';
@@ -119,6 +131,9 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
   const [bookSynopsis, setBookSynopsis] = useState<string>('');
   const [bookCoverUrl, setBookCoverUrl] = useState<string>('');
   const [savingBook, setSavingBook] = useState<boolean>(false);
+  const [isMultiSchoolDistribution, setIsMultiSchoolDistribution] = useState<boolean>(false);
+  const [editSchoolHoldings, setEditSchoolHoldings] = useState<Record<string, SchoolHoldingItem>>({});
+  const [newSchoolHoldingToAdd, setNewSchoolHoldingToAdd] = useState<string>('');
 
   // Remanejamento / Transferência Modal State
   const [isTransferModalOpen, setIsTransferModalOpen] = useState<boolean>(false);
@@ -214,6 +229,32 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
     loadData();
   }, [currentYear]);
 
+  // Escolas às quais o usuário atual possui acesso de gestão física
+  // Se for Admin: todas as escolas da rede.
+  // Se for Professor/Bibliotecário: escolas das suas turmas atribuídas. Se nenhuma atribuída, usa a escola selecionada no filtro.
+  const userAccessibleSchoolIds = useMemo(() => {
+    if (isAdmin) {
+      return new Set<string>(schools.map((s) => s.id));
+    }
+    const set = new Set<string>();
+    classes.forEach((c) => {
+      if (c.val.schoolId) set.add(c.val.schoolId);
+    });
+    // Se o professor/bibliotecário não possui turmas cadastradas ainda mas há um filtro ativo específico
+    if (set.size === 0 && selectedSchoolFilter !== 'todas') {
+      set.add(selectedSchoolFilter);
+    }
+    return set;
+  }, [isAdmin, schools, classes, selectedSchoolFilter]);
+
+  const canUserManageSchool = (schoolId: string): boolean => {
+    if (isAdmin) return true;
+    if (userAccessibleSchoolIds.has(schoolId)) return true;
+    // Se o conjunto estiver vazio por algum motivo transitório e houver apenas 1 escola na rede
+    if (userAccessibleSchoolIds.size === 0 && schools.length === 1) return true;
+    return false;
+  };
+
   // Lista de Alunos da Turma Selecionada no Empréstimo
   const selectedClassObj = classes.find((c) => c.id === loanSelectedClassId);
   const studentsInSelectedClass: Student[] = selectedClassObj?.val?.alunos
@@ -271,6 +312,34 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
       setBookSynopsis(b.val.synopsis || '');
       setBookCoverUrl(b.val.coverUrl || '');
       setShowAssistant(false);
+      setNewSchoolHoldingToAdd('');
+
+      // Monta os holdings por escola existentes
+      const holdings: Record<string, { totalCopies: number; availableCopies: number; location?: string; schoolName?: string; code?: string }> = {};
+      if (b.val.copiesBySchool && Object.keys(b.val.copiesBySchool).length > 0) {
+        Object.entries(b.val.copiesBySchool).forEach(([sId, h]) => {
+          if (h && (Number(h.totalCopies) || 0) > 0) {
+            holdings[sId] = {
+              schoolName: h.schoolName || schools.find((s) => s.id === sId)?.name || 'Escola',
+              totalCopies: Number(h.totalCopies) || 1,
+              availableCopies: Number(h.availableCopies ?? h.totalCopies ?? 1),
+              location: h.location || '',
+              code: h.code || ''
+            };
+          }
+        });
+      }
+      if (Object.keys(holdings).length === 0) {
+        const sId = b.val.schoolId || schools[0]?.id || 'padrao';
+        holdings[sId] = {
+          schoolName: b.val.schoolName || schools.find((s) => s.id === sId)?.name || 'Escola',
+          totalCopies: Number(b.val.totalCopies) || 1,
+          availableCopies: Number(b.val.availableCopies ?? b.val.totalCopies ?? 1),
+          location: b.val.location || '',
+          code: b.val.code || ''
+        };
+      }
+      setEditSchoolHoldings(holdings);
     } else {
       setEditingBookId(null);
       setBookSchoolId(selectedSchoolFilter !== 'todas' ? selectedSchoolFilter : (schools[0]?.id || ''));
@@ -286,8 +355,121 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
       setBookCoverUrl('');
       setShowAssistant(initialMode !== 'manual');
       setAssistantTab(initialMode === 'isbn' ? 'isbn' : 'photo');
+      setIsMultiSchoolDistribution(false);
+      setEditSchoolHoldings({});
+      setNewSchoolHoldingToAdd('');
     }
     setIsBookModalOpen(true);
+  };
+
+  const handleToggleMultiSchool = (enable: boolean) => {
+    setIsMultiSchoolDistribution(enable);
+    if (enable) {
+      setEditSchoolHoldings((prev) => {
+        const next: Record<string, SchoolHoldingItem> = { ...prev };
+        schools.forEach((s) => {
+          if (!next[s.id]) {
+            const isCurrentSelected = s.id === bookSchoolId;
+            next[s.id] = {
+              schoolName: s.name,
+              totalCopies: isCurrentSelected ? Math.max(1, Number(bookTotalCopies) || 1) : 0,
+              availableCopies: isCurrentSelected ? Math.max(1, Number(bookTotalCopies) || 1) : 0,
+              location: isCurrentSelected ? bookLocation : '',
+              code: ''
+            };
+          }
+        });
+        return next;
+      });
+    }
+  };
+
+  const handleUpdateHoldingCopies = (schoolId: string, newTotal: number) => {
+    if (!canUserManageSchool(schoolId)) {
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Acesso Restrito',
+        message: 'Você só possui permissão para alterar os exemplares físicos da sua própria unidade escolar.',
+        icon: '🔒'
+      });
+      return;
+    }
+    const val = Math.max(0, newTotal);
+    setEditSchoolHoldings((prev) => {
+      const current = prev[schoolId];
+      if (!current) return prev;
+      const diff = val - current.totalCopies;
+      const newAvail = Math.max(0, Math.min(val, current.availableCopies + diff));
+      return {
+        ...prev,
+        [schoolId]: {
+          ...current,
+          totalCopies: val,
+          availableCopies: newAvail
+        }
+      };
+    });
+  };
+
+  const handleUpdateHoldingLocation = (schoolId: string, newLoc: string) => {
+    if (!canUserManageSchool(schoolId)) return;
+    setEditSchoolHoldings((prev) => {
+      const current = prev[schoolId];
+      if (!current) return prev;
+      return {
+        ...prev,
+        [schoolId]: {
+          ...current,
+          location: newLoc
+        }
+      };
+    });
+  };
+
+  const handleAddSchoolHolding = () => {
+    if (!newSchoolHoldingToAdd) return;
+    if (!canUserManageSchool(newSchoolHoldingToAdd)) {
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Acesso Restrito',
+        message: 'Você só pode alocar exemplares diretamente para escolas onde possui permissão de atuação.',
+        icon: '🔒'
+      });
+      return;
+    }
+    const schoolObj = schools.find((s) => s.id === newSchoolHoldingToAdd);
+    if (!schoolObj) return;
+    setEditSchoolHoldings((prev) => ({
+      ...prev,
+      [newSchoolHoldingToAdd]: {
+        schoolName: schoolObj.name,
+        totalCopies: 1,
+        availableCopies: 1,
+        location: '',
+        code: ''
+      }
+    }));
+    setNewSchoolHoldingToAdd('');
+  };
+
+  const handleRemoveSchoolHolding = (schoolId: string) => {
+    if (!canUserManageSchool(schoolId)) {
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Acesso Restrito',
+        message: 'Você não pode remover a alocação de exemplares pertencentes a outra unidade escolar.',
+        icon: '🔒'
+      });
+      return;
+    }
+    setEditSchoolHoldings((prev) => {
+      const copy = { ...prev };
+      delete copy[schoolId];
+      return copy;
+    });
   };
 
   const handleClearOCRAndFields = () => {
@@ -556,6 +738,37 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
     }
   };
 
+  // Detecção em tempo real de obra existente no acervo para evitar redundância
+  const detectedExistingBook = useMemo(() => {
+    if (editingBookId) return null;
+    const titleClean = bookTitle.trim().toLowerCase();
+    const codeClean = bookCode.replace(/[^0-9X]/gi, '').toLowerCase();
+    if (titleClean.length < 3 && codeClean.length < 9) return null;
+
+    return books.find((b) => {
+      const bCodeClean = (b.val.code || '').replace(/[^0-9X]/gi, '').toLowerCase();
+      const bTitleClean = (b.val.title || '').trim().toLowerCase();
+      const bAuthorClean = (b.val.author || '').trim().toLowerCase();
+      const authorClean = bookAuthor.trim().toLowerCase();
+
+      const matchIsbn = codeClean.length >= 9 && bCodeClean.length >= 9 && codeClean === bCodeClean;
+      const matchTitleAuthor = titleClean.length > 2 && bTitleClean === titleClean && (
+        !authorClean || !bAuthorClean || bAuthorClean.includes(authorClean) || authorClean.includes(bAuthorClean)
+      );
+      return matchIsbn || matchTitleAuthor;
+    }) || null;
+  }, [editingBookId, bookTitle, bookCode, bookAuthor, books]);
+
+  const handleFillFromExistingBook = (existing: { id: string; val: Book }) => {
+    if (existing.val.author && (!bookAuthor || bookAuthor === 'Autor Desconhecido')) setBookAuthor(existing.val.author);
+    if (existing.val.publisher && !bookPublisher) setBookPublisher(existing.val.publisher);
+    if (existing.val.year && !bookYear) setBookYear(String(existing.val.year));
+    if (existing.val.genre) setBookGenre(existing.val.genre);
+    if (existing.val.synopsis && !bookSynopsis) setBookSynopsis(existing.val.synopsis);
+    if (existing.val.coverUrl && !bookCoverUrl) setBookCoverUrl(existing.val.coverUrl);
+    if (existing.val.code && !bookCode) setBookCode(existing.val.code);
+  };
+
   const handleSaveBook = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!bookTitle.trim()) {
@@ -572,13 +785,70 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
     const codeToUse = bookCode.trim() || `LIV-${Date.now().toString().slice(-6)}`;
     const totalCopiesNum = Math.max(1, Number(bookTotalCopies) || 1);
 
-    // Se estiver editando, recalcular disponíveis proporcionalmente
+    // Se estiver em modo de distribuição por múltiplas escolas ou editando
     let availableNum = totalCopiesNum;
-    if (editingBookId) {
-      const existing = books.find((b) => b.id === editingBookId);
-      if (existing) {
-        const emprestados = Math.max(0, (existing.val.totalCopies || 1) - (existing.val.availableCopies || 0));
-        availableNum = Math.max(0, totalCopiesNum - emprestados);
+    const isMultiMode = Boolean(editingBookId || isMultiSchoolDistribution);
+
+    // Validação de Permissão por Unidade Escolar
+    if (!isAdmin) {
+      if (!isMultiMode) {
+        if (!canUserManageSchool(bookSchoolId)) {
+          setModal({
+            isOpen: true,
+            type: 'alert',
+            title: 'Acesso Restrito à Unidade',
+            message: 'Você não possui permissão para cadastrar exemplares físicos na unidade escolar selecionada.',
+            icon: '🔒'
+          });
+          return;
+        }
+      } else if (editingBookId) {
+        // Se estiver editando obra existente com múltiplas escolas,
+        // verifica se tentou alterar dados físicos de escola não permitida
+        const originalBook = books.find((b) => b.id === editingBookId);
+        const originalHoldings = (originalBook?.val.copiesBySchool || {}) as Record<string, SchoolHoldingItem>;
+        
+        for (const [sId, item] of Object.entries(editSchoolHoldings)) {
+          const h = item as SchoolHoldingItem;
+          const origH = originalHoldings[sId];
+          const hasAccess = canUserManageSchool(sId);
+          if (!hasAccess) {
+            const copiesChanged = origH ? Number(h.totalCopies) !== Number(origH.totalCopies) : Number(h.totalCopies) > 0;
+            const locChanged = origH ? (h.location || '') !== (origH.location || '') : Boolean(h.location);
+            if (copiesChanged || locChanged) {
+              setModal({
+                isOpen: true,
+                type: 'alert',
+                title: 'Alteração Não Autorizada',
+                message: `Você não possui permissão para alterar exemplares físicos da unidade "${h.schoolName || sId}".`,
+                icon: '🔒'
+              });
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    if (isMultiMode) {
+      const activeHoldings = (Object.entries(editSchoolHoldings) as [string, SchoolHoldingItem][]).filter(([_, h]) => Number(h.totalCopies) > 0);
+      const holdingsTotal = activeHoldings.reduce((sum, [_, h]) => sum + (Number(h.totalCopies) || 0), 0);
+      if (holdingsTotal <= 0) {
+        setModal({
+          isOpen: true,
+          type: 'alert',
+          title: 'Exemplares Obrigatórios',
+          message: 'A distribuição deve conter pelo menos 1 exemplar cadastrado em alguma unidade escolar.',
+          icon: '⚠️'
+        });
+        return;
+      }
+      if (editingBookId) {
+        const existing = books.find((b) => b.id === editingBookId);
+        if (existing) {
+          const emprestados = Math.max(0, (existing.val.totalCopies || 1) - (existing.val.availableCopies || 0));
+          availableNum = Math.max(0, holdingsTotal - emprestados);
+        }
       }
     }
 
@@ -599,11 +869,12 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
       });
 
       if (existingMatch) {
+        const targetSchoolName = schools.find((s) => s.id === bookSchoolId)?.name || 'sua unidade';
         setModal({
           isOpen: true,
           type: 'confirm',
           title: 'Este Título Já Está Cadastrado',
-          message: `"${existingMatch.val.title}" já existe no catálogo da rede (${existingMatch.val.totalCopies || 0} exemplar(es) no total). Deseja adicionar ${totalCopiesNum} exemplar(es) a este cadastro existente em vez de criar um título duplicado?`,
+          message: `"${existingMatch.val.title}" já existe no catálogo da rede (${existingMatch.val.totalCopies || 0} exemplar(es) no total). Deseja adicionar os exemplares a este cadastro existente em vez de criar um título duplicado?`,
           icon: '📚',
           onConfirm: () => proceedSaveBook(codeToUse, totalCopiesNum, availableNum)
         });
@@ -623,20 +894,44 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
       if (!coverToSave && frontCoverImg) {
         coverToSave = await makeCoverThumbnail(frontCoverImg);
       }
+
+      let finalHoldings: Record<string, SchoolHoldingItem> = {};
+      if (editingBookId || isMultiSchoolDistribution) {
+        (Object.entries(editSchoolHoldings) as [string, SchoolHoldingItem][]).forEach(([sId, h]) => {
+          if (Number(h.totalCopies) > 0) {
+            finalHoldings[sId] = h;
+          }
+        });
+      } else {
+        const targetSchoolId = bookSchoolId || schools[0]?.id || 'padrao';
+        const targetSchoolName = schools.find((s) => s.id === targetSchoolId)?.name || 'Escola';
+        finalHoldings[targetSchoolId] = {
+          schoolName: targetSchoolName,
+          totalCopies: totalCopiesNum,
+          availableCopies: availableNum,
+          location: bookLocation.trim() || undefined,
+          code: codeToUse
+        };
+      }
+
+      const calculatedTotal = (Object.values(finalHoldings) as SchoolHoldingItem[]).reduce((sum, h) => sum + (Number(h.totalCopies) || 0), 0);
+      const calculatedAvail = (Object.values(finalHoldings) as SchoolHoldingItem[]).reduce((sum, h) => sum + (Number(h.availableCopies) || 0), 0);
+
       const bookData: Omit<Book, 'id'> = {
-        schoolId: bookSchoolId || undefined,
-        schoolName: selectedSchoolObj?.name || undefined,
+        schoolId: bookSchoolId || Object.keys(finalHoldings)[0] || undefined,
+        schoolName: selectedSchoolObj?.name || Object.values(finalHoldings)[0]?.schoolName || undefined,
         code: codeToUse,
         title: bookTitle.trim(),
         author: bookAuthor.trim() || 'Autor Desconhecido',
         genre: bookGenre,
         publisher: bookPublisher.trim() || undefined,
         year: bookYear.trim() || undefined,
-        totalCopies: totalCopiesNum,
-        availableCopies: availableNum,
+        totalCopies: calculatedTotal,
+        availableCopies: calculatedAvail,
         location: bookLocation.trim() || undefined,
         synopsis: bookSynopsis.trim() || undefined,
-        coverUrl: coverToSave || undefined
+        coverUrl: coverToSave || undefined,
+        copiesBySchool: finalHoldings as any
       };
 
       await salvarLivro(bookData, editingBookId || undefined);
@@ -710,6 +1005,106 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
     });
   };
 
+  // Excluir movimentação individual do histórico
+  const handleDeleteMovement = (m: { id: string; val: BookMovement }) => {
+    setModal({
+      isOpen: true,
+      type: 'confirm',
+      title: 'Excluir Movimentação do Histórico',
+      message: `Deseja realmente remover o registro de movimentação da obra "${m.val.bookTitle}" (${m.val.copies} ex.) de ${m.val.sourceSchoolName} para ${m.val.targetSchoolName}? Esta ação apenas remove este registro do histórico.`,
+      icon: '🗑️',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await excluirMovimentacaoLivro(m.id);
+          setMovements((prev) => prev.filter((item) => item.id !== m.id));
+          setModal({
+            isOpen: true,
+            type: 'alert',
+            title: 'Movimentação Removida',
+            message: 'O registro foi removido com sucesso do histórico.',
+            icon: '✅'
+          });
+        } catch (err: any) {
+          setModal({
+            isOpen: true,
+            type: 'alert',
+            title: 'Erro ao Remover Movimentação',
+            message: formatFriendlyError(err),
+            icon: '❌'
+          });
+        }
+      }
+    });
+  };
+
+  // Limpar todo o histórico de movimentações (iniciar em produção)
+  const handleClearAllMovements = () => {
+    if (movements.length === 0) return;
+    setModal({
+      isOpen: true,
+      type: 'confirm',
+      title: 'Limpar Todo o Histórico de Movimentações',
+      message: `Tem certeza que deseja apagar todos os ${movements.length} registro(s) de movimentação do histórico? Esta ação é irreversível e recomendada para iniciar em produção após os testes.`,
+      icon: '⚠️',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await limparTodasMovimentacoes();
+          setMovements([]);
+          setModal({
+            isOpen: true,
+            type: 'alert',
+            title: 'Histórico Limpo com Sucesso',
+            message: 'Todos os registros de movimentações foram removidos do sistema.',
+            icon: '✅'
+          });
+        } catch (err: any) {
+          setModal({
+            isOpen: true,
+            type: 'alert',
+            title: 'Erro ao Limpar Histórico',
+            message: formatFriendlyError(err),
+            icon: '❌'
+          });
+        }
+      }
+    });
+  };
+
+  // Excluir empréstimo devolvido do histórico
+  const handleDeleteLoan = (l: { id: string; val: BookLoan }) => {
+    setModal({
+      isOpen: true,
+      type: 'confirm',
+      title: 'Excluir Registro de Empréstimo',
+      message: `Deseja realmente remover do histórico o registro do empréstimo da obra "${l.val.bookTitle}" para o(a) aluno(a) ${l.val.studentName}?`,
+      icon: '🗑️',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await excluirEmprestimo(l.id);
+          setLoans((prev) => prev.filter((item) => item.id !== l.id));
+          setModal({
+            isOpen: true,
+            type: 'alert',
+            title: 'Registro Excluído',
+            message: 'O empréstimo foi removido do histórico com sucesso.',
+            icon: '✅'
+          });
+        } catch (err: any) {
+          setModal({
+            isOpen: true,
+            type: 'alert',
+            title: 'Erro ao Remover Empréstimo',
+            message: formatFriendlyError(err),
+            icon: '❌'
+          });
+        }
+      }
+    });
+  };
+
   // Handlers de Remanejamento e Transferência entre Escolas
   const handleOpenTransferModal = (book: { id: string; val: Book }) => {
     setTransferBook(book);
@@ -767,6 +1162,18 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
         title: 'Escola Inválida',
         message: 'A escola de destino deve ser diferente da escola onde os exemplares estão alocados.',
         icon: '⚠️'
+      });
+      return;
+    }
+
+    // Validação de Permissão: o usuário deve ter acesso à escola de origem para transferir exemplares dela
+    if (!isAdmin && !canUserManageSchool(transferSourceSchoolId)) {
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Acesso Restrito',
+        message: 'Você só possui permissão para remanejar exemplares que estão fisicamente sob a responsabilidade da sua própria unidade escolar.',
+        icon: '🔒'
       });
       return;
     }
@@ -2136,16 +2543,30 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
             </div>
 
             {historySubTab === 'remanejamentos' && (
-              <button
-                type="button"
-                id="btn-export-movements-excel"
-                onClick={handleExportMovementsExcel}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer self-end sm:self-auto"
-                title="Exportar planilha Excel das movimentações entre escolas"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Exportar Excel</span>
-              </button>
+              <div className="flex items-center gap-2 flex-wrap self-end sm:self-auto">
+                {canManage && movements.length > 0 && (
+                  <button
+                    type="button"
+                    id="btn-clear-all-movements"
+                    onClick={handleClearAllMovements}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
+                    title="Apagar todo o histórico de movimentações da biblioteca"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Limpar Histórico</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  id="btn-export-movements-excel"
+                  onClick={handleExportMovementsExcel}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
+                  title="Exportar planilha Excel das movimentações entre escolas"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Exportar Excel</span>
+                </button>
+              </div>
             )}
           </div>
 
@@ -2180,9 +2601,22 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                             <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                               {l.val.className || '-'}
                             </span>
-                            <span className="text-[11px] text-emerald-700 font-bold font-mono shrink-0">
-                              {formatDate(l.val.returnDate)}
-                            </span>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-[11px] text-emerald-700 font-bold font-mono">
+                                {formatDate(l.val.returnDate)}
+                              </span>
+                              {canManage && (
+                                <button
+                                  type="button"
+                                  id={`btn-delete-loan-mobile-${l.id}`}
+                                  onClick={() => handleDeleteLoan(l)}
+                                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                  title="Excluir este empréstimo do histórico"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
                           </div>
                           <p className="text-sm font-bold text-slate-900 break-words">{l.val.studentName}</p>
                           <p className="text-xs font-medium text-emerald-800 break-words">📖 {l.val.bookTitle}</p>
@@ -2207,6 +2641,9 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                         <th className="py-2.5 px-3 text-center">Retirada</th>
                         <th className="py-2.5 px-3 text-center">Devolução</th>
                         <th className="py-2.5 px-3">Observações</th>
+                        {canManage && (
+                          <th className="py-2.5 px-3 text-center w-16">Ações</th>
+                        )}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -2232,6 +2669,19 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                             <td className="py-2.5 px-3 text-slate-500 italic max-w-xs truncate">
                               {l.val.notes || '-'}
                             </td>
+                            {canManage && (
+                              <td className="py-2.5 px-3 text-center">
+                                <button
+                                  type="button"
+                                  id={`btn-delete-loan-${l.id}`}
+                                  onClick={() => handleDeleteLoan(l)}
+                                  className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                  title="Excluir este empréstimo do histórico"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </td>
+                            )}
                           </tr>
                         ))}
                     </tbody>
@@ -2273,7 +2723,20 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                       <div key={m.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-2 min-w-0">
                         <div className="flex items-start justify-between gap-2">
                           <p className="text-sm font-bold text-slate-900 break-words min-w-0">{m.val.bookTitle}</p>
-                          <span className="text-xs font-bold text-emerald-700 shrink-0">{m.val.copies} ex.</span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-xs font-bold text-emerald-700">{m.val.copies} ex.</span>
+                            {canManage && (
+                              <button
+                                type="button"
+                                id={`btn-delete-movement-mobile-${m.id}`}
+                                onClick={() => handleDeleteMovement(m)}
+                                className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                title="Excluir este registro do histórico"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
                         </div>
                         {m.val.bookCode && (
                           <p className="text-[10px] text-slate-400 font-mono">Cód: {m.val.bookCode}</p>
@@ -2311,6 +2774,9 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                         <th className="py-2.5 px-3 text-center">Exemplares</th>
                         <th className="py-2.5 px-3">Motivo / Justificativa</th>
                         <th className="py-2.5 px-3">Responsável</th>
+                        {canManage && (
+                          <th className="py-2.5 px-3 text-center w-16">Ações</th>
+                        )}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -2346,6 +2812,19 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                           <td className="py-2.5 px-3 text-slate-500 whitespace-nowrap">
                             {m.val.userName || 'Sistema'}
                           </td>
+                          {canManage && (
+                            <td className="py-2.5 px-3 text-center">
+                              <button
+                                type="button"
+                                id={`btn-delete-movement-${m.id}`}
+                                onClick={() => handleDeleteMovement(m)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                title="Excluir este registro de movimentação"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </td>
+                          )}
                         </tr>
                       ))}
                     </tbody>
@@ -2711,24 +3190,77 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                 </div>
               )}
 
-              {schools.length > 0 && (
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">
-                    Unidade Escolar / Biblioteca Destino *
-                  </label>
-                  <select
-                    id="input-book-school"
-                    value={bookSchoolId}
-                    onChange={(e) => setBookSchoolId(e.target.value)}
-                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none font-bold text-slate-800 bg-slate-50 cursor-pointer"
+              {/* Alternador de Modo de Entrada (Unidade Única vs Múltiplas Escolas) */}
+              {schools.length > 1 && !editingBookId && (
+                <div className="flex items-center justify-between gap-2 p-1 bg-slate-100/90 rounded-xl border border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleMultiSchool(false)}
+                    className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                      !isMultiSchoolDistribution
+                        ? 'bg-white text-emerald-800 shadow-2xs border border-slate-200/80'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
                   >
-                    {schools.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        🏫 {s.name}
-                      </option>
-                    ))}
-                  </select>
+                    <span>🏢 Entrada em Unidade Única</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleMultiSchool(true)}
+                    className={`flex-1 py-1.5 px-3 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                      isMultiSchoolDistribution
+                        ? 'bg-emerald-600 text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <span>🌐 Distribuir em Múltiplas Escolas</span>
+                  </button>
                 </div>
+              )}
+
+              {/* Banner informativo quando em modo de edição de obra */}
+              {editingBookId ? (
+                <div className="bg-emerald-50/80 border border-emerald-200 rounded-xl p-3 text-xs text-emerald-950 flex items-start gap-2.5">
+                  <span className="text-base shrink-0">📚</span>
+                  <div className="min-w-0">
+                    <p className="font-bold">Obra Compartilhada no Catálogo da Rede</p>
+                    <p className="text-[11px] text-emerald-800/90 mt-0.5 leading-relaxed">
+                      Título, autor, capa e sinopse são dados bibliográficos únicos da obra para toda a rede. A quantidade e localização dos exemplares físicos de cada escola são gerenciadas na seção abaixo.
+                    </p>
+                  </div>
+                </div>
+              ) : isMultiSchoolDistribution ? (
+                <div className="bg-emerald-50/80 border border-emerald-200 rounded-xl p-3 text-xs text-emerald-950 flex items-start gap-2.5">
+                  <span className="text-base shrink-0">🌐</span>
+                  <div className="min-w-0">
+                    <p className="font-bold">Distribuição Imediata em Múltiplas Unidades</p>
+                    <p className="text-[11px] text-emerald-800/90 mt-0.5 leading-relaxed">
+                      Defina a quantidade de exemplares e a estante de cada escola na tabela abaixo. O título será catalogado uma única vez na rede e estará disponível nas escolas selecionadas.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                schools.length > 0 && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">
+                      Unidade Escolar / Biblioteca de Entrada *
+                    </label>
+                    <select
+                      id="input-book-school"
+                      value={bookSchoolId}
+                      onChange={(e) => setBookSchoolId(e.target.value)}
+                      className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none font-bold text-slate-800 bg-slate-50 cursor-pointer"
+                    >
+                      {schools
+                        .filter((s) => canUserManageSchool(s.id))
+                        .map((s) => (
+                          <option key={s.id} value={s.id}>
+                            🏫 {s.name}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                )
               )}
 
               <div>
@@ -2745,6 +3277,38 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                   className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none font-medium"
                 />
               </div>
+
+              {/* AVISO DE OBRA JÁ EXISTENTE NO ACERVO DA REDE */}
+              {detectedExistingBook && (
+                <div className="bg-amber-50/90 border border-amber-300 rounded-2xl p-3.5 text-xs text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                  <div className="flex items-start gap-2.5">
+                    <span className="text-lg shrink-0">💡</span>
+                    <div>
+                      <p className="font-bold text-amber-900 text-sm">
+                        Obra já cadastrada na rede: "{detectedExistingBook.val.title}"
+                      </p>
+                      <p className="text-amber-800 text-[11px] mt-0.5">
+                        Já possui {detectedExistingBook.val.totalCopies || 0} exemplar(es) registrado(s) na rede.
+                        {detectedExistingBook.val.copiesBySchool && (
+                          <span className="font-medium ml-1">
+                            ({(Object.values(detectedExistingBook.val.copiesBySchool) as any[]).map((h) => `${h.schoolName || 'Escola'}: ${h.totalCopies || 0}`).join(', ')})
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-emerald-800 font-semibold text-[11px] mt-1">
+                        Ao salvar, os novos exemplares serão alocados na sua unidade sem duplicar a obra no catálogo.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleFillFromExistingBook(detectedExistingBook)}
+                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold shrink-0 transition shadow-2xs cursor-pointer"
+                  >
+                    Usar Dados Desta Obra
+                  </button>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
@@ -2776,73 +3340,246 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">
-                    Gênero / Categoria
-                  </label>
-                  <select
-                    id="select-book-genre"
-                    value={bookGenre}
-                    onChange={(e) => setBookGenre(e.target.value)}
-                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none bg-white font-medium"
-                  >
-                    <option value="Literatura Infantil">Literatura Infantil</option>
-                    <option value="Contos & Fábulas">Contos & Fábulas</option>
-                    <option value="Poesia">Poesia</option>
-                    <option value="Gibis & Quadrinhos">Gibis & Quadrinhos</option>
-                    <option value="Didático & Apoio">Didático & Apoio</option>
-                    <option value="Juvenil">Juvenil</option>
-                    <option value="Enciclopédia & Ciências">Enciclopédia & Ciências</option>
-                    <option value="Outro">Outro</option>
-                  </select>
-                </div>
+              {editingBookId || isMultiSchoolDistribution ? (
+                /* Em modo de edição ou distribuição em múltiplas escolas: Gênero e Editora lado a lado */
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">
+                      Gênero / Categoria
+                    </label>
+                    <select
+                      id="select-book-genre"
+                      value={bookGenre}
+                      onChange={(e) => setBookGenre(e.target.value)}
+                      className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none bg-white font-medium"
+                    >
+                      <option value="Literatura Infantil">Literatura Infantil</option>
+                      <option value="Contos & Fábulas">Contos & Fábulas</option>
+                      <option value="Poesia">Poesia</option>
+                      <option value="Gibis & Quadrinhos">Gibis & Quadrinhos</option>
+                      <option value="Didático & Apoio">Didático & Apoio</option>
+                      <option value="Juvenil">Juvenil</option>
+                      <option value="Enciclopédia & Ciências">Enciclopédia & Ciências</option>
+                      <option value="Outro">Outro</option>
+                    </select>
+                  </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">
-                    Quantidade de Exemplares *
-                  </label>
-                  <input
-                    id="input-book-copies"
-                    type="number"
-                    min="1"
-                    required
-                    value={bookTotalCopies}
-                    onChange={(e) => setBookTotalCopies(Math.max(1, parseInt(e.target.value, 10) || 1))}
-                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none font-bold text-emerald-800"
-                  />
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1">
+                      Editora / Ano (Opcional)
+                    </label>
+                    <input
+                      id="input-book-publisher"
+                      type="text"
+                      placeholder="Ex: Melhoramentos (2018)"
+                      value={bookPublisher}
+                      onChange={(e) => setBookPublisher(e.target.value)}
+                      className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                    />
+                  </div>
                 </div>
-              </div>
+              ) : (
+                /* Em modo de novo cadastro em unidade única: Gênero e Quantidade, depois Localização e Editora */
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">
+                        Gênero / Categoria
+                      </label>
+                      <select
+                        id="select-book-genre"
+                        value={bookGenre}
+                        onChange={(e) => setBookGenre(e.target.value)}
+                        className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none bg-white font-medium"
+                      >
+                        <option value="Literatura Infantil">Literatura Infantil</option>
+                        <option value="Contos & Fábulas">Contos & Fábulas</option>
+                        <option value="Poesia">Poesia</option>
+                        <option value="Gibis & Quadrinhos">Gibis & Quadrinhos</option>
+                        <option value="Didático & Apoio">Didático & Apoio</option>
+                        <option value="Juvenil">Juvenil</option>
+                        <option value="Enciclopédia & Ciências">Enciclopédia & Ciências</option>
+                        <option value="Outro">Outro</option>
+                      </select>
+                    </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">
-                    Localização (Estante/Prateleira)
-                  </label>
-                  <input
-                    id="input-book-location"
-                    type="text"
-                    placeholder="Ex: Estante 2 - Prateleira B"
-                    value={bookLocation}
-                    onChange={(e) => setBookLocation(e.target.value)}
-                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
-                  />
-                </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">
+                        Quantidade Inicial de Exemplares *
+                      </label>
+                      <input
+                        id="input-book-copies"
+                        type="number"
+                        min="1"
+                        required
+                        value={bookTotalCopies}
+                        onChange={(e) => setBookTotalCopies(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                        className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none font-bold text-emerald-800"
+                      />
+                    </div>
+                  </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-600 mb-1">
-                    Editora / Ano (Opcional)
-                  </label>
-                  <input
-                    id="input-book-publisher"
-                    type="text"
-                    placeholder="Ex: Melhoramentos (2018)"
-                    value={bookPublisher}
-                    onChange={(e) => setBookPublisher(e.target.value)}
-                    className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
-                  />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">
+                        Localização na Escola (Estante/Prateleira)
+                      </label>
+                      <input
+                        id="input-book-location"
+                        type="text"
+                        placeholder="Ex: Estante 2 - Prateleira B"
+                        value={bookLocation}
+                        onChange={(e) => setBookLocation(e.target.value)}
+                        className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">
+                        Editora / Ano (Opcional)
+                      </label>
+                      <input
+                        id="input-book-publisher"
+                        type="text"
+                        placeholder="Ex: Melhoramentos (2018)"
+                        value={bookPublisher}
+                        onChange={(e) => setBookPublisher(e.target.value)}
+                        className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* SEÇÃO DE EXEMPLARES POR UNIDADE ESCOLAR (NA EDIÇÃO OU QUANDO DISTRIBUINDO EM MÚLTIPLAS ESCOLAS) */}
+              {(editingBookId || isMultiSchoolDistribution) && (
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-slate-200">
+                    <div className="flex items-center gap-2">
+                      <Building2 className="w-4 h-4 text-emerald-600" />
+                      <span className="text-xs font-bold text-slate-800">
+                        {isMultiSchoolDistribution && !editingBookId
+                          ? 'Distribuir Exemplares em Cada Unidade Escolar'
+                          : 'Exemplares em Cada Unidade Escolar'}
+                      </span>
+                    </div>
+                    <span className="px-2.5 py-1 bg-emerald-100 text-emerald-900 border border-emerald-300 text-xs font-extrabold rounded-lg">
+                      Total na Rede: {(Object.values(editSchoolHoldings) as SchoolHoldingItem[]).reduce((acc, h) => acc + (Number(h.totalCopies) || 0), 0)} exemplares
+                    </span>
+                  </div>
+
+                  <div className="space-y-2.5">
+                    {(Object.entries(editSchoolHoldings) as [string, SchoolHoldingItem][]).map(([sId, h]) => {
+                      const schoolName = h.schoolName || schools.find((s) => s.id === sId)?.name || 'Escola';
+                      const hasAccess = canUserManageSchool(sId);
+                      return (
+                        <div
+                          key={sId}
+                          className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition ${
+                            hasAccess
+                              ? 'bg-white border-slate-200 shadow-2xs'
+                              : 'bg-slate-100/90 border-slate-300 opacity-90'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-bold text-slate-900 truncate">
+                                🏫 {schoolName}
+                              </span>
+                              <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded">
+                                {h.availableCopies} disp.
+                              </span>
+                              {!hasAccess && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-100/90 border border-amber-300 px-2 py-0.5 rounded-md" title="Você não possui permissão de gestão nesta escola">
+                                  <Lock className="w-2.5 h-2.5" />
+                                  Outra Unidade (Somente Leitura)
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-1.5 flex items-center gap-2">
+                              <label className="text-[11px] text-slate-500 shrink-0 font-medium">Estante/Local:</label>
+                              <input
+                                type="text"
+                                disabled={!hasAccess}
+                                placeholder={hasAccess ? "Ex: Estante 1, Prat. B" : "Não informado"}
+                                value={h.location || ''}
+                                onChange={(e) => handleUpdateHoldingLocation(sId, e.target.value)}
+                                className={`text-xs px-2.5 py-1 border rounded-lg outline-none w-full max-w-[200px] ${
+                                  hasAccess
+                                    ? 'border-slate-200 bg-white focus:ring-1 focus:ring-emerald-500'
+                                    : 'border-slate-300 bg-slate-200/60 text-slate-600 cursor-not-allowed'
+                                }`}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3 self-end sm:self-auto shrink-0">
+                            <div className="flex items-center gap-1.5">
+                              <label className="text-xs font-semibold text-slate-600">Exemplares:</label>
+                              <input
+                                type="number"
+                                min="0"
+                                disabled={!hasAccess}
+                                value={h.totalCopies}
+                                onChange={(e) => handleUpdateHoldingCopies(sId, parseInt(e.target.value, 10) || 0)}
+                                className={`w-16 px-2 py-1 border rounded-lg text-xs font-bold text-center outline-none ${
+                                  hasAccess
+                                    ? 'border-slate-200 bg-white text-emerald-800 focus:ring-1 focus:ring-emerald-500'
+                                    : 'border-slate-300 bg-slate-200/60 text-slate-600 cursor-not-allowed'
+                                }`}
+                                title={!hasAccess ? "Apenas o administrador ou responsável desta escola pode alterar esta quantidade" : undefined}
+                              />
+                            </div>
+
+                            {Object.keys(editSchoolHoldings).length > 1 && hasAccess && (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveSchoolHolding(sId)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                title="Remover alocação desta escola"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Adicionar outra escola se houver escolas na rede ainda não alocadas e usuário tiver acesso */}
+                  {schools.filter((s) => !editSchoolHoldings[s.id] && canUserManageSchool(s.id)).length > 0 && (
+                    <div className="pt-2 flex items-center gap-2 flex-wrap">
+                      <select
+                        value={newSchoolHoldingToAdd}
+                        onChange={(e) => setNewSchoolHoldingToAdd(e.target.value)}
+                        className="px-3 py-1.5 border border-slate-200 rounded-xl text-xs bg-white text-slate-700 outline-none focus:ring-1 focus:ring-emerald-500 flex-1 min-w-[200px]"
+                      >
+                        <option value="">+ Alocar exemplares em outra escola...</option>
+                        {schools
+                          .filter((s) => !editSchoolHoldings[s.id] && canUserManageSchool(s.id))
+                          .map((s) => (
+                            <option key={s.id} value={s.id}>
+                              🏫 {s.name}
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleAddSchoolHolding}
+                        disabled={!newSchoolHoldingToAdd}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition cursor-pointer"
+                      >
+                        Adicionar Unidade
+                      </button>
+                    </div>
+                  )}
+
+                  <p className="text-[11px] text-slate-500 italic">
+                    💡 Dica: Para remanejar exemplares com histórico, motivo e responsável registrado, utilize o botão <strong>Remanejar</strong> diretamente no cartão do livro no acervo.
+                  </p>
                 </div>
-              </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">

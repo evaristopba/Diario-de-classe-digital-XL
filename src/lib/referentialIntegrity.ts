@@ -427,32 +427,58 @@ export async function checkBookDeleteIntegrity(
   bookTitle?: string
 ): Promise<IntegrityCheckResult> {
   try {
+    const titleLabel = bookTitle ? ` "${bookTitle}"` : '';
+
+    // 1. Checar empréstimos ativos
     const loansSnap = await get(ref(rtdb, 'diario-classe/biblioteca/emprestimos'));
-    if (!loansSnap.exists()) {
-      return { canDelete: true };
+    if (loansSnap.exists()) {
+      const loans = loansSnap.val() || {};
+      let activeLoansCount = 0;
+      const activeStudentNames: string[] = [];
+
+      Object.keys(loans).forEach((id) => {
+        const loan = loans[id];
+        if (loan?.bookId === bookId && (loan.status === 'ativo' || loan.status === 'atrasado')) {
+          activeLoansCount++;
+          if (loan.studentName && !activeStudentNames.includes(loan.studentName)) {
+            activeStudentNames.push(loan.studentName);
+          }
+        }
+      });
+
+      if (activeLoansCount > 0) {
+        return {
+          canDelete: false,
+          count: activeLoansCount,
+          reason: `O livro${titleLabel} possui ${activeLoansCount} empréstimo(s) em aberto com aluno(s) (${activeStudentNames.slice(0, 3).join(', ')}${activeStudentNames.length > 3 ? '...' : ''}). Registre a devolução antes de excluir o livro do acervo.`
+        };
+      }
     }
 
-    const loans = loansSnap.val() || {};
-    let activeLoansCount = 0;
-    const activeStudentNames: string[] = [];
+    // 2. Checar se há exemplares no Cantinho da Leitura
+    const cantinhosSnap = await get(ref(rtdb, 'diario-classe/biblioteca/cantinhos'));
+    if (cantinhosSnap.exists()) {
+      const cantinhos = cantinhosSnap.val() || {};
+      let cantinhoCopies = 0;
+      const turmasAlocadas: string[] = [];
 
-    Object.keys(loans).forEach((id) => {
-      const loan = loans[id];
-      if (loan?.bookId === bookId && (loan.status === 'ativo' || loan.status === 'atrasado')) {
-        activeLoansCount++;
-        if (loan.studentName && !activeStudentNames.includes(loan.studentName)) {
-          activeStudentNames.push(loan.studentName);
+      Object.keys(cantinhos).forEach((cKey) => {
+        const item = cantinhos[cKey];
+        if (item?.bookId === bookId && (item.totalCopies > 0 || item.availableCopies > 0)) {
+          cantinhoCopies += Number(item.totalCopies || item.availableCopies || 1);
+          if (item.turmaName && !turmasAlocadas.includes(item.turmaName)) {
+            turmasAlocadas.push(item.turmaName);
+          }
         }
-      }
-    });
+      });
 
-    if (activeLoansCount > 0) {
-      const titleLabel = bookTitle ? ` "${bookTitle}"` : '';
-      return {
-        canDelete: false,
-        count: activeLoansCount,
-        reason: `O livro${titleLabel} possui ${activeLoansCount} empréstimo(s) em aberto com aluno(s) (${activeStudentNames.slice(0, 3).join(', ')}${activeStudentNames.length > 3 ? '...' : ''}). Registre a devolução antes de excluir o livro do acervo.`
-      };
+      if (cantinhoCopies > 0) {
+        return {
+          canDelete: false,
+          count: cantinhoCopies,
+          reason: `O livro${titleLabel} possui ${cantinhoCopies} exemplar(es) alocado(s) no Cantinho da Leitura da(s) turma(s) (${turmasAlocadas.join(', ')}). Retorne os exemplares ao acervo central na aba "Cantinho da Leitura" antes de excluir a obra.`
+        };
+      }
     }
 
     return { canDelete: true };
