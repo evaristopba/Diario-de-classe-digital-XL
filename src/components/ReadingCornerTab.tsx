@@ -6,6 +6,7 @@ import {
   retornarLivroCantinho,
   emprestarLivroCantinho,
   devolverEmprestimoCantinho,
+  reconciliarEstoqueCantinho,
   getCurrentAuthUid
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
@@ -31,7 +32,8 @@ import {
   Loader2,
   Check,
   X,
-  AlertTriangle
+  AlertTriangle,
+  RefreshCw
 } from 'lucide-react';
 
 interface ReadingCornerTabProps {
@@ -102,6 +104,7 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
   const [selectedLoanForReturn, setSelectedLoanForReturn] = useState<{ id: string; val: BookLoan } | null>(null);
   const [studentReturnNotes, setStudentReturnNotes] = useState<string>('');
   const [processingStudentReturn, setProcessingStudentReturn] = useState<boolean>(false);
+  const [syncingStock, setSyncingStock] = useState<boolean>(false);
 
   // Carrega os livros do Cantinho da Leitura
   const loadCornerData = async () => {
@@ -121,6 +124,46 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Sincronização e auditoria do estoque do Cantinho (repara contagens presas)
+  const handleSyncStock = async () => {
+    setSyncingStock(true);
+    try {
+      const turmaFiltro = selectedTurmaFilter !== 'todas' ? selectedTurmaFilter : undefined;
+      const res = await reconciliarEstoqueCantinho(turmaFiltro);
+      await loadCornerData();
+      await onDataChanged();
+
+      if (res.corrigidos > 0) {
+        setModal({
+          isOpen: true,
+          type: 'alert',
+          title: 'Estoque Sincronizado com Sucesso!',
+          message: `${res.corrigidos} obra(s) tiveram sua contagem corrigida e seus exemplares foram devidamente liberados na estante da sala de aula.`,
+          icon: '✅'
+        });
+      } else {
+        setModal({
+          isOpen: true,
+          type: 'alert',
+          title: 'Estoque 100% Sincronizado',
+          message: `Todos os ${res.totalVerificados} registros de livros analisados já estão perfeitamente alinhados com os empréstimos ativos da turma.`,
+          icon: '✨'
+        });
+      }
+    } catch (err: any) {
+      console.error(err);
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Erro ao Sincronizar Estoque',
+        message: formatFriendlyError(err),
+        icon: '⚠️'
+      });
+    } finally {
+      setSyncingStock(false);
     }
   };
 
@@ -608,6 +651,17 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
               <span>Disponibilizar Obras no Cantinho</span>
             </button>
           )}
+
+          <button
+            id="btn-sync-corner-stock"
+            onClick={handleSyncStock}
+            disabled={syncingStock || cornerBooks.length === 0}
+            className="inline-flex items-center gap-2 px-3.5 py-2.5 bg-white/10 hover:bg-white/20 border border-white/20 text-white rounded-xl text-xs sm:text-sm font-bold backdrop-blur-sm transition cursor-pointer disabled:opacity-50"
+            title="Sincronizar e auditar estoque do Cantinho (corrige contagens presas)"
+          >
+            <RefreshCw className={`w-4 h-4 text-cyan-300 ${syncingStock ? 'animate-spin' : ''}`} />
+            <span>{syncingStock ? 'Sincronizando...' : 'Sincronizar Estoque'}</span>
+          </button>
 
           <button
             id="btn-export-corner-xlsx"

@@ -181,7 +181,9 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
         email: email.trim().toLowerCase(),
         registration: registration.trim(),
         phone: phone.trim(),
-        subject: subject.trim(),
+        subject: canManageLibrary && (!subject.trim() || subject === 'Polivalente / Geral') 
+          ? (subject.trim() || 'Gestão da Biblioteca') 
+          : (subject.trim() || 'Polivalente / Geral'),
         status,
         canManageLibrary: !!canManageLibrary,
         ...(preservedAuthUid ? { authUid: preservedAuthUid } : {})
@@ -190,15 +192,18 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
       const finalId = editingId || authUid || undefined;
       await salvarProfessor(teacherData, finalId);
 
+      const isLibrarian = !!canManageLibrary;
+      const roleTitle = isLibrarian ? 'Bibliotecário(a)' : 'Professor(a)';
+
       setModal({
         isOpen: true,
         type: 'alert',
         title: 'Sucesso',
         message: editingId
-          ? 'Dados do professor atualizados com sucesso!'
+          ? `Dados do(a) ${roleTitle.toLowerCase()} atualizados com sucesso!`
           : password
-          ? `Professor cadastrado com sucesso! Acesso habilitado com a senha definida.`
-          : 'Professor cadastrado com sucesso!',
+          ? `${roleTitle} cadastrado(a) com sucesso! Acesso habilitado com a senha definida.`
+          : `${roleTitle} cadastrado(a) com sucesso!`,
         icon: '✅'
       });
 
@@ -217,7 +222,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
     }
   };
 
-  const handleDelete = async (id: string, teacherName: string, authUid?: string) => {
+  const handleDelete = async (id: string, teacherName: string, authUid?: string, isLibrarianMember?: boolean) => {
     // 1. Validar Integridade Referencial: não excluir se houver turmas vinculadas/atribuídas
     const integrity = await checkTeacherDeleteIntegrity(id, authUid);
     if (!integrity.canDelete) {
@@ -225,16 +230,18 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
         isOpen: true,
         type: 'alert',
         title: 'Exclusão Bloqueada',
-        message: `⛔ ${integrity.reason || 'Este professor possui turmas vinculadas e não pode ser excluído.'}`,
+        message: `⛔ ${integrity.reason || 'Este docente possui turmas vinculadas e não pode ser excluído.'}`,
         icon: '⛔'
       });
     }
 
+    const roleName = isLibrarianMember ? 'bibliotecário(a)' : 'professor(a)';
+
     setModal({
       isOpen: true,
       type: 'confirm',
-      title: 'Excluir Professor',
-      message: `Tem certeza que deseja excluir o cadastro do(a) professor(a) "${teacherName}"?`,
+      title: isLibrarianMember ? 'Excluir Bibliotecário(a)' : 'Excluir Professor',
+      message: `Tem certeza que deseja excluir o cadastro do(a) ${roleName} "${teacherName}"?`,
       icon: '🗑️',
       danger: true,
       onConfirm: async () => {
@@ -244,7 +251,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
             isOpen: true,
             type: 'alert',
             title: 'Excluído',
-            message: 'Professor removido com sucesso.',
+            message: `${isLibrarianMember ? 'Bibliotecário(a)' : 'Professor'} removido com sucesso.`,
             icon: '✅'
           });
           loadData();
@@ -425,14 +432,14 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
                   <button
                     onClick={() => handleOpenForm(t)}
                     className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
-                    title="Editar professor"
+                    title={t.val.canManageLibrary ? 'Editar bibliotecário(a)' : 'Editar professor'}
                   >
                     <Edit2 className="w-4 h-4" />
                   </button>
                   <button
-                    onClick={() => handleDelete(t.id, t.val.name, t.val.authUid)}
+                    onClick={() => handleDelete(t.id, t.val.name, t.val.authUid, !!t.val.canManageLibrary)}
                     className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition"
-                    title="Excluir professor"
+                    title={t.val.canManageLibrary ? 'Excluir bibliotecário(a)' : 'Excluir professor'}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -449,7 +456,13 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-100">
               <h3 className="text-lg font-bold text-slate-800">
-                {editingId ? 'Editar Professor' : 'Novo Professor'}
+                {editingId
+                  ? canManageLibrary
+                    ? 'Editar Bibliotecário(a)'
+                    : 'Editar Professor(a)'
+                  : canManageLibrary
+                  ? 'Novo(a) Bibliotecário(a)'
+                  : 'Novo(a) Professor(a)'}
               </h3>
               <button
                 onClick={() => setIsFormOpen(false)}
@@ -564,8 +577,10 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-600 mb-1 flex items-center justify-between">
-                    <span>Disciplina / Matéria *</span>
-                    <span className="text-[10px] text-indigo-600 font-normal">Grade Dinâmica</span>
+                    <span>{canManageLibrary ? 'Atuação / Função' : 'Disciplina / Matéria *'}</span>
+                    <span className="text-[10px] text-indigo-600 font-normal">
+                      {canManageLibrary ? 'Opcional p/ Bibliotecário' : 'Grade Dinâmica'}
+                    </span>
                   </label>
                   <select
                     id="teacher-subject-select"
@@ -573,6 +588,9 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
                     onChange={(e) => setSubject(e.target.value)}
                     className="w-full px-3.5 py-2 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none font-medium bg-white"
                   >
+                    {canManageLibrary && (
+                      <option value="Gestão da Biblioteca">Gestão da Biblioteca (Bibliotecário)</option>
+                    )}
                     <option value="Polivalente / Geral">Polivalente / Geral (Regente)</option>
                     {availableSubjects.map((s) => (
                       <option key={s.id} value={s.name}>

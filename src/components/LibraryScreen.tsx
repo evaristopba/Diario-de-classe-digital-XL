@@ -9,6 +9,7 @@ import {
   devolverEmprestimo,
   renovarEmprestimo,
   carregarMinhasTurmas,
+  carregarTurmasParaBiblioteca,
   verificarPodeGerenciarBiblioteca,
   verificarIsAdmin,
   getCurrentAuthUid,
@@ -192,7 +193,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
       const [booksList, loansList, classesList, schoolsList, movementsList] = await Promise.all([
         carregarLivros(),
         carregarEmprestimos(),
-        carregarMinhasTurmas(),
+        carregarTurmasParaBiblioteca(),
         carregarEscolas(),
         carregarMovimentacoesLivros()
       ]);
@@ -230,22 +231,22 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
   }, [currentYear]);
 
   // Escolas às quais o usuário atual possui acesso de gestão física
-  // Se for Admin: todas as escolas da rede.
-  // Se for Professor/Bibliotecário: escolas das suas turmas atribuídas. Se nenhuma atribuída, usa a escola selecionada no filtro.
+  // Se for Admin ou Bibliotecário (canManage): todas as escolas da rede.
+  // Se for Professor comum: escolas das suas turmas atribuídas. Se nenhuma atribuída, usa a escola selecionada no filtro.
   const userAccessibleSchoolIds = useMemo(() => {
-    if (isAdmin) {
+    if (isAdmin || canManage) {
       return new Set<string>(schools.map((s) => s.id));
     }
     const set = new Set<string>();
     classes.forEach((c) => {
       if (c.val.schoolId) set.add(c.val.schoolId);
     });
-    // Se o professor/bibliotecário não possui turmas cadastradas ainda mas há um filtro ativo específico
+    // Se o professor não possui turmas cadastradas ainda mas há um filtro ativo específico
     if (set.size === 0 && selectedSchoolFilter !== 'todas') {
       set.add(selectedSchoolFilter);
     }
     return set;
-  }, [isAdmin, schools, classes, selectedSchoolFilter]);
+  }, [isAdmin, canManage, schools, classes, selectedSchoolFilter]);
 
   const canUserManageSchool = (schoolId: string): boolean => {
     if (isAdmin) return true;
@@ -266,6 +267,18 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
         .filter((s) => s.status !== 'expedida')
         .sort((a, b) => (Number(a.number) || 0) - (Number(b.number) || 0))
     : [];
+
+  // Verificação de disponibilidade física do livro na escola da turma selecionada
+  const selectedBookForLoan = books.find((b) => b.id === loanSelectedBookId);
+  const schoolIdForSelectedClass = selectedClassObj?.val?.schoolId;
+  const isSelectedBookAvailableInClassSchool = (() => {
+    if (!selectedBookForLoan) return false;
+    if (schoolIdForSelectedClass && selectedBookForLoan.val.copiesBySchool) {
+      const holding = selectedBookForLoan.val.copiesBySchool[schoolIdForSelectedClass];
+      return (holding ? Number(holding.availableCopies ?? 0) : 0) > 0;
+    }
+    return (selectedBookForLoan.val.availableCopies ?? 0) > 0;
+  })();
 
   // Data prevista calculada para o modal de empréstimo
   const calculateDueDate = (startDate: string, days: number): string => {
@@ -1288,7 +1301,34 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
     const selectedBook = books.find((b) => b.id === loanSelectedBookId);
     if (!selectedBook) return;
 
-    if (selectedBook.val.availableCopies <= 0) {
+    // Validação estrita: se a turma possui escola vinculada e o livro possui controle por unidade
+    const targetSchoolId = selectedClassObj?.val?.schoolId;
+    if (targetSchoolId && selectedBook.val.copiesBySchool) {
+      const schoolHolding = selectedBook.val.copiesBySchool[targetSchoolId];
+      const availableInSchool = schoolHolding ? Number(schoolHolding.availableCopies ?? 0) : 0;
+      const targetSchoolName = schoolHolding?.schoolName || selectedClassObj.val.schoolName || 'esta unidade';
+
+      if (availableInSchool <= 0) {
+        // Obter outras escolas da rede que possuem exemplares disponíveis para instruir o usuário
+        const otherSchoolsWithStock = (Object.entries(selectedBook.val.copiesBySchool) as [string, SchoolCopyHolding][])
+          .filter(([sId, h]) => sId !== targetSchoolId && (h.availableCopies || 0) > 0)
+          .map(([_, h]) => `${h.schoolName || 'Outra Escola'} (${h.availableCopies} disp.)`)
+          .join(', ');
+
+        setModal({
+          isOpen: true,
+          type: 'alert',
+          title: 'Exemplar Indisponível Nesta Escola',
+          message: `Não há exemplares físicos de "${selectedBook.val.title}" disponíveis no estoque da escola "${targetSchoolName}".${
+            otherSchoolsWithStock
+              ? `\n\nExemplares disponíveis em: ${otherSchoolsWithStock}. É necessário realizar o Remanejamento entre escolas antes de emprestar.`
+              : ' Todos os exemplares desta obra na rede estão emprestados.'
+          }`,
+          icon: '⛔'
+        });
+        return;
+      }
+    } else if (selectedBook.val.availableCopies <= 0) {
       setModal({
         isOpen: true,
         type: 'alert',
@@ -2297,7 +2337,10 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                 const cardTotalCopies = holdingInSelectedSchool
                   ? (holdingInSelectedSchool.totalCopies ?? 0)
                   : (b.val.totalCopies ?? 1);
+                // Quando filtrado por escola, hasAvailable deve checar a disponibilidade física na escola selecionada
                 const hasAvailable = cardAvailableCopies > 0;
+                // hasAvailableInNetwork indica se existe estoque em qualquer escola da rede
+                const hasAvailableInNetwork = (b.val.availableCopies ?? 0) > 0;
 
                 return (
                   <div
@@ -2441,7 +2484,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                           </button>
                         )}
 
-                        {canManage && hasAvailable && schools.length > 1 && (
+                        {canManage && (hasAvailable || hasAvailableInNetwork) && schools.length > 1 && (
                           <button
                             onClick={() => handleOpenTransferModal(b)}
                             className="inline-flex items-center gap-1 text-xs font-bold text-teal-700 bg-teal-50 hover:bg-teal-100 px-2.5 py-1.5 rounded-lg transition cursor-pointer"
@@ -3648,17 +3691,66 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                   className="w-full px-3.5 py-2.5 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-emerald-500 outline-none bg-white font-medium"
                 >
                   <option value="">-- Escolha um livro do acervo --</option>
-                  {books.map((b) => (
-                    <option
-                      key={b.id}
-                      value={b.id}
-                      disabled={b.val.availableCopies <= 0}
-                    >
-                      {b.val.title} ({b.val.code}) — {b.val.availableCopies > 0 ? `${b.val.availableCopies} disp.` : 'ESGOTADO'}
-                    </option>
-                  ))}
+                  {books.map((b) => {
+                    const schoolId = selectedClassObj?.val?.schoolId;
+                    const holdingInClassSchool = schoolId && b.val.copiesBySchool ? b.val.copiesBySchool[schoolId] : null;
+                    const schoolAvailable = holdingInClassSchool ? holdingInClassSchool.availableCopies : b.val.availableCopies;
+                    const isOutOfStockInClassSchool = schoolId && b.val.copiesBySchool ? schoolAvailable <= 0 : b.val.availableCopies <= 0;
+
+                    return (
+                      <option
+                        key={b.id}
+                        value={b.id}
+                        disabled={isOutOfStockInClassSchool}
+                      >
+                        {b.val.title} ({b.val.code}) — {
+                          schoolId && b.val.copiesBySchool
+                            ? (schoolAvailable > 0 ? `${schoolAvailable} disp. nesta escola` : `0 disp. nesta escola (${b.val.availableCopies} na rede)`)
+                            : (b.val.availableCopies > 0 ? `${b.val.availableCopies} disp.` : 'ESGOTADO')
+                        }
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
+
+              {/* Alerta contextual se o livro selecionado não tiver exemplar na escola da turma */}
+              {(() => {
+                if (!loanSelectedBookId || !selectedClassObj?.val?.schoolId) return null;
+                const book = books.find((b) => b.id === loanSelectedBookId);
+                if (!book || !book.val.copiesBySchool) return null;
+                const schoolId = selectedClassObj.val.schoolId;
+                const schoolHolding = book.val.copiesBySchool[schoolId];
+                const availableInSchool = schoolHolding ? Number(schoolHolding.availableCopies ?? 0) : 0;
+
+                if (availableInSchool <= 0) {
+                  const otherSchoolsWithStock = (Object.entries(book.val.copiesBySchool) as [string, SchoolCopyHolding][])
+                    .filter(([sId, h]) => sId !== schoolId && (h.availableCopies || 0) > 0)
+                    .map(([_, h]) => `${h.schoolName || 'Outra Escola'} (${h.availableCopies} disp.)`);
+
+                  return (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-2.5 text-xs text-rose-800">
+                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold">Indisponível no estoque físico desta escola!</p>
+                        <p className="mt-0.5 text-rose-700">
+                          A escola <strong>{selectedClassObj.val.schoolName || 'desta turma'}</strong> não possui exemplares físicos disponíveis de "{book.val.title}".
+                        </p>
+                        {otherSchoolsWithStock.length > 0 ? (
+                          <p className="mt-1 text-rose-600 font-medium">
+                            Disponível em outra(s) unidade(s): {otherSchoolsWithStock.join(', ')}. Remaneje os exemplares antes de efetuar o empréstimo.
+                          </p>
+                        ) : (
+                          <p className="mt-1 text-rose-600 font-medium">
+                            Todos os exemplares desta obra na rede municipal estão emprestados.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
 
               {/* Seleção da Turma */}
               <div>
@@ -3779,10 +3871,14 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                 <button
                   id="btn-confirm-loan-submit"
                   type="submit"
-                  disabled={savingLoan || !loanSelectedBookId || !loanSelectedStudentId}
+                  disabled={savingLoan || !loanSelectedBookId || !loanSelectedStudentId || !isSelectedBookAvailableInClassSchool}
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-xl text-sm font-semibold shadow-xs transition cursor-pointer"
                 >
-                  {savingLoan ? 'Registrando...' : 'Confirmar Empréstimo'}
+                  {savingLoan
+                    ? 'Registrando...'
+                    : !isSelectedBookAvailableInClassSchool && loanSelectedBookId
+                    ? 'Exemplar Indisponível nesta Escola'
+                    : 'Confirmar Empréstimo'}
                 </button>
               </div>
             </form>

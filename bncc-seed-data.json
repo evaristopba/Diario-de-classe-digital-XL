@@ -1,0 +1,536 @@
+[
+  {
+    "code": "EF15LP01",
+    "desc": "Identificar a função social de textos que circulam em campos da vida social dos quais participa cotidianamente e nas mídias impressa, de massa e digital.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP02",
+    "desc": "Estabelecer expectativas em relação ao texto que vai ler, apoiando-se em seus conhecimentos prévios sobre as condições de produção e recepção do texto.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP03",
+    "desc": "Localizar informações explícitas em textos de diferentes gêneros e extensões.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP04",
+    "desc": "Identificar o efeito de sentido produzido pelo uso de recursos expressivos gráfico-visuais em textos multissemióticos.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP05",
+    "desc": "Planejar, com a ajuda do professor, o texto que será produzido, considerando a situação comunicativa, os interlocutores, a finalidade e a circulação.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP06",
+    "desc": "Reler e revisar o texto produzido com a mediação do professor e a colaboração dos colegas, corrigindo e aprimorando.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP07",
+    "desc": "Editar a versão final do texto em colaboração com os colegas e com a mediação do professor, utilizando softwares de edição ou manuscrito.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP08",
+    "desc": "Utilizar software, inclusive programas de edição de texto, para editar e publicar os textos produzidos.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP09",
+    "desc": "Expressar-se em situações de intercâmbio oral com clareza, preocupando-se em ser compreendido pelo interlocutor e usando a palavra com tom de voz audível.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP10",
+    "desc": "Escutar, com atenção, falas de professores e colegas, formulando perguntas pertinentes ao tema e solicitando esclarecimentos.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP11",
+    "desc": "Reconhecer características da conversação espontânea presencial, respeitando os turnos de fala e acolhendo as opiniões alheias.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP12",
+    "desc": "Atribuir significado a aspectos não linguísticos observados na fala, como formas de tratamento, expressão corporal e tom de voz.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP13",
+    "desc": "Identificar finalidades da interação oral em diferentes contextos comunicativos (solicitar informações, apresentar opiniões, relatar fatos).",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP14",
+    "desc": "Construir o sentido de histórias em quadrinhos e tirinhas, relacionando imagens e palavras e interpretando recursos gráficos.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP15",
+    "desc": "Reconhecer que os textos literários fazem parte do mundo do imaginário e apresentam dimensão lúdica e de encantamento.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP16",
+    "desc": "Ler e compreender, em colaboração com os colegas e com o professor e depois de maneira autônoma, textos narrativos de maior porte como contos populares.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP17",
+    "desc": "Apreciar poemas visuais e concretos, observando efeitos de sentido criados pelo formato do texto na página, distribuição e rimas.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15LP18",
+    "desc": "Relacionar texto com ilustrações e outros recursos gráficos.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF12LP01",
+    "desc": "Ler palavras tomadas por referência de memorização, como nomes próprios e palavras estáveis.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12LP02",
+    "desc": "Buscar, selecionar e ler, com a mediação do professor, textos que circulam em meios impressos ou digitais de acordo com necessidades.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12LP03",
+    "desc": "Copiar textos breves de diferentes gêneros, mantendo suas características e voltando para o texto sempre que tiver dúvidas sobre sua distribuição gráfica.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12LP04",
+    "desc": "Ler e compreender, em colaboração com os colegas e com o professor ou com certa autonomia, listas, agendas, calendários, avisos, convites e receitas.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12LP05",
+    "desc": "Planejar e produzir, em colaboração com os colegas e com o professor, avisos, convites, receitas e instruções de montagem.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12LP06",
+    "desc": "Planejar e produzir, em colaboração com os colegas e com a mediação do professor, recados e mensagens virtuais.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12LP07",
+    "desc": "Identificar e (re)produzir, em cantiga, quadras, quadrinhas, parlendas, trava-línguas e canções, rimas, aliterações e assonâncias.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12LP08",
+    "desc": "Ler em voz alta textos de gêneros variados, com certa fluência e expressividade.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12LP09",
+    "desc": "Ler e compreender cantigas, quadrinhas, parlendas e trava-línguas, observando ritmo e sonoridade.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12LP10",
+    "desc": "Ler e compreender, em colaboração com os colegas e com o professor, cartazes, folhetos e regras de jogos.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12LP11",
+    "desc": "Escrever, em colaboração com os colegas e com a ajuda do professor, pequenos textos de divulgação científica e curiosidades.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF35LP01",
+    "desc": "Ler e compreender, silenciosamente e, em seguida, em voz alta, com autonomia e fluência, textos curtos com nível de textualidade adequado.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP02",
+    "desc": "Selecionar livros da biblioteca e/ou do cantinho de leitura da sala de aula e/ou disponíveis em meios digitais para leitura individual.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP03",
+    "desc": "Identificar a ideia central do texto, demonstrando compreensão global.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP04",
+    "desc": "Inferir informações implícitas nos textos lidos.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP05",
+    "desc": "Inferir o sentido de palavras ou expressões desconhecidas em textos, com base no contexto da frase ou do texto.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP06",
+    "desc": "Recuperar relações entre partes de um texto, identificando substituições lexicais ou pronominais que contribuem para a continuidade do texto.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP07",
+    "desc": "Utilizar, ao produzir um texto, conhecimentos linguísticos e gramaticais: ortografia, regras básicas de concordância nominal e verbal, pontuação.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP08",
+    "desc": "Utilizar, ao produzir um texto, recursos de referenciação lexical e pronominal, pronomes possessivos e demonstrativos.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP09",
+    "desc": "Organizar o texto em unidades de sentido, dividindo-o em parágrafos segundo as normas gráficas e de acordo com as características do gênero textual.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP10",
+    "desc": "Identificar gêneros do discurso oral utilizados em diferentes situações e contextos comunicativos.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP11",
+    "desc": "Ouvir gravações, canções, textos falados em diferentes variedades linguísticas, identificando características regionais e culturais.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP12",
+    "desc": "Recorrer ao dicionário para esclarecer dúvida sobre a escrita de palavras, especialmente no caso de palavras com relações fonema-grafema irregulares.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP13",
+    "desc": "Memorizar a grafia de palavras de uso frequente nas quais as relações fonema-grafema são irregulares.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP14",
+    "desc": "Identificar em textos e usar na produção textual pronomes pessoais, possessivos e demonstrativos.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35LP15",
+    "desc": "Opinar e defender ponto de vista sobre tema polêmico relacionado a situações vivenciadas na escola ou na comunidade.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF12EF01",
+    "desc": "Experimentar, fruir e recriar diferentes brincadeiras e jogos da cultura popular presentes no contexto comunitário e regional.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12EF02",
+    "desc": "Explicar, por meio de múltiplas linguagens (corporal, visual, oral e escrita), as brincadeiras e os jogos populares do contexto comunitário e regional.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12EF03",
+    "desc": "Planejar e utilizar estratégias para resolver desafios de brincadeiras e jogos populares do contexto comunitário e regional.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12EF04",
+    "desc": "Colaborar na proposição e na produção de alternativas para a prática, em outros momentos e espaços, de brincadeiras e jogos e demais práticas corporais.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12EF05",
+    "desc": "Experimentar e fruir diferentes tipos de ginástica, identificando as sensações corporais provocadas pelos movimentos.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF12EF06",
+    "desc": "Discutir a importância da prática de atividades físicas para a manutenção da saúde e do bem-estar.",
+    "years": ["1", "2"],
+    "year": "12"
+  },
+  {
+    "code": "EF35EF01",
+    "desc": "Experimentar e fruir brincadeiras e jogos populares do Brasil e do mundo, incluindo aqueles de matriz indígena e africana.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35EF02",
+    "desc": "Planejar e utilizar estratégias para possibilitar a participação segura de todos os alunos em brincadeiras e jogos populares.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35EF03",
+    "desc": "Descrever, por meio de múltiplas linguagens, as brincadeiras e os jogos populares do Brasil e de matriz indígena e africana, valorizando a diversidade.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35EF04",
+    "desc": "Recriar, individual e coletivamente, e experimentar, na escola e fora dela, brincadeiras e jogos populares do Brasil e do mundo.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35EF05",
+    "desc": "Experimentar e fruir os elementos básicos de esportes de campo e taco, rede/parede e invasão, prezando pela inclusão e cooperação.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF35EF06",
+    "desc": "Diferenciar os conceitos de jogo e esporte, identificando as características que os constituem na contemporaneidade.",
+    "years": ["3", "4", "5"],
+    "year": "35"
+  },
+  {
+    "code": "EF15AR01",
+    "desc": "Identificar e apreciar formas distintas das artes visuais tradicionais e contemporâneas, cultivando a percepção e o imaginário.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15AR02",
+    "desc": "Explorar e reconhecer elementos constitutivos das artes visuais (ponto, linha, forma, cor, espaço, movimento).",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15AR03",
+    "desc": "Reconhecer e analisar a influência de distintas matrizes estéticas e culturais das artes visuais nas manifestações artísticas das culturas locais e regionais.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15AR04",
+    "desc": "Experimentar diferentes formas de expressão artística (desenho, pintura, colagem, escultura, modelagem, instalação, vídeo, fotografia).",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15AR05",
+    "desc": "Experimentar a criação em artes visuais de modo individual, coletivo e colaborativo, explorando espaços da escola e da comunidade.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15AR13",
+    "desc": "Identificar e apreciar criticamente diversas formas e gêneros de expressão musical, reconhecendo os usos da música em diversos contextos.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15AR14",
+    "desc": "Perceber e explorar os elementos constitutivos da música (altura, intensidade, timbre, melodia, ritmo etc.), por meio de jogos e brincadeiras.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF15AR18",
+    "desc": "Reconhecer e apreciar formas distintas de manifestações do teatro presentes em diferentes contextos, aprendendo a ver e a ouvir histórias.",
+    "years": ["1", "2", "3", "4", "5"],
+    "year": "15"
+  },
+  {
+    "code": "EF01MA01",
+    "desc": "Utilizar números naturais como indicador de quantidade ou de ordem em diferentes situações cotidianas.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF01MA06",
+    "desc": "Construir fatos fundamentais da adição e utilizá-los em procedimentos de cálculo para resolver problemas.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF02MA01",
+    "desc": "Comparar e ordenar números naturais (até a ordem de centenas) pela compreensão de características do sistema de numeração decimal.",
+    "years": ["2"],
+    "year": "2"
+  },
+  {
+    "code": "EF02MA05",
+    "desc": "Construir fatos básicos da adição e da subtração e utilizá-los no cálculo mental ou escrito.",
+    "years": ["2"],
+    "year": "2"
+  },
+  {
+    "code": "EF03MA01",
+    "desc": "Ler, escrever e comparar números naturais de até a ordem de unidade de milhar, estabelecendo relações entre os registros numéricos e a língua materna.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF03MA06",
+    "desc": "Resolver e elaborar problemas de adição e subtração com os significados de juntar, acrescentar, separar e retirar.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF04MA01",
+    "desc": "Ler, escrever e ordenar números naturais até a ordem de dezenas de milhar.",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF04MA04",
+    "desc": "Utilizar as relações entre adição e subtração, bem como entre multiplicação e divisão, para ampliar as estratégias de cálculo.",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF05MA01",
+    "desc": "Ler, escrever e ordenar números naturais até a ordem das centenas de milhar com compreensão das principais características do sistema de numeração decimal.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF05MA07",
+    "desc": "Resolver e elaborar problemas de multiplicação e divisão com números naturais e com números racionais cuja representação decimal é finita.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF01CI01",
+    "desc": "Comparar características de diferentes materiais presentes em objetos de uso cotidiano, discutindo sua origem e descarte.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF02CI01",
+    "desc": "Identificar de que materiais (metais, madeira, vidro, plástico etc.) os objetos do cotidiano são feitos, como são utilizados e com quais cuidados.",
+    "years": ["2"],
+    "year": "2"
+  },
+  {
+    "code": "EF03CI04",
+    "desc": "Identificar características sobre o modo de vida (o que comem, como se reproduzem, como se deslocam) dos animais mais comuns.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF04CI01",
+    "desc": "Identificar misturas na vida diária, com base em suas propriedades físicas observáveis, reconhecendo misturas homogêneas e heterogêneas.",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF05CI02",
+    "desc": "Aplicar os conhecimentos sobre as mudanças de estado físico da água para explicar o ciclo hidrológico e analisar suas implicações na agricultura e no clima.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF01HI01",
+    "desc": "Identificar aspectos do seu crescimento por meio do registro das lembranças particulares ou de lembranças dos membros de sua família e/ou de sua comunidade.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF02HI01",
+    "desc": "Reconhecer espaços de sociabilidade e identificar os motivos que aproximam e separam as pessoas em diferentes grupos.",
+    "years": ["2"],
+    "year": "2"
+  },
+  {
+    "code": "EF03HI01",
+    "desc": "Identificar os grupos populacionais que formam a cidade, o município e a região, as relações estabelecidas entre eles e os eventos que marcam suas presenças.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF04HI01",
+    "desc": "Reconhecer a história como resultado da ação humana no tempo e no espaço, com base na identificação de mudanças e permanências ao longo do tempo.",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF05HI01",
+    "desc": "Identificar os processos de formação das culturas e dos povos, relacionando-os com o espaço geográfico ocupado.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF01GE01",
+    "desc": "Descrever características observadas de seus lugares de vivência (moradia, escola etc.) e identificar semelhanças e diferenças entre esses lugares.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF02GE01",
+    "desc": "Descrever a história das migrações e dos deslocamentos de pessoas na sua comunidade e os motivos desses movimentos.",
+    "years": ["2"],
+    "year": "2"
+  },
+  {
+    "code": "EF03GE01",
+    "desc": "Identificar e comparar aspectos culturais dos grupos sociais de seus lugares de vivência, seja na cidade, seja no campo.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF04GE01",
+    "desc": "Selecionar, em diferentes fontes, informações sobre a formação cultural da população brasileira, valorizando a diversidade étnico-cultural.",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF05GE01",
+    "desc": "Descrever e analisar dinâmicas populacionais na Unidade da Federação de residência, estabelecendo relações entre migrações e condições de infraestrutura.",
+    "years": ["5"],
+    "year": "5"
+  }
+]
