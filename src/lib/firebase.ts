@@ -537,8 +537,18 @@ export async function carregarLivros(): Promise<{ id: string; val: Book }[]> {
  * Salva ou atualiza um livro no acervo de forma centralizada e sem redundância.
  * Grava metadados universais em biblioteca/livros e estoque físico em biblioteca/acervos/$schoolId/$livroId.
  */
-export async function salvarLivro(livro: Omit<Book, 'id'>, id?: string): Promise<string> {
+export async function salvarLivro(
+  livro: Omit<Book, 'id'>,
+  id?: string,
+  auditOptions?: {
+    justification?: string;
+    userName?: string;
+  }
+): Promise<string> {
   const now = Date.now();
+  const currentUid = auth.currentUser?.uid || '';
+  const operatorName = auditOptions?.userName || auth.currentUser?.displayName || 'Operador da Biblioteca';
+  const todayStr = new Date(now).toISOString().split('T')[0];
   const schoolId = livro.schoolId || 'rede-geral';
   const schoolName = livro.schoolName || 'Acervo Geral';
   const inputTotal = Math.max(1, Number(livro.totalCopies) || 1);
@@ -582,15 +592,57 @@ export async function salvarLivro(livro: Omit<Book, 'id'>, id?: string): Promise
     await update(ref(rtdb, `diario-classe/biblioteca/livros/${id}`), cleanFirebaseData(dataToSave));
 
     // 2. Grava/atualiza no estoque físico de cada escola envolvida em acervos/$sId/$id
+    // e registra auditoria se a quantidade de exemplares foi alterada
     for (const [sId, h] of Object.entries(currentHoldings)) {
+      let origTotal = 0;
+      if (current?.copiesBySchool?.[sId]) {
+        origTotal = Number(current.copiesBySchool[sId].totalCopies) || 0;
+      } else if (current && (!current.copiesBySchool || Object.keys(current.copiesBySchool).length === 0)) {
+        if (current.schoolId === sId || Object.keys(currentHoldings).length === 1) {
+          origTotal = Number(current.totalCopies) || 0;
+        }
+      }
+
+      const newTotal = Number(h.totalCopies) || 0;
+
       await set(ref(rtdb, `diario-classe/biblioteca/acervos/${sId}/${id}`), cleanFirebaseData({
-        totalCopies: Number(h.totalCopies) || 0,
+        totalCopies: newTotal,
         availableCopies: Number(h.availableCopies) || 0,
         code: h.code || livro.code || '',
         schoolName: h.schoolName || '',
         location: h.location || '',
         updatedAt: now
       }));
+
+      // Auditoria patrimonial se for atualização de livro existente e houve variação de estoque
+      if (current && origTotal !== newTotal) {
+        const delta = newTotal - origTotal;
+        const isReduction = delta < 0;
+        const defaultReason = isReduction
+          ? `Baixa patrimonial de ${Math.abs(delta)} exemplar(es) (${origTotal} ➔ ${newTotal})`
+          : `Acréscimo de ${delta} exemplar(es) no acervo (${origTotal} ➔ ${newTotal})`;
+
+        const movRef = push(ref(rtdb, 'diario-classe/biblioteca/movimentacoes'));
+        await set(movRef, cleanFirebaseData({
+          type: isReduction ? 'baixa' : (origTotal === 0 ? 'entrada' : 'ajuste_inventario'),
+          bookId: id,
+          bookTitle: livro.title,
+          bookCode: h.code || livro.code || '',
+          sourceSchoolId: sId,
+          sourceSchoolName: h.schoolName || schoolName,
+          targetSchoolId: sId,
+          targetSchoolName: h.schoolName || schoolName,
+          copies: Math.abs(delta),
+          previousCopies: origTotal,
+          newCopies: newTotal,
+          date: todayStr,
+          reason: auditOptions?.justification?.trim() || defaultReason,
+          responsibleUid: currentUid,
+          responsibleName: operatorName,
+          userName: operatorName,
+          createdAt: now
+        }));
+      }
     }
 
     return id;
@@ -653,6 +705,29 @@ export async function salvarLivro(livro: Omit<Book, 'id'>, id?: string): Promise
             location: holdings[sId].location,
             updatedAt: now
           }));
+
+          if (addedTotal > 0) {
+            const movRef = push(ref(rtdb, 'diario-classe/biblioteca/movimentacoes'));
+            await set(movRef, cleanFirebaseData({
+              type: 'entrada',
+              bookId: existingBookId,
+              bookTitle: existingBookData.title,
+              bookCode: holdings[sId].code,
+              sourceSchoolId: sId,
+              sourceSchoolName: holdings[sId].schoolName,
+              targetSchoolId: sId,
+              targetSchoolName: holdings[sId].schoolName,
+              copies: addedTotal,
+              previousCopies: prevH.totalCopies,
+              newCopies: mergedTotal,
+              date: todayStr,
+              reason: auditOptions?.justification?.trim() || `Entrada de ${addedTotal} exemplar(es) no acervo escolar`,
+              responsibleUid: currentUid,
+              responsibleName: operatorName,
+              userName: operatorName,
+              createdAt: now
+            }));
+          }
         }
       } else {
         // Entrada em uma única escola padrão
@@ -675,6 +750,27 @@ export async function salvarLivro(livro: Omit<Book, 'id'>, id?: string): Promise
           schoolName,
           location: livro.location || prev.location || '',
           updatedAt: now
+        }));
+
+        const movRef = push(ref(rtdb, 'diario-classe/biblioteca/movimentacoes'));
+        await set(movRef, cleanFirebaseData({
+          type: 'entrada',
+          bookId: existingBookId,
+          bookTitle: existingBookData.title,
+          bookCode: livro.code || prev.code || existingBookData.code || '',
+          sourceSchoolId: schoolId,
+          sourceSchoolName: schoolName,
+          targetSchoolId: schoolId,
+          targetSchoolName: schoolName,
+          copies: inputTotal,
+          previousCopies: prev.totalCopies,
+          newCopies: newSchoolTotal,
+          date: todayStr,
+          reason: auditOptions?.justification?.trim() || `Entrada de ${inputTotal} exemplar(es) no acervo escolar`,
+          responsibleUid: currentUid,
+          responsibleName: operatorName,
+          userName: operatorName,
+          createdAt: now
         }));
       }
 
@@ -726,16 +822,40 @@ export async function salvarLivro(livro: Omit<Book, 'id'>, id?: string): Promise
       await set(newRef, cleanFirebaseData(dataToSave));
       const bookId = newRef.key!;
 
-      // Grava no acervo de cada escola que recebeu exemplares
+      // Grava no acervo de cada escola que recebeu exemplares e registra auditoria inicial
       for (const [sId, h] of Object.entries(initialHoldings)) {
+        const count = Number(h.totalCopies) || 0;
         await set(ref(rtdb, `diario-classe/biblioteca/acervos/${sId}/${bookId}`), cleanFirebaseData({
-          totalCopies: Number(h.totalCopies) || 0,
+          totalCopies: count,
           availableCopies: Number(h.availableCopies) || 0,
           code: h.code || livro.code || '',
           schoolName: h.schoolName || '',
           location: h.location || '',
           updatedAt: now
         }));
+
+        if (count > 0) {
+          const movRef = push(ref(rtdb, 'diario-classe/biblioteca/movimentacoes'));
+          await set(movRef, cleanFirebaseData({
+            type: 'entrada',
+            bookId,
+            bookTitle: livro.title,
+            bookCode: h.code || livro.code || '',
+            sourceSchoolId: sId,
+            sourceSchoolName: h.schoolName || schoolName,
+            targetSchoolId: sId,
+            targetSchoolName: h.schoolName || schoolName,
+            copies: count,
+            previousCopies: 0,
+            newCopies: count,
+            date: todayStr,
+            reason: auditOptions?.justification?.trim() || 'Entrada inicial no acervo da biblioteca escolar',
+            responsibleUid: currentUid,
+            responsibleName: operatorName,
+            userName: operatorName,
+            createdAt: now
+          }));
+        }
       }
 
       return bookId;

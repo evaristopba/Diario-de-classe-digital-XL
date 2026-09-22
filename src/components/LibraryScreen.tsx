@@ -18,9 +18,10 @@ import {
   registrarMovimentacaoLivro,
   excluirMovimentacaoLivro,
   limparTodasMovimentacoes,
-  excluirEmprestimo
+  excluirEmprestimo,
+  auth
 } from '../lib/firebase';
-import { checkBookDeleteIntegrity } from '../lib/referentialIntegrity';
+import { checkBookDeleteIntegrity, checkBookCopiesReductionIntegrity } from '../lib/referentialIntegrity';
 import { formatFriendlyError } from '../lib/errorHandler';
 import { formatDate } from '../lib/reports';
 import jsPDF from 'jspdf';
@@ -110,6 +111,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
   const [movements, setMovements] = useState<Array<{ id: string; val: BookMovement }>>([]);
   const [selectedSchoolFilter, setSelectedSchoolFilter] = useState<string>('todas');
   const [historySubTab, setHistorySubTab] = useState<'devolucoes' | 'remanejamentos'>('devolucoes');
+  const [movementTypeFilter, setMovementTypeFilter] = useState<'todos' | 'remanejamentos' | 'ajustes' | 'entradas' | 'baixas'>('todos');
 
   // Search & Filter
   const [bookSearch, setBookSearch] = useState<string>('');
@@ -141,7 +143,9 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
   const [savingBook, setSavingBook] = useState<boolean>(false);
   const [isMultiSchoolDistribution, setIsMultiSchoolDistribution] = useState<boolean>(false);
   const [editSchoolHoldings, setEditSchoolHoldings] = useState<Record<string, SchoolHoldingItem>>({});
+  const [initialHoldingsSnapshot, setInitialHoldingsSnapshot] = useState<Record<string, number>>({});
   const [newSchoolHoldingToAdd, setNewSchoolHoldingToAdd] = useState<string>('');
+  const [auditJustification, setAuditJustification] = useState<string>('');
 
   // Remanejamento / Transferência Modal State
   const [isTransferModalOpen, setIsTransferModalOpen] = useState<boolean>(false);
@@ -317,6 +321,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
     setQuickFillWarnings([]);
     setIsAnalyzingPhotos(false);
     setIsSearchingIsbn(false);
+    setAuditJustification('');
 
     if (b) {
       setEditingBookId(b.id);
@@ -360,6 +365,11 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
         };
       }
       setEditSchoolHoldings(holdings);
+      const snapshot: Record<string, number> = {};
+      Object.entries(holdings).forEach(([sId, h]) => {
+        snapshot[sId] = Number(h.totalCopies) || 0;
+      });
+      setInitialHoldingsSnapshot(snapshot);
     } else {
       setEditingBookId(null);
       setBookSchoolId(selectedSchoolFilter !== 'todas' ? selectedSchoolFilter : (schools[0]?.id || ''));
@@ -377,10 +387,39 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
       setAssistantTab(initialMode === 'isbn' ? 'isbn' : 'photo');
       setIsMultiSchoolDistribution(false);
       setEditSchoolHoldings({});
+      setInitialHoldingsSnapshot({});
       setNewSchoolHoldingToAdd('');
     }
     setIsBookModalOpen(true);
   };
+
+  const hasStockChange = useMemo(() => {
+    if (!editingBookId) return false;
+
+    // Mapa de exemplares originais por escola (> 0)
+    const initialEntries = (Object.entries(initialHoldingsSnapshot) as [string, number][]).filter(([_, copies]) => copies > 0);
+    const initialMap = Object.fromEntries(initialEntries);
+
+    // Mapa atual de exemplares por escola (> 0)
+    const currentEntries = (Object.entries(editSchoolHoldings) as [string, SchoolHoldingItem][]).filter(
+      ([_, h]) => (Number(h?.totalCopies) || 0) > 0
+    );
+    const currentMap: Record<string, number> = {};
+    currentEntries.forEach(([sId, h]) => {
+      currentMap[sId] = Number(h.totalCopies) || 0;
+    });
+
+    const allKeys = Array.from(new Set([...Object.keys(initialMap), ...Object.keys(currentMap)]));
+    for (const sId of allKeys) {
+      const orig = initialMap[sId] || 0;
+      const cur = currentMap[sId] || 0;
+      if (orig !== cur) {
+        return true;
+      }
+    }
+
+    return false;
+  }, [editingBookId, initialHoldingsSnapshot, editSchoolHoldings]);
 
   const handleToggleMultiSchool = (enable: boolean) => {
     setIsMultiSchoolDistribution(enable);
@@ -872,6 +911,55 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
       }
     }
 
+    // Auditoria Patrimonial e Validação de Redução de Exemplares
+    if (editingBookId) {
+      let stockChanged = false;
+      const currentActiveHoldings = (Object.entries(editSchoolHoldings) as [string, SchoolHoldingItem][]).filter(
+        ([_, h]) => (Number(h?.totalCopies) || 0) > 0
+      );
+      const currentMap: Record<string, number> = {};
+      currentActiveHoldings.forEach(([sId, h]) => {
+        currentMap[sId] = Number(h.totalCopies) || 0;
+      });
+
+      const allSchoolIds = Array.from(new Set([...Object.keys(initialHoldingsSnapshot), ...Object.keys(currentMap)]));
+
+      for (const sId of allSchoolIds) {
+        const origCopies = initialHoldingsSnapshot[sId] || 0;
+        const newCopies = currentMap[sId] || 0;
+
+        if (origCopies !== newCopies) {
+          stockChanged = true;
+        }
+
+        // Valida se a quantidade total não está sendo reduzida abaixo do que está emprestado/alocado
+        if (origCopies > 0 && newCopies < origCopies) {
+          const integrity = await checkBookCopiesReductionIntegrity(editingBookId, sId, newCopies);
+          if (!integrity.canReduce) {
+            setModal({
+              isOpen: true,
+              type: 'alert',
+              title: 'Baixa Patrimonial Bloqueada',
+              message: integrity.reason || 'Não é possível reduzir exemplares em circulação ativa.',
+              icon: '⛔'
+            });
+            return;
+          }
+        }
+      }
+
+      if (stockChanged && !auditJustification.trim()) {
+        setModal({
+          isOpen: true,
+          type: 'alert',
+          title: 'Justificativa de Auditoria Obrigatória',
+          message: 'Por exigência de auditoria e conformidade patrimonial, é obrigatório preencher a justificativa da alteração na quantidade de exemplares.',
+          icon: '📋'
+        });
+        return;
+      }
+    }
+
     // Ao CADASTRAR (não editar), avisa se já existe um título correspondente no catálogo
     // (por ISBN/código ou por título+autor) em vez de mesclar silenciosamente.
     if (!editingBookId) {
@@ -954,7 +1042,11 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
         copiesBySchool: finalHoldings as any
       };
 
-      await salvarLivro(bookData, editingBookId || undefined);
+      const operatorName = auth.currentUser?.displayName || 'Operador da Biblioteca';
+      await salvarLivro(bookData, editingBookId || undefined, {
+        justification: auditJustification.trim() || undefined,
+        userName: operatorName
+      });
 
       setModal({
         isOpen: true,
@@ -1651,40 +1743,56 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
         isOpen: true,
         type: 'alert',
         title: 'Nenhuma Movimentação',
-        message: 'Não há registros de remanejamento entre escolas para exportar.',
+        message: 'Não há registros de movimentação ou remanejamento de acervo para exportar.',
         icon: 'ℹ️'
       });
       return;
     }
 
     const columns: ExcelColumnDef[] = [
-      { header: 'Data do Remanejamento', key: 'date', width: 22, align: 'center' },
+      { header: 'Tipo de Operação', key: 'type', width: 24, align: 'center' },
+      { header: 'Data/Hora', key: 'date', width: 20, align: 'center' },
       { header: 'Código / Tombamento', key: 'code', width: 18, align: 'center' },
       { header: 'Título da Obra', key: 'title', width: 35, align: 'left' },
-      { header: 'Escola de Origem', key: 'source', width: 28, align: 'left' },
-      { header: 'Escola de Destino', key: 'target', width: 28, align: 'left' },
-      { header: 'Qtd Exemplares', key: 'copies', width: 16, align: 'center' },
-      { header: 'Motivo / Justificativa', key: 'reason', width: 35, align: 'left' },
-      { header: 'Responsável', key: 'userName', width: 22, align: 'left' }
+      { header: 'Unidade Escolar / Origem', key: 'source', width: 28, align: 'left' },
+      { header: 'Unidade Destino', key: 'target', width: 28, align: 'left' },
+      { header: 'Qtd Movimentada', key: 'copies', width: 16, align: 'center' },
+      { header: 'Saldo Anterior', key: 'prevCopies', width: 15, align: 'center' },
+      { header: 'Saldo Novo', key: 'newCopies', width: 15, align: 'center' },
+      { header: 'Motivo / Justificativa', key: 'reason', width: 38, align: 'left' },
+      { header: 'Operador / Responsável', key: 'userName', width: 24, align: 'left' }
     ];
 
-    const rows = movements.map((m) => ({
-      date: new Date(m.val.createdAt).toLocaleString('pt-BR'),
-      code: m.val.bookCode || '-',
-      title: m.val.bookTitle,
-      source: m.val.sourceSchoolName,
-      target: m.val.targetSchoolName,
-      copies: m.val.copies,
-      reason: m.val.reason || '-',
-      userName: m.val.userName || 'Sistema'
-    }));
+    const typeLabels: Record<string, string> = {
+      remanejamento: 'Remanejamento entre Escolas',
+      entrada: 'Entrada Inicial / Doação',
+      baixa: 'Baixa Patrimonial / Descarte',
+      ajuste_inventario: 'Ajuste de Inventário'
+    };
+
+    const rows = movements.map((m) => {
+      const typeKey = m.val.type || 'remanejamento';
+      return {
+        type: typeLabels[typeKey] || typeKey,
+        date: new Date(m.val.createdAt).toLocaleString('pt-BR'),
+        code: m.val.bookCode || '-',
+        title: m.val.bookTitle,
+        source: m.val.sourceSchoolName,
+        target: typeKey === 'remanejamento' ? m.val.targetSchoolName : '-',
+        copies: m.val.copies,
+        prevCopies: m.val.previousCopies !== undefined ? m.val.previousCopies : '-',
+        newCopies: m.val.newCopies !== undefined ? m.val.newCopies : '-',
+        reason: m.val.reason || '-',
+        userName: m.val.userName || m.val.responsibleName || 'Sistema'
+      };
+    });
 
     await exportToExcelJS({
-      title: 'Histórico de Remanejamento de Acervo entre Escolas',
+      title: 'Auditoria Patrimonial e Movimentações do Acervo Escolar',
       year: currentYear,
       columns,
       rows,
-      filename: `remanejamentos_acervo_${currentYear}.xlsx`
+      filename: `auditoria_movimentacoes_acervo_${currentYear}.xlsx`
     });
   };
 
@@ -1744,13 +1852,28 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
     );
   });
 
-  // Filtragem de Histórico de Remanejamentos
+  // Filtragem de Histórico de Remanejamentos & Auditoria Patrimonial
   const filteredMovements = movements.filter((m) => {
     if (selectedSchoolFilter !== 'todas') {
       if (m.val.sourceSchoolId !== selectedSchoolFilter && m.val.targetSchoolId !== selectedSchoolFilter) {
         return false;
       }
     }
+
+    const mType = m.val.type || 'remanejamento';
+    if (movementTypeFilter === 'remanejamentos') {
+      return mType === 'remanejamento';
+    }
+    if (movementTypeFilter === 'baixas') {
+      return mType === 'baixa';
+    }
+    if (movementTypeFilter === 'entradas') {
+      return mType === 'entrada';
+    }
+    if (movementTypeFilter === 'ajustes') {
+      return mType === 'ajuste_inventario' || mType === 'baixa';
+    }
+
     return true;
   });
 
@@ -2611,9 +2734,9 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <ArrowRightLeft className="w-3.5 h-3.5" />
-                <span className="sm:hidden">Remanejamentos</span>
-                <span className="hidden sm:inline">Remanejamentos entre Escolas</span>
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span className="sm:hidden">Auditoria</span>
+                <span className="hidden sm:inline">Auditoria & Movimentações</span>
                 <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-slate-200 text-slate-700">
                   {filteredMovements.length}
                 </span>
@@ -2770,143 +2893,313 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
             </div>
           )}
 
-          {/* SUB-ABA 2: REMANEJAMENTOS ENTRE ESCOLAS */}
+          {/* SUB-ABA 2: MOVIMENTAÇÕES & AUDITORIA PATRIMONIAL */}
           {historySubTab === 'remanejamentos' && (
-            <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-xs min-w-0">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+            <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-200 shadow-xs min-w-0 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
                 <div>
                   <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
-                    <ArrowRightLeft className="w-5 h-5 text-teal-600" />
-                    Movimentações & Remanejamentos do Acervo Escolar
+                    <ShieldCheck className="w-5 h-5 text-emerald-600" />
+                    Movimentações & Auditoria Patrimonial do Acervo
                   </h3>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Histórico completo de transferências de livros físicos entre as bibliotecas das escolas da rede municipal.
+                    Histórico auditável com rastreabilidade completa de entradas, transferências entre escolas, baixas patrimoniais e ajustes de inventário.
                   </p>
+                </div>
+
+                {/* Filtros Rápidos por Tipo de Movimentação */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setMovementTypeFilter('todos')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                      movementTypeFilter === 'todos'
+                        ? 'bg-slate-800 text-white shadow-2xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    Todos ({movements.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMovementTypeFilter('remanejamentos')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      movementTypeFilter === 'remanejamentos'
+                        ? 'bg-teal-700 text-white shadow-2xs'
+                        : 'bg-teal-50 text-teal-800 hover:bg-teal-100'
+                    }`}
+                  >
+                    <span>🔄 Remanejamentos</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMovementTypeFilter('baixas')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      movementTypeFilter === 'baixas'
+                        ? 'bg-rose-700 text-white shadow-2xs'
+                        : 'bg-rose-50 text-rose-800 hover:bg-rose-100'
+                    }`}
+                  >
+                    <span>📤 Baixas Patrimoniais</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMovementTypeFilter('ajustes')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      movementTypeFilter === 'ajustes'
+                        ? 'bg-amber-700 text-white shadow-2xs'
+                        : 'bg-amber-50 text-amber-900 hover:bg-amber-100'
+                    }`}
+                  >
+                    <span>📋 Ajustes de Inventário</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMovementTypeFilter('entradas')}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
+                      movementTypeFilter === 'entradas'
+                        ? 'bg-emerald-700 text-white shadow-2xs'
+                        : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+                    }`}
+                  >
+                    <span>📥 Entradas</span>
+                  </button>
                 </div>
               </div>
 
               {filteredMovements.length === 0 ? (
                 <div className="p-8 text-center text-slate-500">
-                  <ArrowRightLeft className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-                  <p className="font-semibold text-slate-700">Nenhum remanejamento registrado</p>
+                  <ShieldCheck className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                  <p className="font-semibold text-slate-700">Nenhum registro de auditoria encontrado</p>
                   <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
-                    Quando um livro for transferido de uma escola para outra na aba "Acervo de Livros" clicando no botão "Remanejar", o comprovante e rastreabilidade aparecerão aqui.
+                    {movementTypeFilter !== 'todos'
+                      ? 'Não há registros correspondentes ao filtro de operação selecionado.'
+                      : 'Todas as entradas, transferências e alterações de quantidade de exemplares com justificativa são registradas automaticamente aqui para auditoria patrimonial.'}
                   </p>
                 </div>
               ) : (
                 <>
-                  {/* Celular: cartões (tabela de 7 colunas não cabe na tela) */}
+                  {/* Celular: cartões */}
                   <div className="md:hidden space-y-3">
-                    {filteredMovements.map((m) => (
-                      <div key={m.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-2 min-w-0">
-                        <div className="flex items-start justify-between gap-2">
-                          <p className="text-sm font-bold text-slate-900 break-words min-w-0">{m.val.bookTitle}</p>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <span className="text-xs font-bold text-emerald-700">{m.val.copies} ex.</span>
-                            {isDevEnvironment && canManage && (
-                              <button
-                                type="button"
-                                id={`btn-delete-movement-mobile-${m.id}`}
-                                onClick={() => handleDeleteMovement(m)}
-                                className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                                title="Excluir este registro do histórico (visível apenas em ambiente de desenvolvimento/preview)"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                    {filteredMovements.map((m) => {
+                      const mType = m.val.type || 'remanejamento';
+                      const isReduction = mType === 'baixa';
+                      const isEntry = mType === 'entrada';
+                      const isAjuste = mType === 'ajuste_inventario';
+                      const isTransfer = mType === 'remanejamento';
+
+                      return (
+                        <div key={m.id} className="p-3 bg-slate-50 rounded-xl border border-slate-100 space-y-2 min-w-0">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-slate-900 break-words">{m.val.bookTitle}</p>
+                              {m.val.bookCode && (
+                                <p className="text-[10px] text-slate-400 font-mono">Cód: {m.val.bookCode}</p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {isReduction && (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
+                                  📤 Baixa (-{m.val.copies})
+                                </span>
+                              )}
+                              {isEntry && (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                  📥 Entrada (+{m.val.copies})
+                                </span>
+                              )}
+                              {isAjuste && (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-200">
+                                  📋 Ajuste ({m.val.copies} ex.)
+                                </span>
+                              )}
+                              {isTransfer && (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-100 text-teal-800 border border-teal-200">
+                                  🔄 Remanejamento ({m.val.copies} ex.)
+                                </span>
+                              )}
+                              {isDevEnvironment && canManage && (
+                                <button
+                                  type="button"
+                                  id={`btn-delete-movement-mobile-${m.id}`}
+                                  onClick={() => handleDeleteMovement(m)}
+                                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                  title="Excluir este registro do histórico"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Origem / Destino / Saldo */}
+                          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                            {isTransfer ? (
+                              <>
+                                <span className="inline-flex items-center gap-1 font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md">
+                                  <Building2 className="w-3 h-3 text-slate-500 shrink-0" />
+                                  <span>{m.val.sourceSchoolName}</span>
+                                </span>
+                                <ArrowRightLeft className="w-3 h-3 text-slate-400 shrink-0" />
+                                <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md">
+                                  <Building2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                                  <span>{m.val.targetSchoolName}</span>
+                                </span>
+                              </>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md">
+                                <Building2 className="w-3 h-3 text-slate-500 shrink-0" />
+                                <span>{m.val.sourceSchoolName || m.val.targetSchoolName}</span>
+                              </span>
+                            )}
+
+                            {m.val.previousCopies !== undefined && m.val.newCopies !== undefined && (
+                              <span className="font-mono text-[10px] text-slate-500 bg-slate-200/70 px-1.5 py-0.5 rounded">
+                                Saldo: {m.val.previousCopies} ➔ {m.val.newCopies} ex.
+                              </span>
                             )}
                           </div>
+
+                          {m.val.reason && (
+                            <div className="p-2 bg-white rounded-lg border border-slate-200/70 text-xs text-slate-700">
+                              <span className="font-semibold text-slate-500 text-[10px] block uppercase">
+                                Justificativa registrada:
+                              </span>
+                              <p className="mt-0.5 break-words">{m.val.reason}</p>
+                            </div>
+                          )}
+
+                          <p className="text-[11px] text-slate-500 font-mono flex items-center justify-between">
+                            <span>{new Date(m.val.createdAt).toLocaleString('pt-BR')}</span>
+                            <span>{m.val.userName || m.val.responsibleName || 'Sistema'}</span>
+                          </p>
                         </div>
-                        {m.val.bookCode && (
-                          <p className="text-[10px] text-slate-400 font-mono">Cód: {m.val.bookCode}</p>
-                        )}
-                        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                          <span className="inline-flex items-center gap-1 font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md max-w-full">
-                            <Building2 className="w-3 h-3 text-slate-500 shrink-0" />
-                            <span className="break-words min-w-0">{m.val.sourceSchoolName}</span>
-                          </span>
-                          <ArrowRightLeft className="w-3 h-3 text-slate-400 shrink-0" />
-                          <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md max-w-full">
-                            <Building2 className="w-3 h-3 text-emerald-600 shrink-0" />
-                            <span className="break-words min-w-0">{m.val.targetSchoolName}</span>
-                          </span>
-                        </div>
-                        {m.val.reason && (
-                          <p className="text-xs text-slate-600 break-words">{m.val.reason}</p>
-                        )}
-                        <p className="text-[11px] text-slate-500 font-mono">
-                          {new Date(m.val.createdAt).toLocaleString('pt-BR')} · {m.val.userName || 'Sistema'}
-                        </p>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
                   {/* Tablet / computador: tabela */}
                   <div className="hidden md:block overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase">
-                      <tr>
-                        <th className="py-2.5 px-3">Data/Hora</th>
-                        <th className="py-2.5 px-3">Obra / Livro</th>
-                        <th className="py-2.5 px-3">Escola de Origem</th>
-                        <th className="py-2.5 px-3">Escola de Destino</th>
-                        <th className="py-2.5 px-3 text-center">Exemplares</th>
-                        <th className="py-2.5 px-3">Motivo / Justificativa</th>
-                        <th className="py-2.5 px-3">Responsável</th>
-                        {isDevEnvironment && canManage && (
-                          <th className="py-2.5 px-3 text-center w-16">Ações</th>
-                        )}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {filteredMovements.map((m) => (
-                        <tr key={m.id} className="hover:bg-slate-50/80 transition">
-                          <td className="py-2.5 px-3 text-slate-600 font-mono whitespace-nowrap">
-                            {new Date(m.val.createdAt).toLocaleString('pt-BR')}
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <span className="font-bold text-slate-900 block">{m.val.bookTitle}</span>
-                            {m.val.bookCode && (
-                              <span className="text-[10px] text-slate-400 font-mono">Cód: {m.val.bookCode}</span>
-                            )}
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <span className="inline-flex items-center gap-1 font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md">
-                              <Building2 className="w-3 h-3 text-slate-500" />
-                              {m.val.sourceSchoolName}
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-3">
-                            <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md">
-                              <Building2 className="w-3 h-3 text-emerald-600" />
-                              {m.val.targetSchoolName}
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-3 text-center font-bold text-emerald-700">
-                            {m.val.copies} ex.
-                          </td>
-                          <td className="py-2.5 px-3 text-slate-600 max-w-xs truncate" title={m.val.reason}>
-                            {m.val.reason}
-                          </td>
-                          <td className="py-2.5 px-3 text-slate-500 whitespace-nowrap">
-                            {m.val.userName || 'Sistema'}
-                          </td>
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase">
+                        <tr>
+                          <th className="py-2.5 px-3">Tipo de Operação</th>
+                          <th className="py-2.5 px-3">Data/Hora</th>
+                          <th className="py-2.5 px-3">Obra / Livro</th>
+                          <th className="py-2.5 px-3">Unidade / Fluxo</th>
+                          <th className="py-2.5 px-3 text-center">Variação & Saldo</th>
+                          <th className="py-2.5 px-3">Justificativa / Motivo</th>
+                          <th className="py-2.5 px-3">Responsável</th>
                           {isDevEnvironment && canManage && (
-                            <td className="py-2.5 px-3 text-center">
-                              <button
-                                type="button"
-                                id={`btn-delete-movement-${m.id}`}
-                                onClick={() => handleDeleteMovement(m)}
-                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                                title="Excluir este registro de movimentação (visível apenas em ambiente de desenvolvimento/preview)"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </td>
+                            <th className="py-2.5 px-3 text-center w-16">Ações</th>
                           )}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filteredMovements.map((m) => {
+                          const mType = m.val.type || 'remanejamento';
+                          const isReduction = mType === 'baixa';
+                          const isEntry = mType === 'entrada';
+                          const isAjuste = mType === 'ajuste_inventario';
+                          const isTransfer = mType === 'remanejamento';
+
+                          return (
+                            <tr key={m.id} className="hover:bg-slate-50/80 transition">
+                              <td className="py-2.5 px-3 whitespace-nowrap">
+                                {isReduction && (
+                                  <span className="inline-flex items-center gap-1 font-bold text-[11px] px-2.5 py-1 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
+                                    📤 Baixa Patrimonial
+                                  </span>
+                                )}
+                                {isEntry && (
+                                  <span className="inline-flex items-center gap-1 font-bold text-[11px] px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                    📥 Entrada no Acervo
+                                  </span>
+                                )}
+                                {isAjuste && (
+                                  <span className="inline-flex items-center gap-1 font-bold text-[11px] px-2.5 py-1 rounded-full bg-amber-100 text-amber-900 border border-amber-200">
+                                    📋 Ajuste de Inventário
+                                  </span>
+                                )}
+                                {isTransfer && (
+                                  <span className="inline-flex items-center gap-1 font-bold text-[11px] px-2.5 py-1 rounded-full bg-teal-100 text-teal-800 border border-teal-200">
+                                    🔄 Remanejamento
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-600 font-mono whitespace-nowrap">
+                                {new Date(m.val.createdAt).toLocaleString('pt-BR')}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <span className="font-bold text-slate-900 block">{m.val.bookTitle}</span>
+                                {m.val.bookCode && (
+                                  <span className="text-[10px] text-slate-400 font-mono">Cód: {m.val.bookCode}</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3">
+                                {isTransfer ? (
+                                  <div className="flex items-center gap-1 flex-wrap">
+                                    <span className="inline-flex items-center gap-1 font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md">
+                                      <Building2 className="w-3 h-3 text-slate-500" />
+                                      {m.val.sourceSchoolName}
+                                    </span>
+                                    <ArrowRightLeft className="w-3 h-3 text-slate-400" />
+                                    <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md">
+                                      <Building2 className="w-3 h-3 text-emerald-600" />
+                                      {m.val.targetSchoolName}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md">
+                                    <Building2 className="w-3 h-3 text-slate-500" />
+                                    {m.val.sourceSchoolName || m.val.targetSchoolName}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                                <span
+                                  className={`font-bold ${
+                                    isReduction
+                                      ? 'text-rose-700'
+                                      : isEntry
+                                      ? 'text-emerald-700'
+                                      : 'text-slate-800'
+                                  }`}
+                                >
+                                  {isReduction ? `-${m.val.copies}` : isEntry ? `+${m.val.copies}` : `${m.val.copies}`} ex.
+                                </span>
+                                {m.val.previousCopies !== undefined && m.val.newCopies !== undefined && (
+                                  <span className="block text-[10px] font-mono text-slate-500">
+                                    ({m.val.previousCopies} ➔ {m.val.newCopies})
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-700 max-w-xs break-words" title={m.val.reason}>
+                                <div className="text-xs bg-slate-50 p-1.5 rounded-lg border border-slate-100">
+                                  {m.val.reason || '-'}
+                                </div>
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-500 whitespace-nowrap">
+                                {m.val.userName || m.val.responsibleName || 'Sistema'}
+                              </td>
+                              {isDevEnvironment && canManage && (
+                                <td className="py-2.5 px-3 text-center">
+                                  <button
+                                    type="button"
+                                    id={`btn-delete-movement-${m.id}`}
+                                    onClick={() => handleDeleteMovement(m)}
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                    title="Excluir este registro de movimentação (visível apenas em ambiente de desenvolvimento/preview)"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 </>
               )}
@@ -3656,6 +3949,29 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                   <p className="text-[11px] text-slate-500 italic">
                     💡 Dica: Para remanejar exemplares com histórico, motivo e responsável registrado, utilize o botão <strong>Remanejar</strong> diretamente no cartão do livro no acervo.
                   </p>
+                </div>
+              )}
+
+              {/* CAMPO DE JUSTIFICATIVA OBRIGATÓRIA DE AUDITORIA PATRIMONIAL */}
+              {editingBookId && hasStockChange && (
+                <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl space-y-2 animate-in fade-in duration-150">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-5 h-5 text-amber-700 shrink-0" />
+                    <span className="text-xs font-bold text-amber-900">
+                      Auditoria Patrimonial: Justificativa de Alteração de Exemplares *
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-amber-800 leading-relaxed">
+                    Identificamos alteração na contagem de exemplares físicos desta obra. Por exigência de conformidade e auditoria escolar, informe a justificativa detalhada (ex: Baixa por avaria irreversível/extravio, incorporação de doações, conferência do inventário anual).
+                  </p>
+                  <input
+                    type="text"
+                    required
+                    value={auditJustification}
+                    onChange={(e) => setAuditJustification(e.target.value)}
+                    placeholder="Descreva o motivo desta alteração no estoque patrimonial..."
+                    className="w-full px-3.5 py-2 text-xs border border-amber-300 rounded-xl bg-white outline-none focus:ring-2 focus:ring-amber-500 font-medium text-slate-800"
+                  />
                 </div>
               )}
 

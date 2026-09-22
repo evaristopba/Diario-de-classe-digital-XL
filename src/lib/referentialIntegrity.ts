@@ -570,3 +570,121 @@ export async function checkBookDeleteIntegrity(
   }
 }
 
+export interface CopiesReductionCheckResult {
+  canReduce: boolean;
+  minAllowed: number;
+  activeLoans: number;
+  cornerAllocated: number;
+  activeStudentNames: string[];
+  cornerTurmaNames: string[];
+  reason?: string;
+}
+
+/**
+ * Valida se é seguro reduzir a quantidade total de exemplares de um livro em determinada escola.
+ * Impede que a quantidade total seja reduzida abaixo dos exemplares em circulação ativa
+ * (empréstimos no balcão da biblioteca + exemplares alocados no Cantinho da Leitura).
+ */
+export async function checkBookCopiesReductionIntegrity(
+  bookId: string,
+  schoolId: string,
+  newTotalCopies: number
+): Promise<CopiesReductionCheckResult> {
+  try {
+    let activeLoans = 0;
+    const activeStudentNames: string[] = [];
+
+    // 1. Empréstimos ativos no balcão central da escola
+    const loansSnap = await get(ref(rtdb, 'diario-classe/biblioteca/emprestimos'));
+    if (loansSnap.exists()) {
+      const allLoans = loansSnap.val() || {};
+      Object.keys(allLoans).forEach((id) => {
+        const l = allLoans[id];
+        if (
+          l &&
+          l.bookId === bookId &&
+          (l.schoolId === schoolId || (!l.schoolId && schoolId === 'rede-geral')) &&
+          (l.status === 'ativo' || l.status === 'atrasado') &&
+          !l.isReadingCorner
+        ) {
+          activeLoans++;
+          if (l.studentName && !activeStudentNames.includes(l.studentName)) {
+            activeStudentNames.push(l.studentName);
+          }
+        }
+      });
+    }
+
+    // 2. Exemplares alocados nos Cantinhos da Leitura desta escola
+    let cornerAllocated = 0;
+    const cornerTurmaNames: string[] = [];
+    const cantinhosSnap = await get(ref(rtdb, 'diario-classe/biblioteca/cantinhos'));
+    if (cantinhosSnap.exists()) {
+      const allCantinhos = cantinhosSnap.val() || {};
+      Object.keys(allCantinhos).forEach((key) => {
+        const c = allCantinhos[key];
+        if (
+          c &&
+          c.bookId === bookId &&
+          (c.schoolId === schoolId || (!c.schoolId && schoolId === 'rede-geral'))
+        ) {
+          const copies = Number(c.totalCopies || c.availableCopies || 0);
+          if (copies > 0) {
+            cornerAllocated += copies;
+            if (c.turmaName && !cornerTurmaNames.includes(c.turmaName)) {
+              cornerTurmaNames.push(c.turmaName);
+            }
+          }
+        }
+      });
+    }
+
+    const minAllowed = activeLoans + cornerAllocated;
+
+    if (newTotalCopies < minAllowed) {
+      const parts: string[] = [];
+      if (activeLoans > 0) {
+        parts.push(
+          `${activeLoans} exemplar(es) emprestado(s) a alunos no balcão (${activeStudentNames.slice(0, 3).join(', ')}${activeStudentNames.length > 3 ? '...' : ''})`
+        );
+      }
+      if (cornerAllocated > 0) {
+        parts.push(
+          `${cornerAllocated} exemplar(es) alocado(s) no Cantinho da Leitura (${cornerTurmaNames.join(', ')})`
+        );
+      }
+
+      return {
+        canReduce: false,
+        minAllowed,
+        activeLoans,
+        cornerAllocated,
+        activeStudentNames,
+        cornerTurmaNames,
+        reason: `Não é possível reduzir o acervo para ${newTotalCopies} exemplar(es). Existem ${minAllowed} exemplar(es) em circulação ativa (${parts.join(' e ')}). É necessário recolher os livros antes de dar baixa patrimonial.`
+      };
+    }
+
+    return {
+      canReduce: true,
+      minAllowed,
+      activeLoans,
+      cornerAllocated,
+      activeStudentNames,
+      cornerTurmaNames
+    };
+  } catch (err: any) {
+    console.error('Erro na checagem de redução de exemplares:', err);
+    return {
+      canReduce: false,
+      minAllowed: newTotalCopies,
+      activeLoans: 0,
+      cornerAllocated: 0,
+      activeStudentNames: [],
+      cornerTurmaNames: [],
+      reason: 'Erro de integridade ao verificar circulação ativa do acervo.'
+    };
+  }
+}
+
+

@@ -224,6 +224,7 @@ export interface Book {
 
 export interface BookMovement {
   id?: string;
+  type?: 'remanejamento' | 'ajuste_inventario' | 'entrada' | 'baixa';
   bookId: string;
   bookTitle: string;
   bookCode?: string;
@@ -232,10 +233,13 @@ export interface BookMovement {
   targetSchoolId: string;
   targetSchoolName: string;
   copies: number;
+  previousCopies?: number;
+  newCopies?: number;
   date: string; // YYYY-MM-DD
-  reason?: string; // Motivo: Remanejamento, Doação, Empréstimo entre bibliotecas
+  reason?: string; // Motivo: Remanejamento, Doação, Descarte, Ajuste de Inventário
   responsibleUid?: string;
   responsibleName?: string;
+  userName?: string;
   createdAt?: number;
 }
 
