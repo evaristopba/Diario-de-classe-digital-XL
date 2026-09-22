@@ -1485,6 +1485,63 @@ export async function retornarLivroCantinho(params: {
   const newTotalCorner = totalCornerCopies - copiesToMove;
   const newAvailCorner = Math.max(0, realCornerAvail - copiesToMove);
 
+  // 2. Prepara referências e validação do Acervo da Escola e Catálogo Geral ANTES de alterar o Cantinho
+  const acervoRef = ref(rtdb, `diario-classe/biblioteca/acervos/${params.schoolId}/${params.bookId}`);
+  const bookRef = ref(rtdb, `diario-classe/biblioteca/livros/${params.bookId}`);
+
+  const [acervoSnap, bookSnap] = await Promise.all([
+    get(acervoRef),
+    get(bookRef)
+  ]);
+
+  let schoolTotalCopies = 1;
+  let currSchoolAvail = 0;
+  let bookVal: Book | null = bookSnap.exists() ? (bookSnap.val() as Book) : null;
+  let holdings: Record<string, SchoolCopyHolding> = bookVal?.copiesBySchool ? { ...bookVal.copiesBySchool } : {};
+
+  if (acervoSnap.exists()) {
+    const acervoVal = acervoSnap.val();
+    schoolTotalCopies = Math.max(1, Number(acervoVal.totalCopies) || Number(holdings[params.schoolId]?.totalCopies) || 1);
+    currSchoolAvail = Math.max(0, Number(acervoVal.availableCopies) || 0);
+  } else if (holdings[params.schoolId]) {
+    schoolTotalCopies = Math.max(1, Number(holdings[params.schoolId].totalCopies) || 1);
+    currSchoolAvail = Math.max(0, Number(holdings[params.schoolId].availableCopies) || 0);
+  } else if (bookVal) {
+    schoolTotalCopies = Math.max(1, Number(bookVal.totalCopies) || 1);
+    currSchoolAvail = Math.max(0, Number(bookVal.availableCopies) || 0);
+  }
+
+  // Teto patrimonial rigoroso: availableCopies da escola NUNCA pode ultrapassar schoolTotalCopies
+  const newSchoolAvail = Math.min(schoolTotalCopies, currSchoolAvail + copiesToMove);
+
+  // 3. Atualiza o acervo físico da escola
+  await set(acervoRef, cleanFirebaseData({
+    totalCopies: schoolTotalCopies,
+    availableCopies: newSchoolAvail,
+    code: params.bookCode || holdings[params.schoolId]?.code || bookVal?.code || '',
+    schoolName: params.schoolName || holdings[params.schoolId]?.schoolName || '',
+    location: holdings[params.schoolId]?.location || bookVal?.location || '',
+    updatedAt: now
+  }));
+
+  // 4. Atualiza catálogo geral de títulos na rede
+  if (bookVal) {
+    if (holdings[params.schoolId]) {
+      const holdingTotal = Math.max(1, Number(holdings[params.schoolId].totalCopies) || schoolTotalCopies);
+      holdings[params.schoolId].availableCopies = Math.min(
+        holdingTotal,
+        (Number(holdings[params.schoolId].availableCopies) || 0) + copiesToMove
+      );
+    }
+    const consolidatedAvail = Object.values(holdings).reduce((acc, h) => acc + (Number(h.availableCopies) || 0), 0);
+    await update(bookRef, cleanFirebaseData({
+      copiesBySchool: holdings,
+      availableCopies: consolidatedAvail,
+      updatedAt: now
+    }));
+  }
+
+  // 5. Aplica a baixa no Cantinho da Leitura
   if (newTotalCorner <= 0) {
     await remove(cantinhoRef);
   } else {
@@ -1493,39 +1550,6 @@ export async function retornarLivroCantinho(params: {
       availableCopies: newAvailCorner,
       updatedAt: now
     }));
-  }
-
-  // 2. Restaura exemplares no acervo da escola
-  const acervoRef = ref(rtdb, `diario-classe/biblioteca/acervos/${params.schoolId}/${params.bookId}`);
-  const acervoSnap = await get(acervoRef);
-  if (acervoSnap.exists()) {
-    const acervoVal = acervoSnap.val();
-    const currAvail = Number(acervoVal.availableCopies) || 0;
-    await update(acervoRef, {
-      availableCopies: currAvail + copiesToMove,
-      updatedAt: now
-    });
-  }
-
-  // 3. Restaura catálogo geral de títulos
-  try {
-    const bookRef = ref(rtdb, `diario-classe/biblioteca/livros/${params.bookId}`);
-    const bookSnap = await get(bookRef);
-    if (bookSnap.exists()) {
-      const bVal = bookSnap.val() as Book;
-      const holdings = bVal.copiesBySchool ? { ...bVal.copiesBySchool } : {};
-      if (holdings[params.schoolId]) {
-        holdings[params.schoolId].availableCopies = (holdings[params.schoolId].availableCopies || 0) + copiesToMove;
-      }
-      const consolidatedAvail = Object.values(holdings).reduce((acc, h) => acc + (Number(h.availableCopies) || 0), 0);
-      await update(bookRef, cleanFirebaseData({
-        copiesBySchool: holdings,
-        availableCopies: consolidatedAvail,
-        updatedAt: now
-      }));
-    }
-  } catch {
-    // Continua
   }
 
   // 4. Registra movimentação no histórico
