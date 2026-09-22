@@ -6,7 +6,6 @@ import {
   retornarLivroCantinho,
   emprestarLivroCantinho,
   devolverEmprestimoCantinho,
-  reconciliarEstoqueCantinho,
   getCurrentAuthUid
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
@@ -104,7 +103,6 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
   const [selectedLoanForReturn, setSelectedLoanForReturn] = useState<{ id: string; val: BookLoan } | null>(null);
   const [studentReturnNotes, setStudentReturnNotes] = useState<string>('');
   const [processingStudentReturn, setProcessingStudentReturn] = useState<boolean>(false);
-  const [syncingStock, setSyncingStock] = useState<boolean>(false);
 
   // Carrega os livros do Cantinho da Leitura
   const loadCornerData = async () => {
@@ -124,46 +122,6 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
       });
     } finally {
       setLoading(false);
-    }
-  };
-
-  // Sincronização e auditoria do estoque do Cantinho (repara contagens presas)
-  const handleSyncStock = async () => {
-    setSyncingStock(true);
-    try {
-      const turmaFiltro = selectedTurmaFilter !== 'todas' ? selectedTurmaFilter : undefined;
-      const res = await reconciliarEstoqueCantinho(turmaFiltro);
-      await loadCornerData();
-      await onDataChanged();
-
-      if (res.corrigidos > 0) {
-        setModal({
-          isOpen: true,
-          type: 'alert',
-          title: 'Estoque Sincronizado com Sucesso!',
-          message: `${res.corrigidos} obra(s) tiveram sua contagem corrigida e seus exemplares foram devidamente liberados na estante da sala de aula.`,
-          icon: '✅'
-        });
-      } else {
-        setModal({
-          isOpen: true,
-          type: 'alert',
-          title: 'Estoque 100% Sincronizado',
-          message: `Todos os ${res.totalVerificados} registros de livros analisados já estão perfeitamente alinhados com os empréstimos ativos da turma.`,
-          icon: '✨'
-        });
-      }
-    } catch (err: any) {
-      console.error(err);
-      setModal({
-        isOpen: true,
-        type: 'alert',
-        title: 'Erro ao Sincronizar Estoque',
-        message: formatFriendlyError(err),
-        icon: '⚠️'
-      });
-    } finally {
-      setSyncingStock(false);
     }
   };
 
@@ -247,9 +205,27 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
   const activeCornerLoans = cornerLoans.filter((l) => l.val.status !== 'devolvido');
   const completedCornerLoans = cornerLoans.filter((l) => l.val.status === 'devolvido');
 
+  // Helper para obter disponibilidade real de um livro na sala de aula cruzando com os empréstimos ativos da turma
+  const getRealCornerAvailability = (item: { id: string; val: ReadingCornerBook }) => {
+    const activeLoansCount = loans.filter(
+      (l) =>
+        l.val.status === 'ativo' &&
+        l.val.bookId === item.val.bookId &&
+        (l.val.readingCornerTurmaId === item.val.turmaId || l.val.classId === item.val.turmaId)
+    ).length;
+    const totalCopies = Math.max(1, Number(item.val.totalCopies) || 1);
+    const availableCopies = Math.max(0, Math.min(totalCopies, totalCopies - activeLoansCount));
+    return {
+      totalCopies,
+      availableCopies,
+      activeLoansCount,
+      isFullyLoaned: availableCopies === 0
+    };
+  };
+
   // Indicadores de resumo
   const totalCornerCopies = filteredCornerBooks.reduce((acc, b) => acc + (b.val.totalCopies || 0), 0);
-  const totalAvailableInShelf = filteredCornerBooks.reduce((acc, b) => acc + (b.val.availableCopies || 0), 0);
+  const totalAvailableInShelf = filteredCornerBooks.reduce((acc, b) => acc + getRealCornerAvailability(b).availableCopies, 0);
   const totalLoanedToStudents = Math.max(0, totalCornerCopies - totalAvailableInShelf);
 
   // Abertura do Modal de Alocação
@@ -653,17 +629,6 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
           )}
 
           <button
-            id="btn-sync-corner-stock"
-            onClick={handleSyncStock}
-            disabled={syncingStock || cornerBooks.length === 0}
-            className="inline-flex items-center gap-2 px-3.5 py-2.5 bg-white/10 hover:bg-white/20 border border-white/20 text-white rounded-xl text-xs sm:text-sm font-bold backdrop-blur-sm transition cursor-pointer disabled:opacity-50"
-            title="Sincronizar e auditar estoque do Cantinho (corrige contagens presas)"
-          >
-            <RefreshCw className={`w-4 h-4 text-cyan-300 ${syncingStock ? 'animate-spin' : ''}`} />
-            <span>{syncingStock ? 'Sincronizando...' : 'Sincronizar Estoque'}</span>
-          </button>
-
-          <button
             id="btn-export-corner-xlsx"
             onClick={handleExportCornerExcel}
             disabled={filteredCornerBooks.length === 0}
@@ -832,8 +797,8 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {filteredCornerBooks.map((item) => {
-                const isFullyLoaned = (item.val.availableCopies || 0) === 0;
-                const loanedCount = Math.max(0, (item.val.totalCopies || 0) - (item.val.availableCopies || 0));
+                const { totalCopies, availableCopies, activeLoansCount, isFullyLoaned } = getRealCornerAvailability(item);
+                const loanedCount = activeLoansCount;
 
                 return (
                   <div
@@ -855,7 +820,7 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
                               : 'bg-teal-100 text-teal-800'
                           }`}
                         >
-                          {isFullyLoaned ? 'Todos em Uso' : `${item.val.availableCopies} na Estante`}
+                          {isFullyLoaned ? 'Todos em Uso' : `${availableCopies} na Estante`}
                         </span>
                       </div>
 
@@ -897,11 +862,11 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
                       <div className="mt-3 p-2.5 bg-slate-50 rounded-xl border border-slate-100 text-xs flex items-center justify-between">
                         <div>
                           <span className="text-[10px] font-bold text-slate-400 block uppercase">Na Sala</span>
-                          <strong className="text-slate-800">{item.val.totalCopies} ex.</strong>
+                          <strong className="text-slate-800">{totalCopies} ex.</strong>
                         </div>
                         <div className="text-center">
                           <span className="text-[10px] font-bold text-emerald-600 block uppercase">Livres</span>
-                          <strong className="text-emerald-700 font-bold">{item.val.availableCopies} ex.</strong>
+                          <strong className="text-emerald-700 font-bold">{availableCopies} ex.</strong>
                         </div>
                         <div className="text-right">
                           <span className="text-[10px] font-bold text-indigo-600 block uppercase">Com Alunos</span>
@@ -920,11 +885,11 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
                     <div className="mt-4 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
                       {/* Botão Emprestar para Aluno */}
                       <button
-                        onClick={() => handleOpenCornerLoan(item)}
-                        disabled={(item.val.availableCopies || 0) <= 0}
+                        onClick={() => handleOpenCornerLoan({ ...item, val: { ...item.val, availableCopies, totalCopies } })}
+                        disabled={availableCopies <= 0}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer flex-1 justify-center"
                         title={
-                          (item.val.availableCopies || 0) <= 0
+                          availableCopies <= 0
                             ? 'Todos os exemplares do cantinho já foram retirados'
                             : 'Registrar retirada de aluno em sala'
                         }
@@ -936,8 +901,8 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
                       {/* Botão Devolver ao Acervo Central */}
                       {(canManage || canLoan) && (
                         <button
-                          onClick={() => handleOpenReturnToCentral(item)}
-                          disabled={(item.val.availableCopies || 0) <= 0}
+                          onClick={() => handleOpenReturnToCentral({ ...item, val: { ...item.val, availableCopies, totalCopies } })}
+                          disabled={availableCopies <= 0}
                           className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-700 rounded-xl text-xs font-semibold transition cursor-pointer"
                           title="Devolver exemplar ao acervo central da biblioteca"
                         >

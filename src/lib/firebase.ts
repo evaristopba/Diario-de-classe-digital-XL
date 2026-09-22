@@ -783,67 +783,72 @@ export async function registrarEmprestimo(emprestimo: Omit<BookLoan, 'id'>): Pro
   const now = Date.now();
   const schoolId = emprestimo.schoolId || 'rede-geral';
 
-  // 0. Validação de segurança estrita por escola: verificar se a escola possui exemplar disponível
-  const bookSnap = await get(ref(rtdb, `diario-classe/biblioteca/livros/${emprestimo.bookId}`));
-  if (!bookSnap.exists()) {
-    throw new Error('Obra não encontrada no catálogo da biblioteca.');
-  }
-
-  const bookData = bookSnap.val() as Book;
-
-  // Se o livro tiver distribuição por escola e a escola estiver informada
-  if (schoolId && schoolId !== 'rede-geral' && bookData.copiesBySchool) {
-    const schoolHolding = bookData.copiesBySchool[schoolId];
-    const schoolAvail = schoolHolding ? Number(schoolHolding.availableCopies ?? 0) : 0;
-    if (schoolAvail <= 0) {
-      const schoolName = schoolHolding?.schoolName || emprestimo.schoolName || 'esta escola';
-      throw new Error(
-        `Exemplar indisponível na unidade ${schoolName}. Não há exemplares físicos em estoque nesta escola para realizar o empréstimo.`
-      );
+  // Se o empréstimo for originado do Cantinho da Leitura da sala de aula:
+  // O exemplar físico JÁ foi transferido da biblioteca central para a sala de aula anteriormente.
+  // Portanto, não devemos validar nem debitar o estoque da biblioteca central da escola novamente.
+  if (!emprestimo.isReadingCorner) {
+    // 0. Validação de segurança estrita por escola: verificar se a escola possui exemplar disponível
+    const bookSnap = await get(ref(rtdb, `diario-classe/biblioteca/livros/${emprestimo.bookId}`));
+    if (!bookSnap.exists()) {
+      throw new Error('Obra não encontrada no catálogo da biblioteca.');
     }
-  } else {
-    // Validação geral de segurança da rede
-    const generalAvail = Number(bookData.availableCopies ?? 0);
-    if (generalAvail <= 0) {
-      throw new Error('Todos os exemplares desta obra estão atualmente emprestados.');
-    }
-  }
 
-  // 1. Decrementar exemplar no acervo físico da escola (biblioteca/acervos/$schoolId/$bookId/availableCopies)
-  try {
-    const acervoSnap = await get(ref(rtdb, `diario-classe/biblioteca/acervos/${schoolId}/${emprestimo.bookId}`));
-    if (acervoSnap.exists()) {
-      const acervoData = acervoSnap.val();
-      const curAvail = Number(acervoData.availableCopies ?? acervoData.totalCopies ?? 1);
-      await update(ref(rtdb, `diario-classe/biblioteca/acervos/${schoolId}/${emprestimo.bookId}`), {
-        availableCopies: Math.max(0, curAvail - 1),
+    const bookData = bookSnap.val() as Book;
+
+    // Se o livro tiver distribuição por escola e a escola estiver informada
+    if (schoolId && schoolId !== 'rede-geral' && bookData.copiesBySchool) {
+      const schoolHolding = bookData.copiesBySchool[schoolId];
+      const schoolAvail = schoolHolding ? Number(schoolHolding.availableCopies ?? 0) : 0;
+      if (schoolAvail <= 0) {
+        const schoolName = schoolHolding?.schoolName || emprestimo.schoolName || 'esta escola';
+        throw new Error(
+          `Exemplar indisponível na unidade ${schoolName}. Não há exemplares físicos em estoque nesta escola para realizar o empréstimo.`
+        );
+      }
+    } else {
+      // Validação geral de segurança da rede
+      const generalAvail = Number(bookData.availableCopies ?? 0);
+      if (generalAvail <= 0) {
+        throw new Error('Todos os exemplares desta obra estão atualmente emprestados.');
+      }
+    }
+
+    // 1. Decrementar exemplar no acervo físico da escola (biblioteca/acervos/$schoolId/$bookId/availableCopies)
+    try {
+      const acervoSnap = await get(ref(rtdb, `diario-classe/biblioteca/acervos/${schoolId}/${emprestimo.bookId}`));
+      if (acervoSnap.exists()) {
+        const acervoData = acervoSnap.val();
+        const curAvail = Number(acervoData.availableCopies ?? acervoData.totalCopies ?? 1);
+        await update(ref(rtdb, `diario-classe/biblioteca/acervos/${schoolId}/${emprestimo.bookId}`), {
+          availableCopies: Math.max(0, curAvail - 1),
+          updatedAt: now
+        });
+      }
+    } catch {
+      // Continua para atualizar no livro
+    }
+
+    // 2. Decrementar exemplar no catálogo geral
+    try {
+      const currentAvail = Number(bookData.availableCopies ?? bookData.totalCopies ?? 1);
+
+      const updates: Partial<Book> = {
+        availableCopies: Math.max(0, currentAvail - 1),
         updatedAt: now
-      });
+      };
+
+      if (schoolId && bookData.copiesBySchool && bookData.copiesBySchool[schoolId]) {
+        const holdings = { ...bookData.copiesBySchool };
+        const schoolH = { ...holdings[schoolId] };
+        schoolH.availableCopies = Math.max(0, (schoolH.availableCopies || 1) - 1);
+        holdings[schoolId] = schoolH;
+        updates.copiesBySchool = holdings;
+      }
+
+      await update(ref(rtdb, `diario-classe/biblioteca/livros/${emprestimo.bookId}`), updates);
+    } catch {
+      // Ignora se não puder atualizar o livro geral
     }
-  } catch {
-    // Continua para atualizar no livro
-  }
-
-  // 2. Decrementar exemplar no catálogo geral
-  try {
-    const currentAvail = Number(bookData.availableCopies ?? bookData.totalCopies ?? 1);
-
-    const updates: Partial<Book> = {
-      availableCopies: Math.max(0, currentAvail - 1),
-      updatedAt: now
-    };
-
-    if (schoolId && bookData.copiesBySchool && bookData.copiesBySchool[schoolId]) {
-      const holdings = { ...bookData.copiesBySchool };
-      const schoolH = { ...holdings[schoolId] };
-      schoolH.availableCopies = Math.max(0, (schoolH.availableCopies || 1) - 1);
-      holdings[schoolId] = schoolH;
-      updates.copiesBySchool = holdings;
-    }
-
-    await update(ref(rtdb, `diario-classe/biblioteca/livros/${emprestimo.bookId}`), updates);
-  } catch {
-    // Ignora se não puder atualizar o livro geral
   }
 
   // 3. Salvar empréstimo com campos obrigatórios validados pelas regras
@@ -876,6 +881,10 @@ export async function devolverEmprestimo(
   // 1. Buscar empréstimo para saber a escola e se pertence ao Cantinho da Leitura
   const loanSnap = await get(ref(rtdb, `diario-classe/biblioteca/emprestimos/${loanId}`));
   const loanData = loanSnap.exists() ? (loanSnap.val() as BookLoan) : null;
+  if (!loanData || loanData.status === 'devolvido') {
+    // Se o empréstimo não existe ou já foi devolvido, aborta imediatamente para evitar duplicar devolução no estoque físico
+    return;
+  }
   const loanSchoolId = loanData?.schoolId || 'rede-geral';
   const isCornerLoan = Boolean(loanData?.isReadingCorner || loanData?.readingCornerTurmaId);
   const cornerTurmaId = loanData?.readingCornerTurmaId || loanData?.classId;
@@ -1328,13 +1337,33 @@ export async function retornarLivroCantinho(params: {
   }
 
   const cornerVal = cantinhoSnap.val() as ReadingCornerBook;
-  const currentCornerAvail = Number(cornerVal.availableCopies) || 0;
-  if (currentCornerAvail < copiesToMove) {
-    throw new Error(`Não é possível devolver ${copiesToMove} exemplar(es). Apenas ${currentCornerAvail} exemplar(es) estão na estante da sala (os demais estão emprestados a alunos).`);
+  const totalCornerCopies = Math.max(1, Number(cornerVal.totalCopies) || 1);
+
+  // Calcula disponibilidade física real consultando empréstimos ativos da turma
+  let activeLoansCount = 0;
+  try {
+    const loansSnap = await get(ref(rtdb, 'diario-classe/biblioteca/emprestimos'));
+    if (loansSnap.exists()) {
+      const allLoans = loansSnap.val() || {};
+      activeLoansCount = Object.values(allLoans).filter(
+        (l: any) =>
+          l &&
+          l.status === 'ativo' &&
+          l.bookId === params.bookId &&
+          (l.readingCornerTurmaId === params.turmaId || l.classId === params.turmaId)
+      ).length;
+    }
+  } catch {
+    activeLoansCount = Math.max(0, totalCornerCopies - (Number(cornerVal.availableCopies) || 0));
   }
 
-  const newTotalCorner = (Number(cornerVal.totalCopies) || 0) - copiesToMove;
-  const newAvailCorner = currentCornerAvail - copiesToMove;
+  const realCornerAvail = Math.max(0, totalCornerCopies - activeLoansCount);
+  if (realCornerAvail < copiesToMove) {
+    throw new Error(`Não é possível devolver ${copiesToMove} exemplar(es). Apenas ${realCornerAvail} exemplar(es) estão fisicamente na estante da sala (os demais estão emprestados a alunos).`);
+  }
+
+  const newTotalCorner = totalCornerCopies - copiesToMove;
+  const newAvailCorner = Math.max(0, realCornerAvail - copiesToMove);
 
   if (newTotalCorner <= 0) {
     await remove(cantinhoRef);
@@ -1405,12 +1434,50 @@ export async function retornarLivroCantinho(params: {
 
 /**
  * Carrega todos os livros alocados nos Cantinhos da Leitura das salas de aula.
+ * Realiza auto-reconciliação com o banco de dados contra empréstimos ativos para desengargalar contagens presas.
  */
 export async function carregarCantinhos(turmaId?: string): Promise<{ id: string; val: ReadingCornerBook }[]> {
   const snap = await get(ref(rtdb, 'diario-classe/biblioteca/cantinhos'));
   if (!snap.exists()) return [];
   const val = snap.val() || {};
-  const list = Object.keys(val).map((id) => ({ id, val: val[id] as ReadingCornerBook }));
+
+  // Buscar empréstimos ativos para reconciliação automática do banco
+  let activeLoans: BookLoan[] = [];
+  try {
+    const loansSnap = await get(ref(rtdb, 'diario-classe/biblioteca/emprestimos'));
+    if (loansSnap.exists()) {
+      const allLoans = loansSnap.val() || {};
+      activeLoans = Object.values(allLoans).filter((l: any) => l && l.status === 'ativo') as BookLoan[];
+    }
+  } catch {
+    // Continua se falhar a leitura
+  }
+
+  const list: { id: string; val: ReadingCornerBook }[] = [];
+  for (const id of Object.keys(val)) {
+    const cornerBook = val[id] as ReadingCornerBook;
+    const total = Math.max(1, Number(cornerBook.totalCopies) || 1);
+
+    // Contar empréstimos ativos reais desta turma/obra
+    const activeForThisBook = activeLoans.filter(
+      (l) =>
+        l.bookId === cornerBook.bookId &&
+        (l.readingCornerTurmaId === cornerBook.turmaId || l.classId === cornerBook.turmaId)
+    ).length;
+    const calculatedAvail = Math.max(0, Math.min(total, total - activeForThisBook));
+
+    // Se o banco estiver com valor divergente (ex: travado em 0 por falhas passadas), auto-repara no Firebase
+    if (cornerBook.availableCopies !== calculatedAvail) {
+      cornerBook.availableCopies = calculatedAvail;
+      update(ref(rtdb, `diario-classe/biblioteca/cantinhos/${id}`), {
+        availableCopies: calculatedAvail,
+        updatedAt: Date.now()
+      }).catch(() => {});
+    }
+
+    list.push({ id, val: cornerBook });
+  }
+
   if (turmaId && turmaId !== 'todas') {
     return list.filter((item) => item.val.turmaId === turmaId);
   }
@@ -1444,18 +1511,32 @@ export async function emprestarLivroCantinho(params: {
   }
 
   const cornerVal = cantinhoSnap.val() as ReadingCornerBook;
-  const avail = Number(cornerVal.availableCopies) || 0;
-  if (avail < 1) {
+  const total = Math.max(1, Number(cornerVal.totalCopies) || 1);
+
+  // Calcula a disponibilidade REAL confrontando os empréstimos ativos reais da turma
+  let activeLoansCount = 0;
+  try {
+    const loansSnap = await get(ref(rtdb, 'diario-classe/biblioteca/emprestimos'));
+    if (loansSnap.exists()) {
+      const allLoans = loansSnap.val() || {};
+      activeLoansCount = Object.values(allLoans).filter(
+        (l: any) =>
+          l &&
+          l.status === 'ativo' &&
+          l.bookId === params.bookId &&
+          (l.readingCornerTurmaId === params.turmaId || l.classId === params.turmaId)
+      ).length;
+    }
+  } catch {
+    activeLoansCount = Math.max(0, total - (Number(cornerVal.availableCopies) || 0));
+  }
+
+  const realAvail = Math.max(0, total - activeLoansCount);
+  if (realAvail < 1) {
     throw new Error('Todos os exemplares desta obra no Cantinho da Leitura já estão emprestados a outros alunos.');
   }
 
-  // Decrementa disponível no cantinho da sala
-  await update(cantinhoRef, {
-    availableCopies: Math.max(0, avail - 1),
-    updatedAt: Date.now()
-  });
-
-  // Registra empréstimo oficial
+  // Registra empréstimo oficial primeiro (sem debitar da biblioteca central da escola)
   const loanId = await registrarEmprestimo({
     bookId: params.bookId,
     bookTitle: params.bookTitle,
@@ -1477,6 +1558,22 @@ export async function emprestarLivroCantinho(params: {
     readingCornerTurmaId: params.turmaId,
     readingCornerTurmaName: params.turmaName
   });
+
+  // Decrementa disponível no cantinho da sala após salvar o empréstimo com base no valor real
+  try {
+    await update(cantinhoRef, {
+      availableCopies: Math.max(0, realAvail - 1),
+      updatedAt: Date.now()
+    });
+  } catch (errCorner) {
+    // Se falhar no cantinho, desfaz o empréstimo para manter consistência
+    try {
+      await remove(ref(rtdb, `diario-classe/biblioteca/emprestimos/${loanId}`));
+    } catch {
+      // ignore
+    }
+    throw errCorner;
+  }
 
   return loanId;
 }
@@ -1572,89 +1669,6 @@ export async function atenderReserva(reservaId: string): Promise<void> {
     status: 'atendida',
     updatedAt: now
   });
-}
-
-/**
- * Reconcilia e recalcula o estoque dos Cantinhos de Leitura.
- * Corrige livros que ficaram com contagem presa/divergente após devoluções.
- */
-export async function reconciliarEstoqueCantinho(filtroTurmaId?: string): Promise<{
-  totalVerificados: number;
-  corrigidos: number;
-  detalhes: Array<{ key: string; titulo: string; antes: number; agora: number }>;
-}> {
-  const cantinhosSnap = await get(ref(rtdb, 'diario-classe/biblioteca/cantinhos'));
-  if (!cantinhosSnap.exists()) {
-    return { totalVerificados: 0, corrigidos: 0, detalhes: [] };
-  }
-
-  const cantinhos = cantinhosSnap.val() as Record<string, ReadingCornerBook>;
-  const emprestimosSnap = await get(ref(rtdb, 'diario-classe/biblioteca/emprestimos'));
-  const emprestimos = emprestimosSnap.exists() ? (emprestimosSnap.val() as Record<string, BookLoan>) : {};
-
-  // Contabiliza empréstimos ativos por livro no cantinho: chave = `${turmaId}_${bookId}`
-  const ativosPorCantinho: Record<string, number> = {};
-  Object.values(emprestimos).forEach((emp) => {
-    if (emp.status === 'ativo' && (emp.isReadingCorner || emp.readingCornerTurmaId)) {
-      const tId = emp.readingCornerTurmaId || emp.classId;
-      if (tId && emp.bookId) {
-        const chave = `${tId}_${emp.bookId}`;
-        ativosPorCantinho[chave] = (ativosPorCantinho[chave] || 0) + 1;
-      }
-    }
-  });
-
-  const updates: Record<string, any> = {};
-  const detalhes: Array<{ key: string; titulo: string; antes: number; agora: number }> = [];
-  let totalVerificados = 0;
-  let corrigidos = 0;
-
-  for (const [key, item] of Object.entries(cantinhos)) {
-    if (!item) continue;
-    if (filtroTurmaId && item.turmaId !== filtroTurmaId) continue;
-
-    totalVerificados++;
-    const totalCopies = Number(item.totalCopies) || 1;
-    const emUsoReal = ativosPorCantinho[key] || 0;
-    const disponivelCorreto = Math.max(0, totalCopies - emUsoReal);
-    const atual = Number(item.availableCopies ?? 0);
-
-    if (atual !== disponivelCorreto) {
-      updates[`diario-classe/biblioteca/cantinhos/${key}/availableCopies`] = disponivelCorreto;
-      updates[`diario-classe/biblioteca/cantinhos/${key}/updatedAt`] = Date.now();
-      detalhes.push({
-        key,
-        titulo: item.bookTitle || key,
-        antes: atual,
-        agora: disponivelCorreto
-      });
-      corrigidos++;
-    }
-  }
-
-  if (corrigidos > 0) {
-    await update(ref(rtdb), updates);
-  }
-
-  return { totalVerificados, corrigidos, detalhes };
-}
-
-// Expõe no objeto window global para acesso imediato no console do navegador
-if (typeof window !== 'undefined') {
-  (window as any).corrigirEstoqueCantinho = async (turmaId?: string) => {
-    console.log('%c🔍 Iniciando recálculo do Cantinho da Leitura...', 'color: #0284c7; font-weight: bold;');
-    try {
-      const res = await reconciliarEstoqueCantinho(turmaId);
-      console.log(`%c✅ Verificação concluída! ${res.totalVerificados} livro(s) analisado(s), ${res.corrigidos} corrigido(s).`, 'color: #16a34a; font-weight: bold;');
-      if (res.detalhes.length > 0) {
-        console.table(res.detalhes);
-      }
-      return res;
-    } catch (err) {
-      console.error('❌ Erro na reconciliação:', err);
-      throw err;
-    }
-  };
 }
 
 export type { User };

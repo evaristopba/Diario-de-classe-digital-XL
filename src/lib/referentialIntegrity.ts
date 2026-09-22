@@ -419,8 +419,13 @@ export async function checkCategoryDeleteIntegrity(
 }
 
 /**
- * Valida se um livro do acervo da biblioteca pode ser excluído.
- * Bloqueia caso existam empréstimos ativos pendentes de devolução.
+ * Valida se um livro do acervo da biblioteca pode ser excluído sem violar a integridade referencial.
+ * Impede a exclusão se houver:
+ * 1. Empréstimos ativos ou atrasados em aberto.
+ * 2. Histórico de empréstimos já devolvidos (para não quebrar o histórico de leituras).
+ * 3. Registros no histórico de remanejamento/movimentações de exemplares.
+ * 4. Alocações ativas ou vinculações no Cantinho da Leitura das turmas.
+ * 5. Reservas vinculadas ao livro.
  */
 export async function checkBookDeleteIntegrity(
   bookId: string,
@@ -428,57 +433,131 @@ export async function checkBookDeleteIntegrity(
 ): Promise<IntegrityCheckResult> {
   try {
     const titleLabel = bookTitle ? ` "${bookTitle}"` : '';
+    const blockingReasons: string[] = [];
 
-    // 1. Checar empréstimos ativos
+    // 1. Checar empréstimos (tanto ativos quanto histórico de devoluções)
     const loansSnap = await get(ref(rtdb, 'diario-classe/biblioteca/emprestimos'));
+    let activeLoansCount = 0;
+    let returnedLoansCount = 0;
+    const activeStudentNames: string[] = [];
+
     if (loansSnap.exists()) {
       const loans = loansSnap.val() || {};
-      let activeLoansCount = 0;
-      const activeStudentNames: string[] = [];
-
       Object.keys(loans).forEach((id) => {
         const loan = loans[id];
-        if (loan?.bookId === bookId && (loan.status === 'ativo' || loan.status === 'atrasado')) {
-          activeLoansCount++;
-          if (loan.studentName && !activeStudentNames.includes(loan.studentName)) {
-            activeStudentNames.push(loan.studentName);
+        if (loan?.bookId === bookId) {
+          if (loan.status === 'ativo' || loan.status === 'atrasado') {
+            activeLoansCount++;
+            if (loan.studentName && !activeStudentNames.includes(loan.studentName)) {
+              activeStudentNames.push(loan.studentName);
+            }
+          } else if (loan.status === 'devolvido') {
+            returnedLoansCount++;
           }
         }
       });
-
-      if (activeLoansCount > 0) {
-        return {
-          canDelete: false,
-          count: activeLoansCount,
-          reason: `O livro${titleLabel} possui ${activeLoansCount} empréstimo(s) em aberto com aluno(s) (${activeStudentNames.slice(0, 3).join(', ')}${activeStudentNames.length > 3 ? '...' : ''}). Registre a devolução antes de excluir o livro do acervo.`
-        };
-      }
     }
 
-    // 2. Checar se há exemplares no Cantinho da Leitura
+    if (activeLoansCount > 0) {
+      blockingReasons.push(
+        `• ${activeLoansCount} empréstimo(s) em aberto com aluno(s) (${activeStudentNames.slice(0, 3).join(', ')}${activeStudentNames.length > 3 ? '...' : ''}). Registre a devolução antes de excluir.`
+      );
+    }
+
+    if (returnedLoansCount > 0) {
+      blockingReasons.push(
+        `• ${returnedLoansCount} registro(s) no histórico de empréstimos/devoluções. Para manter a integridade dos relatórios de leitura, remova os históricos de empréstimo antes de excluir o livro.`
+      );
+    }
+
+    // 2. Checar se há registros no histórico de movimentações / remanejamento
+    const movSnap = await get(ref(rtdb, 'diario-classe/biblioteca/movimentacoes'));
+    let movementsCount = 0;
+    if (movSnap.exists()) {
+      const movs = movSnap.val() || {};
+      Object.keys(movs).forEach((id) => {
+        const mov = movs[id];
+        if (mov?.bookId === bookId) {
+          movementsCount++;
+        }
+      });
+    }
+
+    if (movementsCount > 0) {
+      blockingReasons.push(
+        `• ${movementsCount} registro(s) no histórico de remanejamento/movimentação. Limpe o histórico de movimentações antes de remover a obra do acervo.`
+      );
+    }
+
+    // 3. Checar se há exemplares ou alocações no Cantinho da Leitura
     const cantinhosSnap = await get(ref(rtdb, 'diario-classe/biblioteca/cantinhos'));
+    let cantinhoCopies = 0;
+    let cantinhoTurmasCount = 0;
+    const turmasAlocadas: string[] = [];
+
     if (cantinhosSnap.exists()) {
       const cantinhos = cantinhosSnap.val() || {};
-      let cantinhoCopies = 0;
-      const turmasAlocadas: string[] = [];
-
       Object.keys(cantinhos).forEach((cKey) => {
         const item = cantinhos[cKey];
-        if (item?.bookId === bookId && (item.totalCopies > 0 || item.availableCopies > 0)) {
-          cantinhoCopies += Number(item.totalCopies || item.availableCopies || 1);
+        if (item?.bookId === bookId) {
+          cantinhoTurmasCount++;
+          const copies = Number(item.totalCopies || item.availableCopies || 0);
+          if (copies > 0) {
+            cantinhoCopies += copies;
+          }
           if (item.turmaName && !turmasAlocadas.includes(item.turmaName)) {
             turmasAlocadas.push(item.turmaName);
           }
         }
       });
+    }
 
-      if (cantinhoCopies > 0) {
-        return {
-          canDelete: false,
-          count: cantinhoCopies,
-          reason: `O livro${titleLabel} possui ${cantinhoCopies} exemplar(es) alocado(s) no Cantinho da Leitura da(s) turma(s) (${turmasAlocadas.join(', ')}). Retorne os exemplares ao acervo central na aba "Cantinho da Leitura" antes de excluir a obra.`
-        };
-      }
+    if (cantinhoCopies > 0) {
+      blockingReasons.push(
+        `• ${cantinhoCopies} exemplar(es) alocado(s) no Cantinho da Leitura da(s) turma(s) (${turmasAlocadas.join(', ')}). Retorne os exemplares ao acervo central antes de excluir.`
+      );
+    } else if (cantinhoTurmasCount > 0) {
+      blockingReasons.push(
+        `• Vinculado ao Cantinho da Leitura de ${cantinhoTurmasCount} turma(s) (${turmasAlocadas.join(', ')}). Desvincule a obra da sala de aula antes de excluir.`
+      );
+    }
+
+    // 4. Checar se há reservas ativas para o livro
+    const reservasSnap = await get(ref(rtdb, 'diario-classe/biblioteca/reservas'));
+    let reservasCount = 0;
+    if (reservasSnap.exists()) {
+      const reservas = reservasSnap.val() || {};
+      Object.keys(reservas).forEach((id) => {
+        const res = reservas[id];
+        if (res?.bookId === bookId && res?.status === 'ativa') {
+          reservasCount++;
+        }
+      });
+    }
+
+    if (reservasCount > 0) {
+      blockingReasons.push(
+        `• ${reservasCount} reserva(s) ativa(s) aguardando atendimento. Cancele ou atenda as reservas antes de excluir a obra.`
+      );
+    }
+
+    const totalPendencias =
+      activeLoansCount + returnedLoansCount + movementsCount + cantinhoTurmasCount + reservasCount;
+
+    if (blockingReasons.length > 0) {
+      return {
+        canDelete: false,
+        count: totalPendencias,
+        reason: `O livro${titleLabel} não pode ser excluído porque possui vínculos ativos ou registros de histórico no sistema:\n\n${blockingReasons.join('\n')}`,
+        details: {
+          activeLoansCount,
+          returnedLoansCount,
+          movementsCount,
+          cantinhoCopies,
+          cantinhoTurmasCount,
+          reservasCount
+        }
+      };
     }
 
     return { canDelete: true };
@@ -486,7 +565,7 @@ export async function checkBookDeleteIntegrity(
     console.error('Erro ao verificar integridade do livro:', err);
     return {
       canDelete: false,
-      reason: 'Não foi possível validar a situação dos empréstimos deste livro no momento.'
+      reason: 'Não foi possível validar as vinculações e históricos deste livro no momento. Tente novamente.'
     };
   }
 }

@@ -117,6 +117,13 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
   const [loanStatusFilter, setLoanStatusFilter] = useState<'todos' | 'ativo' | 'atrasado' | 'devolvido'>('ativo');
   const [selectedClassFilter, setSelectedClassFilter] = useState<string>('todas');
 
+  // Detecção de ambiente de desenvolvimento/preview da plataforma (oculta botões de limpeza e exclusão de histórico em produção/Vercel)
+  const isDevEnvironment =
+    typeof window !== 'undefined' &&
+    (window.location.hostname.includes('run.app') ||
+      window.location.hostname.includes('localhost') ||
+      window.location.hostname.includes('127.0.0.1'));
+
   // Book Modal State (Cadastro / Edição de Livro)
   const [isBookModalOpen, setIsBookModalOpen] = useState<boolean>(false);
   const [editingBookId, setEditingBookId] = useState<string | null>(null);
@@ -1408,11 +1415,18 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
         returnNotes.trim() || undefined
       );
 
+      const isCorner = Boolean(
+        selectedLoanForReturn.val.isReadingCorner || selectedLoanForReturn.val.readingCornerTurmaId
+      );
+      const destDescription = isCorner
+        ? `reposto na estante do Cantinho da Leitura da turma "${selectedLoanForReturn.val.readingCornerTurmaName || selectedLoanForReturn.val.className || 'Sala de Aula'}"`
+        : `reposto no Acervo Central da Biblioteca (${selectedLoanForReturn.val.schoolName || 'Escola'})`;
+
       setModal({
         isOpen: true,
         type: 'alert',
         title: 'Devolução Concluída!',
-        message: `O livro "${selectedLoanForReturn.val.bookTitle}" foi devolvido ao acervo com sucesso.`,
+        message: `O livro "${selectedLoanForReturn.val.bookTitle}" foi ${destDescription} com sucesso.`,
         icon: '✅'
       });
 
@@ -2150,10 +2164,27 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                     <div>
                       {/* Topo do Card */}
                       <div className="flex items-start justify-between gap-2 mb-3">
-                        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
-                          <GraduationCap className="w-3.5 h-3.5 text-indigo-600" />
-                          {l.val.className || 'Turma'}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                          <span className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1.5">
+                            <GraduationCap className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                            <span className="truncate">{l.val.className || 'Turma'}</span>
+                          </span>
+                          {Boolean(l.val.isReadingCorner || l.val.readingCornerTurmaId) ? (
+                            <span
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200"
+                              title="Empréstimo feito a partir do Cantinho da Leitura da sala"
+                            >
+                              🏫 Cantinho da Sala
+                            </span>
+                          ) : (
+                            <span
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200"
+                              title="Empréstimo feito no balcão da Biblioteca Central da Escola"
+                            >
+                              📚 Biblioteca Central
+                            </span>
+                          )}
+                        </div>
 
                         <span
                           className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase tracking-wider ${
@@ -2402,23 +2433,27 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                           <div className="flex flex-wrap gap-1.5 w-full">
                             {(Object.entries(b.val.copiesBySchool) as [string, SchoolCopyHolding][])
                               .filter(([_, h]) => (h.totalCopies || 0) > 0)
-                              .map(([sId, h]) => (
-                                <span
-                                  key={sId}
-                                  className={`px-2 py-0.5 rounded-md text-[10px] flex items-center gap-1 font-medium transition ${
-                                    selectedSchoolFilter === sId
-                                      ? 'bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold'
-                                      : 'bg-slate-50 text-slate-700 border border-slate-200'
-                                  }`}
-                                  title={`${h.availableCopies} disponíveis de ${h.totalCopies} exemplares em ${h.schoolName || schools.find((s) => s.id === sId)?.name || 'Escola'}`}
-                                >
-                                  <Building2 className="w-3 h-3 text-emerald-600 shrink-0" />
-                                  <span className="truncate max-w-[120px]">
-                                    {h.schoolName || schools.find((s) => s.id === sId)?.name || 'Escola'}:
+                              .map(([sId, h]) => {
+                                const safeTotal = Math.max(0, Number(h.totalCopies) || 0);
+                                const safeAvail = Math.min(safeTotal, Math.max(0, Number(h.availableCopies ?? h.totalCopies ?? 0)));
+                                return (
+                                  <span
+                                    key={sId}
+                                    className={`px-2 py-0.5 rounded-md text-[10px] flex items-center gap-1 font-medium transition ${
+                                      selectedSchoolFilter === sId
+                                        ? 'bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold'
+                                        : 'bg-slate-50 text-slate-700 border border-slate-200'
+                                    }`}
+                                    title={`${safeAvail} disponíveis de ${safeTotal} exemplares em ${h.schoolName || schools.find((s) => s.id === sId)?.name || 'Escola'}`}
+                                  >
+                                    <Building2 className="w-3 h-3 text-emerald-600 shrink-0" />
+                                    <span className="truncate max-w-[120px]">
+                                      {h.schoolName || schools.find((s) => s.id === sId)?.name || 'Escola'}:
+                                    </span>
+                                    <strong className="text-emerald-700 font-bold">{safeAvail}/{safeTotal}</strong>
                                   </span>
-                                  <strong className="text-emerald-700 font-bold">{h.availableCopies}/{h.totalCopies}</strong>
-                                </span>
-                              ))}
+                                );
+                              })}
                           </div>
                         ) : (
                           <span className="px-2 py-0.5 bg-emerald-50 text-emerald-800 font-bold rounded-md text-[10px] flex items-center gap-1">
@@ -2587,13 +2622,13 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
 
             {historySubTab === 'remanejamentos' && (
               <div className="flex items-center gap-2 flex-wrap self-end sm:self-auto">
-                {canManage && movements.length > 0 && (
+                {isDevEnvironment && canManage && movements.length > 0 && (
                   <button
                     type="button"
                     id="btn-clear-all-movements"
                     onClick={handleClearAllMovements}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
-                    title="Apagar todo o histórico de movimentações da biblioteca"
+                    title="Apagar todo o histórico de movimentações da biblioteca (visível apenas em ambiente de desenvolvimento/preview)"
                   >
                     <Trash2 className="w-3.5 h-3.5 text-rose-600" />
                     <span>Limpar Histórico</span>
@@ -2648,13 +2683,13 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                               <span className="text-[11px] text-emerald-700 font-bold font-mono">
                                 {formatDate(l.val.returnDate)}
                               </span>
-                              {canManage && (
+                              {isDevEnvironment && canManage && (
                                 <button
                                   type="button"
                                   id={`btn-delete-loan-mobile-${l.id}`}
                                   onClick={() => handleDeleteLoan(l)}
                                   className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                                  title="Excluir este empréstimo do histórico"
+                                  title="Excluir este empréstimo do histórico (visível apenas em ambiente de desenvolvimento/preview)"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
                                 </button>
@@ -2684,7 +2719,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                         <th className="py-2.5 px-3 text-center">Retirada</th>
                         <th className="py-2.5 px-3 text-center">Devolução</th>
                         <th className="py-2.5 px-3">Observações</th>
-                        {canManage && (
+                        {isDevEnvironment && canManage && (
                           <th className="py-2.5 px-3 text-center w-16">Ações</th>
                         )}
                       </tr>
@@ -2712,14 +2747,14 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                             <td className="py-2.5 px-3 text-slate-500 italic max-w-xs truncate">
                               {l.val.notes || '-'}
                             </td>
-                            {canManage && (
+                            {isDevEnvironment && canManage && (
                               <td className="py-2.5 px-3 text-center">
                                 <button
                                   type="button"
                                   id={`btn-delete-loan-${l.id}`}
                                   onClick={() => handleDeleteLoan(l)}
                                   className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                                  title="Excluir este empréstimo do histórico"
+                                  title="Excluir este empréstimo do histórico (visível apenas em ambiente de desenvolvimento/preview)"
                                 >
                                   <Trash2 className="w-4 h-4" />
                                 </button>
@@ -2768,13 +2803,13 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                           <p className="text-sm font-bold text-slate-900 break-words min-w-0">{m.val.bookTitle}</p>
                           <div className="flex items-center gap-2 shrink-0">
                             <span className="text-xs font-bold text-emerald-700">{m.val.copies} ex.</span>
-                            {canManage && (
+                            {isDevEnvironment && canManage && (
                               <button
                                 type="button"
                                 id={`btn-delete-movement-mobile-${m.id}`}
                                 onClick={() => handleDeleteMovement(m)}
                                 className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                                title="Excluir este registro do histórico"
+                                title="Excluir este registro do histórico (visível apenas em ambiente de desenvolvimento/preview)"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -2817,7 +2852,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                         <th className="py-2.5 px-3 text-center">Exemplares</th>
                         <th className="py-2.5 px-3">Motivo / Justificativa</th>
                         <th className="py-2.5 px-3">Responsável</th>
-                        {canManage && (
+                        {isDevEnvironment && canManage && (
                           <th className="py-2.5 px-3 text-center w-16">Ações</th>
                         )}
                       </tr>
@@ -2855,14 +2890,14 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                           <td className="py-2.5 px-3 text-slate-500 whitespace-nowrap">
                             {m.val.userName || 'Sistema'}
                           </td>
-                          {canManage && (
+                          {isDevEnvironment && canManage && (
                             <td className="py-2.5 px-3 text-center">
                               <button
                                 type="button"
                                 id={`btn-delete-movement-${m.id}`}
                                 onClick={() => handleDeleteMovement(m)}
                                 className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                                title="Excluir este registro de movimentação"
+                                title="Excluir este registro de movimentação (visível apenas em ambiente de desenvolvimento/preview)"
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -3910,6 +3945,30 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                 Aluno(a): <strong className="text-slate-800">{selectedLoanForReturn.val.studentName}</strong> ({selectedLoanForReturn.val.className || 'Turma'})
               </p>
             </div>
+
+            {/* Aviso visual do Destino Físico do Livro */}
+            {selectedLoanForReturn.val.isReadingCorner || selectedLoanForReturn.val.readingCornerTurmaId ? (
+              <div className="p-3 bg-indigo-50 border border-indigo-200/80 rounded-2xl flex items-start gap-2.5 mb-4">
+                <span className="text-lg leading-none select-none">🏫</span>
+                <div className="text-xs text-indigo-950">
+                  <span className="font-bold block text-indigo-900 mb-0.5">Destino Físico do Exemplar:</span>
+                  Guardar na estante do <strong>Cantinho da Leitura</strong> da turma{' '}
+                  <strong className="text-indigo-700">
+                    {selectedLoanForReturn.val.readingCornerTurmaName || selectedLoanForReturn.val.className || 'Sala de Aula'}
+                  </strong>. O exemplar ficará disponível para os alunos desta sala.
+                </div>
+              </div>
+            ) : (
+              <div className="p-3 bg-emerald-50 border border-emerald-200/80 rounded-2xl flex items-start gap-2.5 mb-4">
+                <span className="text-lg leading-none select-none">📚</span>
+                <div className="text-xs text-emerald-950">
+                  <span className="font-bold block text-emerald-900 mb-0.5">Destino Físico do Exemplar:</span>
+                  Guardar no <strong>Acervo Central da Biblioteca</strong> (
+                  <strong className="text-emerald-700">{selectedLoanForReturn.val.schoolName || 'Escola'}</strong>).
+                  O exemplar é reposto no estoque geral da unidade.
+                </div>
+              </div>
+            )}
 
             <div className="space-y-4">
               <div>
