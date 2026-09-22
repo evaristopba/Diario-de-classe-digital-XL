@@ -129,17 +129,29 @@ O sistema opera no modelo **Obra Mestra vs. Exemplares Físicos Locais**:
 - **Cálculo de Atraso em Tempo Real**: Se a data prevista for ultrapassada sem devolução, o empréstimo passa automaticamente para o status **Atrasado** com destaque visual em vermelho.
 - **Renovação com 1 Clique**: No painel de empréstimos, o botão **"Renovar (+7 dias)"** estende o prazo do empréstimo instantaneamente sem necessidade de cadastrar nova ficha.
 
-### 4.3 Devolução
+### 4.3 Devolução com Identificação do Destino Físico
 - Ao receber o livro físico, clique em **"Devolver"**.
-- É possível registrar o estado de conservação na devolução.
-- O exemplar retorna à estante e o registro é arquivado no Histórico de Circulação.
+- **Indicação do Destino Físico do Exemplar**:
+  - Para evitar extravios ou dúvidas entre bibliotecários e professores, o sistema detecta a origem do empréstimo e exibe com destaque no modal de confirmação:
+    - 🏫 **Cantinho da Sala**: *"Guardar na estante do Cantinho da Leitura da turma [Turma]. O exemplar ficará disponível para os alunos desta sala."*
+    - 📚 **Biblioteca Central**: *"Guardar no Acervo Central da Biblioteca ([Escola]). O exemplar é reposto no estoque geral da unidade."*
+- **Etiquetas Visuais nos Cards de Empréstimo**:
+  - Cada card na lista de empréstimos indica visualmente sua procedência (`🏫 Cantinho da Sala` ou `📚 Biblioteca Central`), além da turma, aluno e prazo.
+- É possível registrar o estado de conservação e anotações na devolução.
+- O exemplar retorna à estante correta e o registro é arquivado no Histórico de Circulação com a localização devidamente indicada.
 
 ---
 
 ## 5. Cantinho da Leitura (Biblioteca em Sala de Aula)
 
-### 5.1 Conceito Pedagógico
+### 5.1 Conceito Pedagógico & Segregação de Custódia
 O **Cantinho da Leitura** é a extensão física da biblioteca escolar dentro da sala de aula. Ele permite que uma turma tenha um lote rotativo de livros sempre à mão para incentivar a leitura livre, contação de histórias e empréstimos ágeis gerenciados pelo próprio professor regente.
+
+**Princípio de Segregação Patrimonial (Sem Duplicidade de Estoque)**:
+- A alocação transfere a **custódia física** temporária dos exemplares da biblioteca central para a sala de aula.
+- Durante a permanência dos livros na sala, os empréstimos aos alunos da turma são geridos **exclusivamente no âmbito da sala de aula**, sem debitar nem gerar movimentações indevidas no acervo central da escola.
+- A disponibilidade na sala decorre da verdade material: $\text{Exemplares Livres na Sala} = \text{Total Alocado para a Turma} - \text{Empréstimos Ativos com Alunos da Turma}$.
+- Essa modelagem atômica previne erros de concorrência e divergências entre o estoque do sistema e o estoque físico real.
 
 ### 5.2 Disponibilização / Alocação para a Sala
 1. Na aba **"Acervo"**, clique no botão **"Cantinho"** de qualquer obra que possua exemplares disponíveis (ou use o botão **"Disponibilizar Obras no Cantinho"** na aba Cantinho).
