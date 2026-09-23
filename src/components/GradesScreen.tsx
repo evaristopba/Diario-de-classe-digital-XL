@@ -21,7 +21,10 @@ import {
   Square,
   Table,
   SlidersHorizontal,
-  X
+  X,
+  History,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 
 interface GradesScreenProps {
@@ -71,6 +74,13 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
   const [subjectCounts, setSubjectCounts] = useState<Record<string, number>>({});
   // Todas as matérias presentes no banco para a turma selecionada
   const [detectedSubjectIds, setDetectedSubjectIds] = useState<string[]>([]);
+
+  // Exibição das notas dos bimestres anteriores (somente leitura)
+  const [showPreviousBimesters, setShowPreviousBimesters] = useState<boolean>(() => {
+    return localStorage.getItem('dc_show_prev_bimesters') === 'true';
+  });
+  // Mapa de notas de bimestres anteriores: [studentId][bimesterNumber] = string
+  const [previousBimesterGrades, setPreviousBimesterGrades] = useState<Record<string, Record<number, string>>>({});
 
   const [loading, setLoading] = useState(false);
 
@@ -161,10 +171,13 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
       const matrixMap: Record<string, Record<string, { value: string; keys: string[] }>> = {};
       const counts: Record<string, number> = {};
       const detectedSubs = new Set<string>();
+      const prevGradesMap: Record<string, Record<number, string>> = {};
+
+      const currentBimNum = parseInt(selectedBimester, 10) || 1;
 
       Object.keys(notasVal).forEach((k) => {
         const g = notasVal[k];
-        if (!g || g.classId !== selectedClassId || String(g.bimester) !== String(selectedBimester)) {
+        if (!g || g.classId !== selectedClassId) {
           return;
         }
 
@@ -173,6 +186,20 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
         }
 
         const gSubject = g.subject || 'portugues';
+        const gBimNum = parseInt(String(g.bimester), 10);
+
+        // Se for a mesma matéria mas de um bimestre anterior, armazenar para visualização de histórico
+        if (gSubject === selectedSubject && gBimNum < currentBimNum && g.studentId && g.value !== undefined && g.value !== null && g.value !== '') {
+          if (!prevGradesMap[g.studentId]) {
+            prevGradesMap[g.studentId] = {};
+          }
+          prevGradesMap[g.studentId][gBimNum] = String(g.value);
+        }
+
+        if (String(g.bimester) !== String(selectedBimester)) {
+          return;
+        }
+
         detectedSubs.add(gSubject);
 
         if (g.value !== undefined && g.value !== null && g.value !== '') {
@@ -204,6 +231,7 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
       setClassMatrixGrades(matrixMap);
       setSubjectCounts(counts);
       setDetectedSubjectIds(Array.from(detectedSubs));
+      setPreviousBimesterGrades(prevGradesMap);
     } catch (err: any) {
       setModal({
         isOpen: true,
@@ -884,7 +912,7 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
         <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden">
           <div className="p-4 sm:px-6 border-b border-slate-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-slate-50/50">
             <div>
-              <h3 className="font-bold text-slate-800 text-sm sm:text-base flex items-center gap-2">
+              <h3 className="font-bold text-slate-800 text-sm sm:text-base flex items-center gap-2 flex-wrap">
                 <span>Alunos da Turma:</span>
                 <span className="text-indigo-600">
                   {selectedTurma?.year}º {selectedTurma?.letter}
@@ -898,7 +926,24 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
               </p>
             </div>
 
-            <div className="flex items-center gap-2 w-full sm:w-auto">
+            <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap sm:flex-nowrap">
+              {/* Checkbox para exibir notas de bimestres anteriores (disponível a partir do 2º bimestre) */}
+              {parseInt(selectedBimester, 10) > 1 && (
+                <label className="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-100/90 hover:bg-slate-200/70 text-slate-700 border border-slate-200 rounded-xl cursor-pointer text-xs font-semibold transition select-none">
+                  <input
+                    type="checkbox"
+                    checked={showPreviousBimesters}
+                    onChange={(e) => {
+                      setShowPreviousBimesters(e.target.checked);
+                      localStorage.setItem('dc_show_prev_bimesters', String(e.target.checked));
+                    }}
+                    className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
+                  />
+                  <History className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Ver bimestres anteriores</span>
+                </label>
+              )}
+
               <button
                 id="btn-save-all-grades"
                 onClick={handleSaveAll}
@@ -936,12 +981,31 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
               <table className="w-full text-left text-sm text-slate-600">
                 <thead className="bg-slate-50 text-xs uppercase font-semibold text-slate-500 border-b border-slate-100">
                   <tr>
-                    <th className="px-6 py-3 w-16 text-center">Nº</th>
-                    <th className="px-6 py-3">Nome do Aluno</th>
-                    <th className="px-6 py-3">RA</th>
-                    <th className="px-6 py-3 w-40 text-center">Nota (0 a 10)</th>
-                    <th className="px-6 py-3 w-32 text-center">Desempenho</th>
-                    <th className="px-6 py-3 w-28 text-right">Ações</th>
+                    <th className="px-5 py-3 w-14 text-center">Nº</th>
+                    <th className="px-5 py-3">Nome do Aluno</th>
+                    <th className="px-5 py-3">RA</th>
+                    {/* Colunas dos Bimestres Anteriores (se ativado e bimester > 1) */}
+                    {showPreviousBimesters && parseInt(selectedBimester, 10) > 1 && (
+                      Array.from({ length: parseInt(selectedBimester, 10) - 1 }, (_, i) => i + 1).map((b) => (
+                        <th
+                          key={`th-prev-bim-${b}`}
+                          className="px-3 py-3 w-24 text-center bg-slate-100/70 border-x border-slate-200/70 text-slate-600 font-bold"
+                          title={`Nota lançada no ${b}º Bimestre (Somente leitura)`}
+                        >
+                          <div className="flex items-center justify-center gap-1 text-[11px] text-slate-500">
+                            <span>{b}º Bim</span>
+                            <span className="text-[9px] px-1 bg-slate-200/80 text-slate-600 rounded">Histórico</span>
+                          </div>
+                        </th>
+                      ))
+                    )}
+                    <th className="px-5 py-3 w-40 text-center bg-indigo-50/40 border-indigo-100 border-x">
+                      <div className="flex items-center justify-center gap-1 text-indigo-900 font-bold">
+                        <span>{selectedBimester}º Bim (Atual)</span>
+                      </div>
+                    </th>
+                    <th className="px-5 py-3 w-32 text-center">Desempenho</th>
+                    <th className="px-5 py-3 w-28 text-right">Ações</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -951,6 +1015,7 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                     const gradeVal = grades[s.id] || '';
                     const num = parseFloat(gradeVal.replace(',', '.'));
                     const hasValidGrade = !isNaN(num);
+                    const currentBimNumber = parseInt(selectedBimester, 10) || 1;
 
                     return (
                       <tr
@@ -959,10 +1024,10 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                           isExpedido ? 'bg-slate-50/50 opacity-60' : 'hover:bg-slate-50/80'
                         }`}
                       >
-                        <td className="px-6 py-3.5 text-center font-bold text-slate-700">
+                        <td className="px-5 py-3.5 text-center font-bold text-slate-700">
                           {s.val.number}
                         </td>
-                        <td className="px-6 py-3.5 font-semibold text-slate-900">
+                        <td className="px-5 py-3.5 font-semibold text-slate-900">
                           <div className="flex items-center gap-2 flex-wrap">
                             <span>{s.val.name}</span>
                             {isExpedido && (
@@ -977,10 +1042,44 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                             )}
                           </div>
                         </td>
-                        <td className="px-6 py-3.5 text-xs text-slate-400 font-mono">
+                        <td className="px-5 py-3.5 text-xs text-slate-400 font-mono">
                           {s.val.ra || '-'}
                         </td>
-                        <td className="px-6 py-3.5 text-center">
+
+                        {/* Notas dos Bimestres Anteriores */}
+                        {showPreviousBimesters && currentBimNumber > 1 && (
+                          Array.from({ length: currentBimNumber - 1 }, (_, i) => i + 1).map((b) => {
+                            const prevVal = previousBimesterGrades[s.id]?.[b];
+                            const prevNum = prevVal !== undefined ? parseFloat(String(prevVal).replace(',', '.')) : NaN;
+                            const hasPrevGrade = !isNaN(prevNum);
+
+                            return (
+                              <td
+                                key={`td-prev-${s.id}-${b}`}
+                                className="px-3 py-3.5 text-center bg-slate-50/60 border-x border-slate-100 font-medium"
+                              >
+                                {isExpedido ? (
+                                  <span className="text-xs text-slate-300">-</span>
+                                ) : hasPrevGrade ? (
+                                  <span
+                                    className={`inline-block px-2.5 py-1 rounded-md text-xs font-bold border ${
+                                      prevNum >= 6
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
+                                        : 'bg-rose-50 text-rose-700 border-rose-200/60'
+                                    }`}
+                                    title={`${b}º Bimestre: ${prevNum.toFixed(1)}`}
+                                  >
+                                    {prevNum.toFixed(1)}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-slate-300 italic">-</span>
+                                )}
+                              </td>
+                            );
+                          })
+                        )}
+
+                        <td className="px-5 py-3.5 text-center bg-indigo-50/20 border-x border-indigo-100/50">
                           {isExpedido ? (
                             <span className="inline-block w-24 px-3 py-1.5 text-center text-xs font-semibold text-slate-400 bg-slate-100 border border-slate-200 rounded-lg italic select-none">
                               Não aplicável
@@ -991,11 +1090,11 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                               placeholder="-"
                               value={gradeVal}
                               onChange={(e) => handleGradeChange(s.id, e.target.value)}
-                              className="w-24 px-3 py-1.5 text-center font-bold text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white text-slate-900 shadow-2xs"
+                              className="w-24 px-3 py-1.5 text-center font-bold text-sm bg-white border border-indigo-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-900 shadow-2xs"
                             />
                           )}
                         </td>
-                        <td className="px-6 py-3.5 text-center">
+                        <td className="px-5 py-3.5 text-center">
                           {isExpedido ? (
                             <span className="text-xs text-slate-400 italic">Não aplicável</span>
                           ) : hasValidGrade ? (
@@ -1012,7 +1111,7 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                             <span className="text-xs text-slate-300">Sem nota</span>
                           )}
                         </td>
-                        <td className="px-6 py-3.5 text-right">
+                        <td className="px-5 py-3.5 text-right">
                           <div className="flex items-center justify-end gap-1.5">
                             {!isExpedido && (
                               <button
