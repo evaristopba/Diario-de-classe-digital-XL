@@ -283,7 +283,36 @@ export async function scanBookWithAI(
 }
 
 /**
- * Busca dados da obra a partir do código ISBN utilizando a rota do servidor (com Brasil API / CBL),
+ * Envia dados conhecidos de uma obra (ISBN, título, editora) para complementação
+ * via IA pelo endpoint /api/books/enrich.
+ */
+export async function enrichBookDataWithAI(bookData: {
+  isbn?: string;
+  title?: string;
+  author?: string;
+  publisher?: string;
+}): Promise<Partial<ScannedBookData> | null> {
+  try {
+    const res = await fetch('/api/books/enrich', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bookData),
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (res.ok) {
+      const json = await res.json();
+      if (json.success && json.data) {
+        return json.data;
+      }
+    }
+  } catch (e) {
+    console.warn('Erro ao enriquecer dados com IA:', e);
+  }
+  return null;
+}
+
+/**
+ * Busca dados da obra a partir do código ISBN utilizando a rota do servidor (com Brasil API / CBL + IA),
  * e com fallbacks locais caso o servidor não esteja disponível.
  */
 export async function searchBookByISBN(isbnInput: string): Promise<ScannedBookData | null> {
@@ -293,23 +322,31 @@ export async function searchBookByISBN(isbnInput: string): Promise<ScannedBookDa
     throw new Error('ISBN inválido. O ISBN deve conter 10 ou 13 dígitos.');
   }
 
-  // 1. Tentar rota unificada do servidor
+  // 1. Tentar rota unificada do servidor (CBL + Google Books + Enriquecimento Gemini)
   try {
-    const serverRes = await fetch(`/api/books/isbn/${cleanIsbn}`);
+    const serverRes = await fetch(`/api/books/isbn/${cleanIsbn}`, {
+      signal: AbortSignal.timeout(14_000)
+    });
     if (serverRes.ok) {
       const json = await serverRes.json();
       if (json.success && json.data && json.data.title) {
         const d = json.data;
+        const warnings: string[] = [];
+        if (!d.author || d.author === 'Autor Desconhecido') {
+          warnings.push('Autoria não localizada nas bases públicas. Você pode preencher manualmente.');
+        }
         return {
           title: d.title,
           subtitle: d.subtitle || '',
           author: d.author || 'Autor Desconhecido',
+          illustrator: d.illustrator || '',
           publisher: d.publisher || '',
           year: d.year || '',
           isbn: cleanIsbn,
           genre: d.genre || 'Literatura Infantil',
           synopsis: d.synopsis || '',
-          coverUrl: d.coverUrl
+          coverUrl: d.coverUrl,
+          warnings
         };
       }
     }
@@ -318,19 +355,20 @@ export async function searchBookByISBN(isbnInput: string): Promise<ScannedBookDa
   }
 
   // 2. Consulta direta à Brasil API (CBL - Câmara Brasileira do Livro)
+  let partialBook: Partial<ScannedBookData> | null = null;
   try {
     const cblRes = await fetch(`https://brasilapi.com.br/api/isbn/v1/${cleanIsbn}`);
     if (cblRes.ok) {
       const cbl = await cblRes.json();
       if (cbl && cbl.title) {
-        let author = 'Autor Desconhecido';
+        let author = '';
         if (Array.isArray(cbl.authors) && cbl.authors.length > 0) {
           author = cbl.authors.join(', ');
         }
-        return {
+        partialBook = {
           title: cbl.title,
           subtitle: cbl.subtitle || '',
-          author,
+          author: author || '',
           publisher: cbl.publisher || '',
           year: cbl.year ? String(cbl.year) : '',
           isbn: cleanIsbn,
@@ -344,85 +382,153 @@ export async function searchBookByISBN(isbnInput: string): Promise<ScannedBookDa
     console.warn('Erro na Brasil API direta:', e);
   }
 
-  // 3. Consulta complementar ao Google Books API
-  try {
-    const gbUrl = `https://www.googleapis.com/books/v1/volumes?q=isbn:${cleanIsbn}`;
-    const gbRes = await fetch(gbUrl);
-    if (gbRes.ok) {
-      const gbData = await gbRes.json();
-      if (gbData.items && gbData.items.length > 0) {
-        const item = gbData.items[0];
-        const info = item.volumeInfo || {};
+  // 3. Consulta complementar ao Google Books API (caso falte autor, sinopse ou livro não achado na CBL)
+  if (!partialBook || !partialBook.author || !partialBook.synopsis) {
+    try {
+      const gbUrl = `https://www.googleapis.com/books/v1/volumes?q=isbn:${cleanIsbn}`;
+      const gbRes = await fetch(gbUrl);
+      if (gbRes.ok) {
+        const gbData = await gbRes.json();
+        if (gbData.items && gbData.items.length > 0) {
+          const item = gbData.items[0];
+          const info = item.volumeInfo || {};
 
-        let genre = 'Literatura Infantil';
-        const cats = (info.categories || []).join(' ').toLowerCase();
-        if (cats.includes('poetry') || cats.includes('poesia')) genre = 'Poesia';
-        else if (cats.includes('comic') || cats.includes('graphic') || cats.includes('quadrinhos'))
-          genre = 'Gibis & Quadrinhos';
-        else if (cats.includes('juvenile') || cats.includes('juvenil') || cats.includes('young'))
-          genre = 'Juvenil';
-        else if (cats.includes('education') || cats.includes('didatico') || cats.includes('study'))
-          genre = 'Didático & Apoio';
-        else if (cats.includes('science') || cats.includes('ciência') || cats.includes('nature'))
-          genre = 'Enciclopédia & Ciências';
-        else if (cats.includes('fairy') || cats.includes('tales') || cats.includes('conto'))
-          genre = 'Contos & Fábulas';
+          let genre = 'Literatura Infantil';
+          const cats = (info.categories || []).join(' ').toLowerCase();
+          if (cats.includes('poetry') || cats.includes('poesia')) genre = 'Poesia';
+          else if (cats.includes('comic') || cats.includes('graphic') || cats.includes('quadrinhos'))
+            genre = 'Gibis & Quadrinhos';
+          else if (cats.includes('juvenile') || cats.includes('juvenil') || cats.includes('young'))
+            genre = 'Juvenil';
+          else if (cats.includes('education') || cats.includes('didatico') || cats.includes('study'))
+            genre = 'Didático & Apoio';
+          else if (cats.includes('science') || cats.includes('ciência') || cats.includes('nature'))
+            genre = 'Enciclopédia & Ciências';
+          else if (cats.includes('fairy') || cats.includes('tales') || cats.includes('conto'))
+            genre = 'Contos & Fábulas';
 
-        let year = '';
-        if (info.publishedDate) {
-          const matchYear = info.publishedDate.match(/\d{4}/);
-          if (matchYear) year = matchYear[0];
+          let year = '';
+          if (info.publishedDate) {
+            const matchYear = info.publishedDate.match(/\d{4}/);
+            if (matchYear) year = matchYear[0];
+          }
+
+          const coverUrl =
+            info.imageLinks?.thumbnail ||
+            info.imageLinks?.smallThumbnail ||
+            undefined;
+
+          const gbAuthor = (info.authors || []).join(', ') || '';
+
+          if (!partialBook) {
+            partialBook = {
+              title: info.title || '',
+              subtitle: info.subtitle || '',
+              author: gbAuthor,
+              publisher: info.publisher || '',
+              year,
+              isbn: cleanIsbn,
+              genre,
+              synopsis: info.description || '',
+              coverUrl: coverUrl ? coverUrl.replace('http://', 'https://') : undefined
+            };
+          } else {
+            if (!partialBook.author && gbAuthor) partialBook.author = gbAuthor;
+            if (!partialBook.publisher && info.publisher) partialBook.publisher = info.publisher;
+            if (!partialBook.year && year) partialBook.year = year;
+            if (!partialBook.synopsis && info.description) partialBook.synopsis = info.description;
+            if (!partialBook.coverUrl && coverUrl) partialBook.coverUrl = coverUrl.replace('http://', 'https://');
+          }
         }
-
-        const coverUrl =
-          info.imageLinks?.thumbnail ||
-          info.imageLinks?.smallThumbnail ||
-          undefined;
-
-        return {
-          title: info.title || '',
-          subtitle: info.subtitle || '',
-          author: (info.authors || []).join(', ') || 'Autor Desconhecido',
-          publisher: info.publisher || '',
-          year,
-          isbn: cleanIsbn,
-          genre,
-          synopsis: info.description || '',
-          coverUrl: coverUrl ? coverUrl.replace('http://', 'https://') : undefined
-        };
       }
+    } catch (e) {
+      console.warn('Erro ao consultar Google Books API:', e);
     }
-  } catch (e) {
-    console.warn('Erro ao consultar Google Books API:', e);
   }
 
-  // 4. Fallback: OpenLibrary API
-  try {
-    const olUrl = `https://openlibrary.org/api/books?bibkeys=ISBN:${cleanIsbn}&format=json&jscmd=data`;
-    const olRes = await fetch(olUrl);
-    if (olRes.ok) {
-      const olData = await olRes.json();
-      const bookKey = `ISBN:${cleanIsbn}`;
-      if (olData[bookKey]) {
-        const olBook = olData[bookKey];
-        const authors = (olBook.authors || []).map((a: any) => a.name).join(', ');
-        const publishers = (olBook.publishers || []).map((p: any) => p.name).join(', ');
+  // 4. Fallback complementar: OpenLibrary API
+  if (!partialBook || !partialBook.author || !partialBook.synopsis) {
+    try {
+      const olUrl = `https://openlibrary.org/api/books?bibkeys=ISBN:${cleanIsbn}&format=json&jscmd=data`;
+      const olRes = await fetch(olUrl);
+      if (olRes.ok) {
+        const olData = await olRes.json();
+        const bookKey = `ISBN:${cleanIsbn}`;
+        if (olData[bookKey]) {
+          const olBook = olData[bookKey];
+          const olAuthors = (olBook.authors || []).map((a: any) => a.name).join(', ');
+          const olPublishers = (olBook.publishers || []).map((p: any) => p.name).join(', ');
+          const olYear = (olBook.publish_date || '').match(/\d{4}/)?.[0] || '';
 
-        return {
-          title: olBook.title || '',
-          subtitle: olBook.subtitle || '',
-          author: authors || 'Autor Desconhecido',
-          publisher: publishers || '',
-          year: olBook.publish_date || '',
-          isbn: cleanIsbn,
-          genre: 'Literatura Infantil',
-          synopsis: typeof olBook.description === 'string' ? olBook.description : '',
-          coverUrl: olBook.cover?.medium || olBook.cover?.large || undefined
-        };
+          if (!partialBook) {
+            partialBook = {
+              title: olBook.title || '',
+              subtitle: olBook.subtitle || '',
+              author: olAuthors,
+              publisher: olPublishers,
+              year: olYear,
+              isbn: cleanIsbn,
+              genre: 'Literatura Infantil',
+              synopsis: typeof olBook.description === 'string' ? olBook.description : '',
+              coverUrl: olBook.cover?.medium || olBook.cover?.large || undefined
+            };
+          } else {
+            if (!partialBook.author && olAuthors) partialBook.author = olAuthors;
+            if (!partialBook.publisher && olPublishers) partialBook.publisher = olPublishers;
+            if (!partialBook.year && olYear) partialBook.year = olYear;
+            if (!partialBook.synopsis && typeof olBook.description === 'string') partialBook.synopsis = olBook.description;
+            if (!partialBook.coverUrl && (olBook.cover?.medium || olBook.cover?.large)) {
+              partialBook.coverUrl = olBook.cover?.medium || olBook.cover?.large;
+            }
+          }
+        }
       }
+    } catch (e) {
+      console.warn('Erro ao consultar OpenLibrary API:', e);
     }
-  } catch (e) {
-    console.warn('Erro ao consultar OpenLibrary API:', e);
+  }
+
+  // 5. Se o livro tem título mas ainda faltou autor ou sinopse, tenta enriquecer com IA
+  if (partialBook && partialBook.title && (!partialBook.author || !partialBook.synopsis)) {
+    try {
+      const aiData = await enrichBookDataWithAI({
+        isbn: cleanIsbn,
+        title: partialBook.title,
+        publisher: partialBook.publisher,
+        author: partialBook.author
+      });
+      if (aiData) {
+        if (aiData.author && !partialBook.author) partialBook.author = aiData.author;
+        if (aiData.illustrator) partialBook.illustrator = aiData.illustrator;
+        if (aiData.year && !partialBook.year) partialBook.year = aiData.year;
+        if (aiData.publisher && !partialBook.publisher) partialBook.publisher = aiData.publisher;
+        if (aiData.genre && (!partialBook.genre || partialBook.genre === 'Literatura Infantil')) partialBook.genre = aiData.genre;
+        if (aiData.synopsis && !partialBook.synopsis) partialBook.synopsis = aiData.synopsis;
+      }
+    } catch {
+      // Best-effort
+    }
+  }
+
+  if (partialBook && partialBook.title) {
+    const warnings: string[] = [];
+    if (!partialBook.author) {
+      partialBook.author = 'Autor Desconhecido';
+      warnings.push('Autoria não informada na base oficial da CBL. Você pode usar "Completar com IA" ou preencher manualmente.');
+    }
+    return {
+      title: partialBook.title,
+      subtitle: partialBook.subtitle || '',
+      author: partialBook.author,
+      illustrator: partialBook.illustrator || '',
+      publisher: partialBook.publisher || '',
+      year: partialBook.year || '',
+      isbn: cleanIsbn,
+      genre: partialBook.genre || 'Literatura Infantil',
+      synopsis: partialBook.synopsis || '',
+      coverUrl: partialBook.coverUrl,
+      warnings
+    };
   }
 
   return null;

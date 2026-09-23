@@ -4,7 +4,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { DEFAULT_SCAN_MODELS, getGeminiApiKey, modelsFromEnv } from './api/_lib/gemini.js';
 import { toHttpError } from './api/_lib/http.js';
-import { lookupBookByIsbn } from './api/_lib/lookup.js';
+import { enrichBookWithAI, lookupBookByIsbn } from './api/_lib/lookup.js';
 import { scanBook } from './api/_lib/scan.js';
 
 async function startServer() {
@@ -38,7 +38,7 @@ async function startServer() {
     });
   });
 
-  // Rota de Consulta Rápida de ISBN (Brasil API / CBL + Google Books + OpenLibrary)
+  // Rota de Consulta Rápida de ISBN (Brasil API / CBL + Google Books + OpenLibrary + IA)
   app.get('/api/books/isbn/:isbn', async (req, res) => {
     try {
       const data = await lookupBookByIsbn(req.params.isbn);
@@ -46,6 +46,18 @@ async function startServer() {
     } catch (err) {
       const { status, message } = toHttpError(err);
       if (status >= 500) console.error('Erro na rota /api/books/isbn:', err);
+      return res.status(status).json({ error: message });
+    }
+  });
+
+  // API de Enriquecimento de Metadados de Obras com Gemini
+  app.post('/api/books/enrich', async (req, res) => {
+    try {
+      const data = await enrichBookWithAI(req.body || {});
+      return res.json({ success: true, data });
+    } catch (err) {
+      const { status, message } = toHttpError(err);
+      if (status >= 500) console.error('Erro na rota /api/books/enrich:', err);
       return res.status(status).json({ error: message });
     }
   });

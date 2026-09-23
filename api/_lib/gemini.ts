@@ -40,13 +40,12 @@ export class GeminiError extends Error {
 /** Modelos padrão para leitura de imagens (capa/contracapa), do preferido ao último recurso. */
 export const DEFAULT_SCAN_MODELS = [
   'gemini-3.6-flash',
-  'gemini-3.8-flash',
-  'gemini-3.5-flash',
-  'gemini-3.1-flash-lite'
+  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash'
 ];
 
 /** Modelos padrão para tarefas só de texto (complementação bibliográfica). */
-export const DEFAULT_TEXT_MODELS = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-flash-latest'];
+export const DEFAULT_TEXT_MODELS = ['gemini-3.6-flash', 'gemini-3.1-flash-lite'];
 
 export function getGeminiApiKey(): string | undefined {
   const key = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();

@@ -127,20 +127,39 @@ export async function fetchRegistry(isbn: string): Promise<Partial<BookRecord>> 
   return mergeRecords(br, gb);
 }
 
-async function enrichWithAI(isbn: string, book: Partial<BookRecord>): Promise<Partial<BookRecord>> {
-  if (!getGeminiApiKey() || !book.title) return {};
+export async function enrichBookWithAI(params: {
+  isbn?: string;
+  title?: string;
+  author?: string;
+  publisher?: string;
+}): Promise<Partial<BookRecord>> {
+  if (!getGeminiApiKey()) return {};
+  if (!params.title && !params.isbn) return {};
 
-  const prompt = `Você é bibliotecário catalogador brasileiro. Complete a ficha da obra abaixo SOMENTE com dados que você conhece com segurança sobre ESTA obra específica.
-Se não tiver certeza de algum campo, devolva "" nesse campo. Nunca invente.
+  const prompt = `Você é bibliotecário catalogador brasileiro especialista em literatura infantil, juvenil e acervo escolar.
+Complete a ficha catalográfica da obra abaixo com dados precisos sobre ESTA obra específica.
+- Se a obra tiver autor ou organizador específico, informe seu nome completo (ex: "Luciana Nagumo", "Ruth Rocha", "Ziraldo").
+- Se for obra de cantigas de roda, parlendas, folclore ou tradição oral brasileira sem autoria individual exclusiva, preencha o autor como "Tradição Popular" ou "Folclore Brasileiro" (e adicione o organizador/ilustrador se conhecido).
+- Nunca deixe o autor como "Autor Desconhecido" se for possível identificar a autoria ou a tradição popular da obra.
+- Se não souber com certeza de algum campo opcional, devolva "" nesse campo.
 
 Dados conhecidos:
-- ISBN: "${isbn}"
-- Título: "${book.title}"
-- Autor: "${book.author || ''}"
-- Editora: "${book.publisher || ''}"
+- ISBN: "${params.isbn || ''}"
+- Título: "${params.title || ''}"
+- Autor: "${params.author || ''}"
+- Editora: "${params.publisher || ''}"
 
-Responda somente com um objeto JSON:
-{"author": string, "illustrator": string, "publisher": string, "year": string, "genre": string, "synopsis": string}`;
+Responda SOMENTE em formato JSON válido:
+{
+  "title": string,
+  "subtitle": string,
+  "author": string,
+  "illustrator": string,
+  "publisher": string,
+  "year": string,
+  "genre": string,
+  "synopsis": string
+}`;
 
   try {
     const { value } = await runGemini<Record<string, any>>({
@@ -148,12 +167,14 @@ Responda somente com um objeto JSON:
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       parse: (t) => extractJsonObject(t),
       startWithJson: true,
-      deadline: makeDeadline(15_000),
-      perCallTimeoutMs: 10_000
+      deadline: makeDeadline(20_000),
+      perCallTimeoutMs: 12_000
     });
 
     const out: Partial<BookRecord> = {};
     const s = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+    if (s(value.title)) out.title = s(value.title);
+    if (s(value.subtitle)) out.subtitle = s(value.subtitle);
     if (s(value.author)) {
       out.author = s(value.author);
       const ill = s(value.illustrator);
@@ -166,7 +187,7 @@ Responda somente com um objeto JSON:
     if (s(value.synopsis)) out.synopsis = s(value.synopsis);
     return out;
   } catch (e) {
-    console.warn('[lookup] complementação por IA indisponível:', (e as Error)?.message || e);
+    console.warn('[lookup] enriquecimento por IA indisponível:', (e as Error)?.message || e);
     return {};
   }
 }
@@ -184,14 +205,27 @@ export async function lookupBookByIsbn(rawIsbn: string): Promise<BookRecord> {
     book = mergeRecords(book, await queryOpenLibrary(isbn));
   }
 
+  // Se não achou em nenhuma base pública, tenta identificar pela IA via ISBN
+  if (!book.title) {
+    const aiBook = await enrichBookWithAI({ isbn });
+    if (aiBook.title) {
+      book = mergeRecords(book, aiBook);
+    }
+  }
+
   if (!book.title) {
     const hint = isValidIsbn(isbn) ? '' : ' O dígito verificador deste ISBN não confere — confira a digitação.';
     throw new HttpError(404, `Nenhum registro encontrado para este código ISBN.${hint}`);
   }
 
-  // Complementa autor/ano/sinopse por IA apenas quando o título já é conhecido.
-  if (!book.author || !book.synopsis || !book.year) {
-    book = mergeRecords(book, await enrichWithAI(isbn, book));
+  // Complementa autor/ano/sinopse por IA se autor for desconhecido/vazio ou faltar sinopse
+  const needsAuthor = !book.author || book.author.trim() === '' || book.author.toLowerCase().includes('desconhecido');
+  if (needsAuthor || !book.synopsis || !book.year) {
+    const enriched = await enrichBookWithAI({ isbn, ...book });
+    book = mergeRecords(book, enriched);
+    if (needsAuthor && enriched.author) {
+      book.author = enriched.author;
+    }
   }
 
   if (!book.coverUrl) {
