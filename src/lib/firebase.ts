@@ -907,28 +907,56 @@ export async function registrarEmprestimo(emprestimo: Omit<BookLoan, 'id'>): Pro
   // O exemplar físico JÁ foi transferido da biblioteca central para a sala de aula anteriormente.
   // Portanto, não devemos validar nem debitar o estoque da biblioteca central da escola novamente.
   if (!emprestimo.isReadingCorner) {
-    // 0. Validação de segurança estrita por escola: verificar se a escola possui exemplar disponível
-    const bookSnap = await get(ref(rtdb, `diario-classe/biblioteca/livros/${emprestimo.bookId}`));
+    // 0. Validação de segurança estrita por escola: verificar a disponibilidade real contábil (Ledger)
+    const [bookSnap, loansSnap, cantinhosSnap] = await Promise.all([
+      get(ref(rtdb, `diario-classe/biblioteca/livros/${emprestimo.bookId}`)),
+      get(ref(rtdb, 'diario-classe/biblioteca/emprestimos')),
+      get(ref(rtdb, 'diario-classe/biblioteca/cantinhos'))
+    ]);
+
     if (!bookSnap.exists()) {
       throw new Error('Obra não encontrada no catálogo da biblioteca.');
     }
 
     const bookData = bookSnap.val() as Book;
+    const allLoans = loansSnap.exists() ? Object.values(loansSnap.val() as Record<string, BookLoan>) : [];
+    const allCantinhos = cantinhosSnap.exists() ? Object.values(cantinhosSnap.val() as Record<string, ReadingCornerBook>) : [];
+
+    // Contabiliza empréstimos centrais ativos para esta obra
+    const activeCentralLoans = allLoans.filter(
+      (l) => l.bookId === emprestimo.bookId && l.status !== 'devolvido' && !l.isReadingCorner
+    );
+
+    // Contabiliza alocações ativas no cantinho da leitura para esta obra
+    const activeCantinhoAllocations = allCantinhos.filter(
+      (c) => c.bookId === emprestimo.bookId
+    );
 
     // Se o livro tiver distribuição por escola e a escola estiver informada
     if (schoolId && schoolId !== 'rede-geral' && bookData.copiesBySchool) {
       const schoolHolding = bookData.copiesBySchool[schoolId];
-      const schoolAvail = schoolHolding ? Number(schoolHolding.availableCopies ?? 0) : 0;
-      if (schoolAvail <= 0) {
+      const schoolTotal = schoolHolding ? Number(schoolHolding.totalCopies ?? 0) : 0;
+      const schoolActiveLoans = activeCentralLoans.filter((l) => l.schoolId === schoolId).length;
+      const schoolCornerCopies = activeCantinhoAllocations
+        .filter((c) => c.schoolId === schoolId)
+        .reduce((acc, c) => acc + (Number(c.totalCopies) || 0), 0);
+
+      const realSchoolAvail = Math.max(0, schoolTotal - schoolActiveLoans - schoolCornerCopies);
+
+      if (realSchoolAvail <= 0) {
         const schoolName = schoolHolding?.schoolName || emprestimo.schoolName || 'esta escola';
         throw new Error(
-          `Exemplar indisponível na unidade ${schoolName}. Não há exemplares físicos em estoque nesta escola para realizar o empréstimo.`
+          `Exemplar indisponível na unidade ${schoolName}. Não há exemplares físicos disponíveis em estoque nesta escola para realizar o empréstimo.`
         );
       }
     } else {
       // Validação geral de segurança da rede
-      const generalAvail = Number(bookData.availableCopies ?? 0);
-      if (generalAvail <= 0) {
+      const networkTotal = Number(bookData.totalCopies ?? 0);
+      const networkActiveLoans = activeCentralLoans.length;
+      const networkCornerCopies = activeCantinhoAllocations.reduce((acc, c) => acc + (Number(c.totalCopies) || 0), 0);
+      const realNetworkAvail = Math.max(0, networkTotal - networkActiveLoans - networkCornerCopies);
+
+      if (realNetworkAvail <= 0) {
         throw new Error('Todos os exemplares desta obra estão atualmente emprestados.');
       }
     }
@@ -1342,11 +1370,15 @@ export async function alocarLivroCantinho(params: {
     throw new Error(`Exemplares insuficientes no acervo da escola (${currentAvail} disponível(is), requisitado: ${copiesToMove}).`);
   }
 
-  // Atualiza estoque físico da escola
-  await update(acervoRef, {
-    availableCopies: Math.max(0, currentAvail - copiesToMove),
-    updatedAt: now
-  });
+  // Atualiza estoque físico da escola (se tiver permissão de gestão de acervo)
+  try {
+    await update(acervoRef, {
+      availableCopies: Math.max(0, currentAvail - copiesToMove),
+      updatedAt: now
+    });
+  } catch {
+    // Continua se não tiver permissão direta no acervo físico; o cálculo dinâmico cobre o saldo
+  }
 
   // Atualiza também o catálogo geral da rede
   try {
@@ -1514,31 +1546,39 @@ export async function retornarLivroCantinho(params: {
   // Teto patrimonial rigoroso: availableCopies da escola NUNCA pode ultrapassar schoolTotalCopies
   const newSchoolAvail = Math.min(schoolTotalCopies, currSchoolAvail + copiesToMove);
 
-  // 3. Atualiza o acervo físico da escola
-  await set(acervoRef, cleanFirebaseData({
-    totalCopies: schoolTotalCopies,
-    availableCopies: newSchoolAvail,
-    code: params.bookCode || holdings[params.schoolId]?.code || bookVal?.code || '',
-    schoolName: params.schoolName || holdings[params.schoolId]?.schoolName || '',
-    location: holdings[params.schoolId]?.location || bookVal?.location || '',
-    updatedAt: now
-  }));
-
-  // 4. Atualiza catálogo geral de títulos na rede
-  if (bookVal) {
-    if (holdings[params.schoolId]) {
-      const holdingTotal = Math.max(1, Number(holdings[params.schoolId].totalCopies) || schoolTotalCopies);
-      holdings[params.schoolId].availableCopies = Math.min(
-        holdingTotal,
-        (Number(holdings[params.schoolId].availableCopies) || 0) + copiesToMove
-      );
-    }
-    const consolidatedAvail = Object.values(holdings).reduce((acc, h) => acc + (Number(h.availableCopies) || 0), 0);
-    await update(bookRef, cleanFirebaseData({
-      copiesBySchool: holdings,
-      availableCopies: consolidatedAvail,
+  // 3. Atualiza o acervo físico da escola se tiver permissão
+  try {
+    await set(acervoRef, cleanFirebaseData({
+      totalCopies: schoolTotalCopies,
+      availableCopies: newSchoolAvail,
+      code: params.bookCode || holdings[params.schoolId]?.code || bookVal?.code || '',
+      schoolName: params.schoolName || holdings[params.schoolId]?.schoolName || '',
+      location: holdings[params.schoolId]?.location || bookVal?.location || '',
       updatedAt: now
     }));
+  } catch {
+    // Ignora se não for gestor de acervo; o cálculo dinâmico cobre o saldo
+  }
+
+  // 4. Atualiza catálogo geral de títulos na rede
+  try {
+    if (bookVal) {
+      if (holdings[params.schoolId]) {
+        const holdingTotal = Math.max(1, Number(holdings[params.schoolId].totalCopies) || schoolTotalCopies);
+        holdings[params.schoolId].availableCopies = Math.min(
+          holdingTotal,
+          (Number(holdings[params.schoolId].availableCopies) || 0) + copiesToMove
+        );
+      }
+      const consolidatedAvail = Object.values(holdings).reduce((acc, h) => acc + (Number(h.availableCopies) || 0), 0);
+      await update(bookRef, cleanFirebaseData({
+        copiesBySchool: holdings,
+        availableCopies: consolidatedAvail,
+        updatedAt: now
+      }));
+    }
+  } catch {
+    // Ignora se não tiver permissão no catálogo geral
   }
 
   // 5. Aplica a baixa no Cantinho da Leitura
@@ -1813,6 +1853,60 @@ export async function atenderReserva(reservaId: string): Promise<void> {
     status: 'atendida',
     updatedAt: now
   });
+}
+
+/**
+ * Autocorreção de consistência: alinha availableCopies no catálogo e nos acervos das escolas
+ * caso haja qualquer discrepância em relação aos empréstimos reais em aberto.
+ */
+export async function reconciliarDisponibilidadeAcervo(
+  divergences: Array<{
+    bookId: string;
+    correctNetworkAvail: number;
+    schoolUpdates: Record<string, number>;
+  }>
+): Promise<void> {
+  if (!divergences.length) return;
+  const now = Date.now();
+
+  for (const item of divergences) {
+    try {
+      // 1. Atualiza availableCopies no registro consolidado do livro
+      const bookRef = ref(rtdb, `diario-classe/biblioteca/livros/${item.bookId}`);
+      const bookSnap = await get(bookRef);
+      if (bookSnap.exists()) {
+        const bookData = bookSnap.val() as Book;
+        const currentCopiesBySchool = bookData.copiesBySchool ? { ...bookData.copiesBySchool } : {};
+        for (const [sId, newAvail] of Object.entries(item.schoolUpdates)) {
+          if (currentCopiesBySchool[sId]) {
+            currentCopiesBySchool[sId] = {
+              ...currentCopiesBySchool[sId],
+              availableCopies: newAvail
+            };
+          }
+        }
+        await update(bookRef, {
+          availableCopies: item.correctNetworkAvail,
+          copiesBySchool: currentCopiesBySchool,
+          updatedAt: now
+        });
+      }
+
+      // 2. Atualiza no estoque físico de cada escola envolvida
+      for (const [sId, newAvail] of Object.entries(item.schoolUpdates)) {
+        const acervoRef = ref(rtdb, `diario-classe/biblioteca/acervos/${sId}/${item.bookId}`);
+        const acervoSnap = await get(acervoRef);
+        if (acervoSnap.exists()) {
+          await update(acervoRef, {
+            availableCopies: newAvail,
+            updatedAt: now
+          });
+        }
+      }
+    } catch (e) {
+      console.warn(`[reconciliarDisponibilidadeAcervo] falha ao auto-ajustar livro ${item.bookId}:`, e);
+    }
+  }
 }
 
 export type { User };

@@ -105,121 +105,173 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
     "diario-classe": {
       "escolas": {
         ".read": "auth != null",
-        ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true",
-        ".indexOn": ["name", "createdAt"],
+        ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
+        ".indexOn": [
+          "name",
+          "createdAt"
+        ],
         "$schoolId": {
           ".validate": "newData.hasChildren(['name'])"
         }
       },
       "turmas": {
         ".read": "auth != null",
-        ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true",
-        ".indexOn": ["schoolId", "createdAt", "anoLetivo"],
+        ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
+        ".indexOn": [
+          "schoolId",
+          "createdAt",
+          "anoLetivo"
+        ],
         "$turmaId": {
-          ".read": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + $turmaId).val() === true)",
-          ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true",
+          ".read": "auth != null",
+          ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
           ".validate": "newData.hasChildren(['year', 'letter', 'shift', 'schoolId', 'schoolName'])",
           "alunos": {
-            ".read": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + $turmaId).val() === true)",
-            ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + $turmaId).val() === true)",
-            ".indexOn": ["number", "name", "ra", "anoLetivo", "status"],
+            ".read": "auth != null",
+            ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + $turmaId).val() === true)",
+            ".indexOn": [
+              "number",
+              "name",
+              "ra",
+              "anoLetivo",
+              "status"
+            ],
             "$alunoId": {
-              ".validate": "newData.hasChildren(['name','number','ra','birthdate'])"
+              ".validate": "newData.hasChildren(['name','number','ra'])"
             }
           }
         }
       },
       "professores": {
         ".read": true,
-        ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true",
+        ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
         "$uid": {
-          ".read": true
+          ".read": true,
+          ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null || auth.uid === $uid)",
+          ".validate": "newData.hasChildren(['name'])"
         }
       },
       "disciplinas": {
         ".read": "auth != null",
-        ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true",
-        ".indexOn": ["name", "category"],
+        ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
+        ".indexOn": [
+          "name",
+          "category"
+        ],
         "$disciplinaId": {
           ".validate": "newData.hasChildren(['name', 'id'])"
         }
       },
       "bncc": {
         ".read": "auth != null",
-        ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true",
-        ".indexOn": ["year", "code"],
+        ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
+        ".indexOn": [
+          "year",
+          "code"
+        ],
         "$bnccId": {
           ".validate": "newData.hasChildren(['code', 'desc', 'year'])"
         }
       },
       "categorias": {
         ".read": "auth != null",
-        ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true",
-        ".indexOn": ["name"],
+        ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
+        ".indexOn": [
+          "name"
+        ],
         "$categoriaId": {
           ".validate": "newData.hasChildren(['name', 'color'])"
         }
       },
       "tipos-evento": {
         ".read": "auth != null",
-        ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true",
-        ".indexOn": ["name"],
+        ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
+        ".indexOn": [
+          "name"
+        ],
         "$tipoId": {
           ".validate": "newData.hasChildren(['name', 'color'])"
         }
       },
       "atribuicoes": {
         ".read": "auth != null",
-        ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true",
+        ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
         "$uid": {
-          ".read": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || auth.uid === $uid)",
-          ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true"
+          ".read": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || auth.uid === $uid || root.child('diario-classe/admins').val() === null)",
+          ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)"
         }
       },
       "dados": {
         ".read": "auth != null",
-        ".write": "auth != null",
         "$uid": {
-          ".read": "auth != null && auth.uid === $uid",
-          ".write": "auth != null && auth.uid === $uid",
+          ".read": "auth != null && (auth.uid === $uid || root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
+          ".write": "auth != null && (auth.uid === $uid || root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
           "chamada": {
-            ".indexOn": ["classId_bimester_date", "classId_date", "studentId", "anoLetivo"],
+            ".indexOn": [
+              "classId_bimester_date",
+              "classId_date",
+              "studentId",
+              "anoLetivo"
+            ],
             "$chamadaId": {
-              ".validate": "newData.hasChildren(['classId', 'studentId', 'date', 'status', 'anoLetivo'])"
+              ".validate": "newData.hasChildren(['classId', 'studentId', 'date', 'status']) && (newData.child('status').val() === 'P' || newData.child('status').val() === 'A' || newData.child('status').val() === 'F' || newData.child('status').val() === 'C' || newData.child('status').val() === 'FJ')"
             }
           },
           "notas": {
-            ".indexOn": ["classId", "studentId", "anoLetivo", "bimester"],
+            ".indexOn": [
+              "classId",
+              "studentId",
+              "anoLetivo",
+              "bimester"
+            ],
             "$notaId": {
-              ".validate": "newData.hasChildren(['classId', 'studentId', 'bimester', 'value', 'anoLetivo'])"
+              ".validate": "newData.hasChildren(['classId', 'studentId', 'bimester', 'value']) && newData.child('value').isNumber() && newData.child('value').val() >= 0 && newData.child('value').val() <= 10"
             }
           },
           "eventos": {
-            ".indexOn": ["classId", "studentId", "bimester", "createdAt", "anoLetivo"],
+            ".indexOn": [
+              "classId",
+              "studentId",
+              "bimester",
+              "createdAt",
+              "anoLetivo"
+            ],
             "$eventoId": {
-              ".validate": "newData.hasChildren(['classId', 'studentId', 'date', 'description', 'anoLetivo', 'typeId'])"
+              ".validate": "newData.hasChildren(['classId', 'studentId', 'date', 'description'])"
             }
           },
           "planos-aula": {
-            ".indexOn": ["classId", "bimester", "anoLetivo", "createdAt"],
+            ".indexOn": [
+              "classId",
+              "bimester",
+              "anoLetivo",
+              "createdAt"
+            ],
             "$planoId": {
-              ".validate": "newData.hasChildren(['classId', 'bimester', 'date', 'planned', 'anoLetivo', 'categoryId'])"
+              ".validate": "newData.hasChildren(['classId', 'bimester', 'date', 'planned'])"
             }
           },
           "bncc": {
-            ".indexOn": ["year", "code"],
+            ".indexOn": [
+              "year",
+              "code"
+            ],
             "$bnccId": {
               ".validate": "newData.hasChildren(['code', 'desc', 'year'])"
             }
           },
           "categorias": {
-            ".indexOn": ["name"],
+            ".indexOn": [
+              "name"
+            ],
             "$categoriaId": {
               ".validate": "newData.hasChildren(['name', 'color'])"
             }
           },
           "tipos-evento": {
-            ".indexOn": ["name"],
+            ".indexOn": [
+              "name"
+            ],
             "$tipoId": {
               ".validate": "newData.hasChildren(['name', 'color'])"
             }
@@ -243,17 +295,49 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
       },
       "biblioteca": {
         ".read": "auth != null",
-        ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null)",
         "livros": {
-          ".indexOn": ["code", "title", "author", "genre", "createdAt"],
+          ".read": "auth != null",
+          ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null)",
+          ".indexOn": ["title", "author", "isbn", "category", "createdAt"],
           "$livroId": {
-            ".validate": "newData.hasChildren(['title', 'code'])"
+            ".validate": "newData.hasChildren(['title'])"
+          }
+        },
+        "acervos": {
+          ".read": "auth != null",
+          "$schoolId": {
+            "$livroId": {
+              ".read": "auth != null",
+              ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null)"
+            }
           }
         },
         "emprestimos": {
-          ".indexOn": ["studentId", "classId", "bookId", "status", "dueDate", "loanDate"],
+          ".read": "auth != null",
+          ".indexOn": ["studentId", "classId", "schoolId", "bookId", "status", "dueDate", "loanDate"],
           "$emprestimoId": {
-            ".validate": "newData.hasChildren(['bookId', 'studentId', 'loanDate', 'dueDate', 'status'])"
+            ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + newData.child('classId').val()).val() === true || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + data.child('classId').val()).val() === true)",
+            ".validate": "newData.hasChildren(['bookId', 'schoolId', 'classId', 'studentId', 'loanDate', 'status'])"
+          }
+        },
+        "reservas": {
+          ".read": "auth != null",
+          ".indexOn": ["bookId", "schoolId", "status", "createdAt"],
+          "$reservaId": {
+            ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + newData.child('classId').val()).val() === true || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + data.child('classId').val()).val() === true)",
+            ".validate": "newData.hasChildren(['bookId', 'schoolId', 'classId', 'studentId', 'status'])"
+          }
+        },
+        "movimentacoes": {
+          ".read": "auth != null",
+          ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null)",
+          ".indexOn": ["bookId", "sourceSchoolId", "targetSchoolId", "date"]
+        },
+        "cantinhos": {
+          ".read": "auth != null",
+          ".indexOn": ["turmaId", "schoolId", "bookId"],
+          "$allocationKey": {
+            ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null || (newData.exists() && root.child('diario-classe/atribuicoes/' + auth.uid + '/' + newData.child('turmaId').val()).val() === true) || (data.exists() && root.child('diario-classe/atribuicoes/' + auth.uid + '/' + data.child('turmaId').val()).val() === true))"
           }
         }
       }

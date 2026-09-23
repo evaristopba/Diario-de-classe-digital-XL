@@ -214,35 +214,74 @@ Todas as telas possuem exportadores automáticos:
 
 ---
 
-## 9. Regras de Permissão e Segurança (Firebase)
+## 9. Regras de Permissão e Segurança (Firebase Realtime Database)
 
-No arquivo `database.rules.json`, a estrutura da biblioteca está protegida contra acessos indevidos:
+No arquivo `database.rules.json`, toda a estrutura da biblioteca escolar está protegida segundo o princípio de menor privilégio (PoLP) e segregação por papéis (RBAC):
+
+### 9.1 Hierarquia de Permissões
+- **Administradores e Bibliotecários**: Permissão integral de leitura e escrita em `livros`, `acervos`, `emprestimos`, `reservas`, `movimentacoes` e `cantinhos`.
+- **Professores com `canManageLibrary = true`**: Possuem privilégio delegado de bibliotecário para cadastrar obras e acervos.
+- **Professores Comuns**:
+  - Leitura autorizada em todo o acervo e inventário (`.read: "auth != null"`).
+  - **Patrimônio Blindado**: Não possuem permissão de escrita direta em `acervos` ou `livros`.
+  - **Empréstimos**: Podem registrar e gerenciar empréstimos **exclusivamente para alunos de turmas atribuídas a eles** (`diario-classe/atribuicoes/{uid}/{classId} === true`).
+  - **Cantinho da Leitura**: Podem alocar e movimentar exemplares para o cantinho **exclusivamente de suas turmas atribuídas** (`diario-classe/atribuicoes/{uid}/{turmaId} === true`).
+
+### 9.2 Estrutura Oficial do Bloco Biblioteca (`database.rules.json`)
 
 ```json
-{
-  "rules": {
-    "diario-classe": {
-      "biblioteca": {
-        "livros": {
-          ".read": "auth != null",
-          ".write": "auth != null"
-        },
-        "emprestimos": {
-          ".read": "auth != null",
-          ".write": "auth != null"
-        },
-        "movimentacoes": {
-          ".read": "auth != null",
-          ".write": "auth != null"
-        }
-      },
-      "cantinhos": {
+"biblioteca": {
+  ".read": "auth != null",
+  "livros": {
+    ".read": "auth != null",
+    ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null)",
+    ".indexOn": ["title", "author", "isbn", "category", "createdAt"],
+    "$livroId": {
+      ".validate": "newData.hasChildren(['title'])"
+    }
+  },
+  "acervos": {
+    ".read": "auth != null",
+    "$schoolId": {
+      "$livroId": {
         ".read": "auth != null",
-        ".write": "auth != null"
+        ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null)"
       }
+    }
+  },
+  "emprestimos": {
+    ".read": "auth != null",
+    ".indexOn": ["studentId", "classId", "schoolId", "bookId", "status", "dueDate", "loanDate"],
+    "$emprestimoId": {
+      ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + newData.child('classId').val()).val() === true || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + data.child('classId').val()).val() === true)",
+      ".validate": "newData.hasChildren(['bookId', 'schoolId', 'classId', 'studentId', 'loanDate', 'status'])"
+    }
+  },
+  "reservas": {
+    ".read": "auth != null",
+    ".indexOn": ["bookId", "schoolId", "status", "createdAt"],
+    "$reservaId": {
+      ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + newData.child('classId').val()).val() === true || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + data.child('classId').val()).val() === true)",
+      ".validate": "newData.hasChildren(['bookId', 'schoolId', 'classId', 'studentId', 'status'])"
+    }
+  },
+  "movimentacoes": {
+    ".read": "auth != null",
+    ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null)",
+    ".indexOn": ["bookId", "sourceSchoolId", "targetSchoolId", "date"]
+  },
+  "cantinhos": {
+    ".read": "auth != null",
+    ".indexOn": ["turmaId", "schoolId", "bookId"],
+    "$allocationKey": {
+      ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null || (newData.exists() && root.child('diario-classe/atribuicoes/' + auth.uid + '/' + newData.child('turmaId').val()).val() === true) || (data.exists() && root.child('diario-classe/atribuicoes/' + auth.uid + '/' + data.child('turmaId').val()).val() === true))"
     }
   }
 }
 ```
 
-> **Aviso Importante**: Ao implantar em produção, certifique-se de que o bloco `cantinhos` esteja publicado na aba **Regras (Rules)** do Firebase Realtime Database.
+### 9.3 Como Atualizar no Firebase Console
+1. Abra o arquivo `database.rules.json` completo na raiz do projeto (ou abra o modal **"Regras do Firebase"** no painel do sistema).
+2. Acesse o **Firebase Console** > Seu Projeto > **Realtime Database** > aba **Regras (Rules)**.
+3. Cole o JSON completo e clique no botão **Publicar (Publish)**.
+

@@ -11,6 +11,8 @@ import {
 import { formatFriendlyError } from '../lib/errorHandler';
 import { formatDate } from '../lib/reports';
 import { exportToExcelJS, ExcelColumnDef } from '../lib/excelExport';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import {
   BookOpen,
   Plus,
@@ -26,6 +28,7 @@ import {
   User,
   Building2,
   FileSpreadsheet,
+  Download,
   BookMarked,
   Info,
   Loader2,
@@ -526,7 +529,7 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
     }
   };
 
-  // Exportação em Excel do Cantinho da Leitura
+  // Exportação em Excel e PDF do Cantinho da Leitura
   const handleExportCornerExcel = async () => {
     if (filteredCornerBooks.length === 0) {
       setModal({
@@ -546,32 +549,147 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
       { header: 'Código / ISBN', key: 'code', width: 18, align: 'center' },
       { header: 'Gênero', key: 'genre', width: 18, align: 'left' },
       { header: 'Total na Sala', key: 'total', width: 16, align: 'center' },
-      { header: 'Na Estante (Livres)', key: 'available', width: 18, align: 'center' },
+      { header: 'Na Estante (Livres)', key: 'available', width: 20, align: 'center' },
       { header: 'Com Alunos', key: 'loaned', width: 16, align: 'center' },
+      { header: 'Situação', key: 'status', width: 18, align: 'center' },
       { header: 'Data Alocação', key: 'date', width: 18, align: 'center' },
       { header: 'Observações / Projeto', key: 'notes', width: 30, align: 'left' }
     ];
 
-    const rows = filteredCornerBooks.map((item) => ({
-      turma: item.val.turmaName,
-      title: item.val.bookTitle,
-      author: item.val.bookAuthor || '-',
-      code: item.val.bookCode || '-',
-      genre: item.val.genre || '-',
-      total: item.val.totalCopies,
-      available: item.val.availableCopies,
-      loaned: Math.max(0, (item.val.totalCopies || 0) - (item.val.availableCopies || 0)),
-      date: new Date(item.val.allocatedAt).toLocaleDateString('pt-BR'),
-      notes: item.val.notes || '-'
-    }));
+    const rows = filteredCornerBooks.map((item) => {
+      const real = getRealCornerAvailability(item);
+      return {
+        turma: item.val.turmaName,
+        title: item.val.bookTitle,
+        author: item.val.bookAuthor || '-',
+        code: item.val.bookCode || '-',
+        genre: item.val.genre || '-',
+        total: real.totalCopies,
+        available: real.availableCopies,
+        loaned: real.activeLoansCount,
+        status: real.availableCopies > 0 ? 'Disponível na Sala' : 'Emprestado com Alunos',
+        date: new Date(item.val.allocatedAt).toLocaleDateString('pt-BR'),
+        notes: item.val.notes || '-'
+      };
+    });
+
+    const turmaFilterLabel = selectedTurmaFilter !== 'todas'
+      ? ` - ${availableClasses.find((c) => c.id === selectedTurmaFilter)?.val?.name || 'Turma'}`
+      : '';
 
     await exportToExcelJS({
-      title: 'Cantinho da Leitura em Sala de Aula - Inventário',
+      title: `Cantinho da Leitura em Sala de Aula - Inventário${turmaFilterLabel}`,
       year: currentYear,
       columns,
       rows,
-      filename: `cantinho_leitura_${currentYear}.xlsx`
+      filename: `cantinho_leitura_${selectedTurmaFilter !== 'todas' ? selectedTurmaFilter + '_' : ''}${currentYear}.xlsx`
     });
+  };
+
+  const handleExportCornerPDF = () => {
+    if (filteredCornerBooks.length === 0) {
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Cantinho Vazio',
+        message: 'Nenhuma obra alocada para exportação.',
+        icon: 'ℹ️'
+      });
+      return;
+    }
+
+    const doc = new jsPDF();
+    doc.setFontSize(16);
+    doc.setFont('helvetica', 'bold');
+    doc.text('CANTINHO DA LEITURA - INVENTÁRIO EM SALA DE AULA', 105, 14, { align: 'center' });
+
+    const selectedClassObj = selectedTurmaFilter !== 'todas'
+      ? availableClasses.find((c) => c.id === selectedTurmaFilter)
+      : null;
+
+    const classLabel = selectedClassObj
+      ? `${selectedClassObj.val.year}º ${selectedClassObj.val.letter} (${selectedClassObj.val.schoolName || 'Unidade'})`
+      : 'Todas as Turmas / Salas';
+
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Turma: ${classLabel}`, 14, 22);
+    doc.text(`Ano Letivo: ${currentYear}   |   Data de Emissão: ${formatDate(new Date().toISOString().split('T')[0])}`, 14, 27);
+
+    let sumTotal = 0;
+    let sumAvail = 0;
+    let sumLoaned = 0;
+
+    const tableData: (string | number)[][] = filteredCornerBooks.map((item) => {
+      const real = getRealCornerAvailability(item);
+      sumTotal += real.totalCopies;
+      sumAvail += real.availableCopies;
+      sumLoaned += real.activeLoansCount;
+
+      return [
+        item.val.turmaName,
+        item.val.bookTitle,
+        item.val.bookAuthor || '-',
+        item.val.bookCode || '-',
+        real.totalCopies.toString(),
+        real.availableCopies.toString(),
+        real.activeLoansCount.toString(),
+        real.availableCopies > 0 ? 'Disponível' : 'Com Alunos'
+      ];
+    });
+
+    tableData.push([
+      'TOTAL',
+      `${filteredCornerBooks.length} obra(s)`,
+      '-',
+      '-',
+      sumTotal.toString(),
+      sumAvail.toString(),
+      sumLoaned.toString(),
+      '-'
+    ]);
+
+    autoTable(doc, {
+      startY: 32,
+      head: [['Turma', 'Título', 'Autor(a)', 'Cód.', 'Total', 'Estante', 'Com Alunos', 'Situação']],
+      body: tableData,
+      theme: 'grid',
+      styles: { fontSize: 8, cellPadding: 2, valign: 'middle' },
+      headStyles: {
+        fillColor: [16, 185, 129],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+        halign: 'center'
+      },
+      columnStyles: {
+        0: { cellWidth: 26, halign: 'left' },
+        1: { cellWidth: 48, halign: 'left' },
+        2: { cellWidth: 34, halign: 'left' },
+        3: { cellWidth: 16, halign: 'center' },
+        4: { cellWidth: 14, halign: 'center' },
+        5: { cellWidth: 14, halign: 'center' },
+        6: { cellWidth: 16, halign: 'center' },
+        7: { cellWidth: 20, halign: 'center' }
+      },
+      didParseCell: (data) => {
+        if (data.section === 'body') {
+          const isLastRow = data.row.index === tableData.length - 1;
+          if (isLastRow) {
+            data.cell.styles.fontStyle = 'bold';
+            data.cell.styles.fillColor = [241, 245, 249];
+          } else if (data.column.index === 7) {
+            if (data.cell.raw === 'Disponível') {
+              data.cell.styles.textColor = [5, 150, 105];
+            } else {
+              data.cell.styles.textColor = [217, 119, 6];
+              data.cell.styles.fontStyle = 'bold';
+            }
+          }
+        }
+      }
+    });
+
+    doc.save(`cantinho_leitura_${selectedTurmaFilter !== 'todas' ? selectedTurmaFilter + '_' : ''}${currentYear}.pdf`);
   };
 
   // Alunos da turma selecionada no empréstimo
@@ -629,6 +747,17 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
           )}
 
           <button
+            id="btn-export-corner-pdf"
+            onClick={handleExportCornerPDF}
+            disabled={filteredCornerBooks.length === 0}
+            className="inline-flex items-center gap-2 px-3.5 py-2.5 bg-white/10 hover:bg-white/20 border border-white/20 text-white rounded-xl text-xs sm:text-sm font-bold backdrop-blur-sm transition cursor-pointer disabled:opacity-50"
+            title="Exportar inventário do Cantinho da Leitura em PDF"
+          >
+            <Download className="w-4 h-4 text-rose-300" />
+            <span>PDF</span>
+          </button>
+
+          <button
             id="btn-export-corner-xlsx"
             onClick={handleExportCornerExcel}
             disabled={filteredCornerBooks.length === 0}
@@ -636,7 +765,7 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
             title="Exportar inventário do Cantinho da Leitura em Excel"
           >
             <FileSpreadsheet className="w-4 h-4 text-emerald-300" />
-            <span>Exportar (.xlsx)</span>
+            <span>Excel (.xlsx)</span>
           </button>
         </div>
       </div>

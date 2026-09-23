@@ -26,7 +26,7 @@
           ".validate": "newData.hasChildren(['year', 'letter', 'shift', 'schoolId', 'schoolName'])",
           "alunos": {
             ".read": "auth != null",
-            ".write": "auth != null",
+            ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null || root.child('diario-classe/atribuicoes/' + auth.uid + '/' + $turmaId).val() === true)",
             ".indexOn": [
               "number",
               "name",
@@ -101,7 +101,6 @@
       },
       "dados": {
         ".read": "auth != null",
-        ".write": "auth != null",
         "$uid": {
           ".read": "auth != null && (auth.uid === $uid || root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
           ".write": "auth != null && (auth.uid === $uid || root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",
@@ -207,16 +206,7 @@
           "$schoolId": {
             "$livroId": {
               ".read": "auth != null",
-              ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null)",
-              "totalCopies": {
-                ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null)"
-              },
-              "code": {
-                ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null)"
-              },
-              "availableCopies": {
-                ".write": "auth != null"
-              }
+              ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null)"
             }
           }
         },
@@ -243,8 +233,10 @@
         },
         "cantinhos": {
           ".read": "auth != null",
-          ".write": "auth != null",
-          ".indexOn": ["turmaId", "schoolId", "bookId"]
+          ".indexOn": ["turmaId", "schoolId", "bookId"],
+          "$allocationKey": {
+            ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/bibliotecarios/' + auth.uid).val() === true || root.child('diario-classe/professores/' + auth.uid + '/canManageLibrary').val() === true || root.child('diario-classe/admins').val() === null || (newData.exists() && root.child('diario-classe/atribuicoes/' + auth.uid + '/' + newData.child('turmaId').val()).val() === true) || (data.exists() && root.child('diario-classe/atribuicoes/' + auth.uid + '/' + data.child('turmaId').val()).val() === true))"
+          }
         }
       }
     }

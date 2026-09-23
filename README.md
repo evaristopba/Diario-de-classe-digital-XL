@@ -81,10 +81,15 @@ Para que o sistema salve os dados corretamente:
 3. Vá em **Realtime Database** > aba **Regras** (Rules).
 4. Copie o conteúdo do arquivo `database.rules.json` (ou visualize diretamente pelo botão no painel de administração do sistema) e clique em **Publicar**.
 
-As regras de segurança protegem todas as coleções, incluindo:
-- `escolas`, `turmas`, `disciplinas`, `professores`, `admins`
+As regras de segurança (`database.rules.json` - 245 linhas) protegem todas as coleções segundo o princípio do menor privilégio (RBAC e vinculação estrita de turmas):
+- `escolas`, `turmas`, `disciplinas`, `professores`, `admins`, `bibliotecarios`
 - `chamada`, `notas`, `planos-aula`, `ocorrencias`
-- `biblioteca/livros` e `biblioteca/emprestimos`
+- `biblioteca`:
+  - `livros` e `acervos`: patrimônio blindado para admins, bibliotecários e professores com delegação (`canManageLibrary`).
+  - `emprestimos`: professores só operam empréstimos para alunos de turmas atribuídas a eles.
+  - `cantinhos`: alocação e movimentação em sala restrita a turmas atribuídas.
+  - `reservas` e `movimentacoes`: histórico e transferências documentadas.
+- Validação contábil (Ledger): auditoria de exemplares em tempo real contra reservas fantasmas ou concorrência.
 
 ---
 

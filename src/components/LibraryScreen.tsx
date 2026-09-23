@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Book, BookLoan, ClassRoom, Student, ModalConfig, School, BookMovement, SchoolCopyHolding } from '../types';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { Book, BookLoan, ClassRoom, Student, ModalConfig, School, BookMovement, SchoolCopyHolding, ReadingCornerBook } from '../types';
 import {
   carregarLivros,
   salvarLivro,
@@ -19,6 +19,8 @@ import {
   excluirMovimentacaoLivro,
   limparTodasMovimentacoes,
   excluirEmprestimo,
+  reconciliarDisponibilidadeAcervo,
+  carregarCantinhos,
   auth
 } from '../lib/firebase';
 import { checkBookDeleteIntegrity, checkBookCopiesReductionIntegrity } from '../lib/referentialIntegrity';
@@ -105,6 +107,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
   const [books, setBooks] = useState<Array<{ id: string; val: Book }>>([]);
   const [loans, setLoans] = useState<Array<{ id: string; val: BookLoan }>>([]);
   const [classes, setClasses] = useState<Array<{ id: string; val: ClassRoom }>>([]);
+  const [cornerAllocations, setCornerAllocations] = useState<Array<{ id: string; val: ReadingCornerBook }>>([]);
 
   // Permissão de circulação de empréstimo: Administradores, Bibliotecários ou Professores com turmas atribuídas
   const canLoan = canManage || classes.length > 0;
@@ -203,12 +206,13 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
   const loadData = async () => {
     setLoading(true);
     try {
-      const [booksList, loansList, classesList, schoolsList, movementsList] = await Promise.all([
+      const [booksList, loansList, classesList, schoolsList, movementsList, cantinhosList] = await Promise.all([
         carregarLivros(),
         carregarEmprestimos(),
         carregarTurmasParaBiblioteca(),
         carregarEscolas(),
-        carregarMovimentacoesLivros()
+        carregarMovimentacoesLivros(),
+        carregarCantinhos()
       ]);
 
       booksList.sort((a, b) => (a.val.title || '').localeCompare(b.val.title || ''));
@@ -224,6 +228,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
       setClasses(filteredClasses);
       setSchools(schoolsList);
       setMovements(movementsList.sort((a, b) => (b.val.createdAt || 0) - (a.val.createdAt || 0)));
+      setCornerAllocations(cantinhosList);
     } catch (err: any) {
       console.error(err);
       setModal({
@@ -242,6 +247,143 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
     checkPermissions();
     loadData();
   }, [currentYear]);
+
+  /**
+   * Helper que recalcula a disponibilidade REAL do livro no Acervo Central
+   * descontando:
+   * 1. Empréstimos ativos do balcão central (status !== 'devolvido' e !isReadingCorner)
+   * 2. Exemplares alocados no Cantinho da Leitura das salas de aula (totalCopies no nó cantinhos)
+   * 
+   * Fórmula:
+   * Disponível no Acervo = max(0, Total de Exemplares - Empréstimos Balcão - Alocados no Cantinho)
+   */
+  const getRealBookAvailability = useCallback(
+    (book: { id: string; val: Book }, targetSchoolId?: string) => {
+      // 1. Empréstimos centrais ativos da obra (não devolvidos e fora do cantinho da leitura)
+      const activeCentralLoans = loans.filter(
+        (l) => l.val.bookId === book.id && l.val.status !== 'devolvido' && !l.val.isReadingCorner
+      );
+
+      // 2. Alocações ativas no Cantinho da Leitura (em salas de aula)
+      const activeCornerAllocations = cornerAllocations.filter(
+        (c) => c.val.bookId === book.id && (Number(c.val.totalCopies) || 0) > 0
+      );
+
+      const totalCopiesNetwork = Math.max(0, Number(book.val.totalCopies) || 0);
+      const activeNetworkLoans = activeCentralLoans.length;
+      const cornerCopiesNetwork = activeCornerAllocations.reduce(
+        (acc, c) => acc + (Number(c.val.totalCopies) || 0),
+        0
+      );
+      // Exemplares disponíveis fisicamente na estante do Acervo Central na rede
+      const availableNetwork = Math.max(0, totalCopiesNetwork - activeNetworkLoans - cornerCopiesNetwork);
+
+      // 3. Disponibilidade por escola (copiesBySchool)
+      const copiesBySchoolReal: Record<
+        string,
+        {
+          totalCopies: number;
+          availableCopies: number;
+          activeLoansCount: number;
+          cornerCopiesCount: number;
+          schoolName?: string;
+          location?: string;
+        }
+      > = {};
+
+      if (book.val.copiesBySchool && Object.keys(book.val.copiesBySchool).length > 0) {
+        for (const [sId, h] of Object.entries(book.val.copiesBySchool)) {
+          const sTotal = Math.max(0, Number(h.totalCopies) || 0);
+          const sActive = activeCentralLoans.filter((l) => l.val.schoolId === sId).length;
+          const sCorner = activeCornerAllocations
+            .filter((c) => c.val.schoolId === sId)
+            .reduce((acc, c) => acc + (Number(c.val.totalCopies) || 0), 0);
+          const sAvail = Math.max(0, sTotal - sActive - sCorner);
+
+          copiesBySchoolReal[sId] = {
+            totalCopies: sTotal,
+            availableCopies: sAvail,
+            activeLoansCount: sActive,
+            cornerCopiesCount: sCorner,
+            schoolName: h.schoolName,
+            location: h.location
+          };
+        }
+      }
+
+      // Se uma escola foi especificada
+      let targetAvailable = availableNetwork;
+      let targetTotal = totalCopiesNetwork;
+      let targetActive = activeNetworkLoans;
+      let targetCorner = cornerCopiesNetwork;
+
+      if (targetSchoolId && copiesBySchoolReal[targetSchoolId]) {
+        targetAvailable = copiesBySchoolReal[targetSchoolId].availableCopies;
+        targetTotal = copiesBySchoolReal[targetSchoolId].totalCopies;
+        targetActive = copiesBySchoolReal[targetSchoolId].activeLoansCount;
+        targetCorner = copiesBySchoolReal[targetSchoolId].cornerCopiesCount;
+      }
+
+      return {
+        totalCopies: targetTotal,
+        availableCopies: targetAvailable,
+        activeLoansCount: targetActive,
+        cornerCopiesCount: targetCorner,
+        isFullyLoaned: targetAvailable <= 0,
+        networkTotal: totalCopiesNetwork,
+        networkAvailable: availableNetwork,
+        networkActive: activeNetworkLoans,
+        networkCorner: cornerCopiesNetwork,
+        copiesBySchool: copiesBySchoolReal
+      };
+    },
+    [loans, cornerAllocations]
+  );
+
+  // Autocorreção silenciosa ao carregar a tela quando houver divergência entre o contador salvo e os empréstimos ativos reais
+  useEffect(() => {
+    if (!books.length || !loans.length || !canManage) return;
+
+    const divergences: Array<{
+      bookId: string;
+      correctNetworkAvail: number;
+      schoolUpdates: Record<string, number>;
+    }> = [];
+
+    for (const b of books) {
+      const real = getRealBookAvailability(b);
+      let needsFix = false;
+      const schoolUpdates: Record<string, number> = {};
+
+      if (b.val.availableCopies !== real.networkAvailable) {
+        needsFix = true;
+      }
+
+      if (b.val.copiesBySchool) {
+        for (const [sId, h] of Object.entries(b.val.copiesBySchool) as [string, SchoolCopyHolding][]) {
+          const realSchool = real.copiesBySchool[sId];
+          if (realSchool && (h.availableCopies ?? h.totalCopies) !== realSchool.availableCopies) {
+            needsFix = true;
+            schoolUpdates[sId] = realSchool.availableCopies;
+          }
+        }
+      }
+
+      if (needsFix) {
+        divergences.push({
+          bookId: b.id,
+          correctNetworkAvail: real.networkAvailable,
+          schoolUpdates
+        });
+      }
+    }
+
+    if (divergences.length > 0) {
+      reconciliarDisponibilidadeAcervo(divergences).catch((e) =>
+        console.warn('Autocorreção silenciosa de estoque:', e)
+      );
+    }
+  }, [books, loans, cornerAllocations, canManage, getRealBookAvailability]);
 
   // Escolas às quais o usuário atual possui acesso de gestão física
   // Se for Admin ou Bibliotecário (canManage): todas as escolas da rede.
@@ -286,11 +428,8 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
   const schoolIdForSelectedClass = selectedClassObj?.val?.schoolId;
   const isSelectedBookAvailableInClassSchool = (() => {
     if (!selectedBookForLoan) return false;
-    if (schoolIdForSelectedClass && selectedBookForLoan.val.copiesBySchool) {
-      const holding = selectedBookForLoan.val.copiesBySchool[schoolIdForSelectedClass];
-      return (holding ? Number(holding.availableCopies ?? 0) : 0) > 0;
-    }
-    return (selectedBookForLoan.val.availableCopies ?? 0) > 0;
+    const real = getRealBookAvailability(selectedBookForLoan, schoolIdForSelectedClass);
+    return real.availableCopies > 0;
   })();
 
   // Data prevista calculada para o modal de empréstimo
@@ -1383,11 +1522,9 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
       return;
     }
 
-    // Calcula disponíveis na unidade de origem
-    let available = Number(transferBook.val.availableCopies ?? transferBook.val.totalCopies ?? 1);
-    if (transferBook.val.copiesBySchool && transferBook.val.copiesBySchool[transferSourceSchoolId]) {
-      available = Number(transferBook.val.copiesBySchool[transferSourceSchoolId].availableCopies ?? 0);
-    }
+    // Calcula disponíveis reais na unidade de origem a partir dos empréstimos ativos
+    const realTransferAvail = getRealBookAvailability(transferBook, transferSourceSchoolId);
+    const available = realTransferAvail.availableCopies;
 
     const copiesNum = Math.max(1, Number(transferCopies) || 1);
     if (copiesNum <= 0 || copiesNum > available) {
@@ -1493,17 +1630,18 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
     const selectedBook = books.find((b) => b.id === loanSelectedBookId);
     if (!selectedBook) return;
 
-    // Validação estrita: se a turma possui escola vinculada e o livro possui controle por unidade
+    // Validação estrita com recálculo em tempo real da disponibilidade real
     const targetSchoolId = selectedClassObj?.val?.schoolId;
+    const realAvail = getRealBookAvailability(selectedBook, targetSchoolId);
+
     if (targetSchoolId && selectedBook.val.copiesBySchool) {
-      const schoolHolding = selectedBook.val.copiesBySchool[targetSchoolId];
-      const availableInSchool = schoolHolding ? Number(schoolHolding.availableCopies ?? 0) : 0;
-      const targetSchoolName = schoolHolding?.schoolName || selectedClassObj.val.schoolName || 'esta unidade';
+      const availableInSchool = realAvail.availableCopies;
+      const targetSchoolName = realAvail.copiesBySchool[targetSchoolId]?.schoolName || selectedClassObj.val.schoolName || 'esta unidade';
 
       if (availableInSchool <= 0) {
         // Obter outras escolas da rede que possuem exemplares disponíveis para instruir o usuário
-        const otherSchoolsWithStock = (Object.entries(selectedBook.val.copiesBySchool) as [string, SchoolCopyHolding][])
-          .filter(([sId, h]) => sId !== targetSchoolId && (h.availableCopies || 0) > 0)
+        const otherSchoolsWithStock = (Object.entries(realAvail.copiesBySchool) as [string, { schoolName?: string; availableCopies: number }][])
+          .filter(([sId, h]) => sId !== targetSchoolId && h.availableCopies > 0)
           .map(([_, h]) => `${h.schoolName || 'Outra Escola'} (${h.availableCopies} disp.)`)
           .join(', ');
 
@@ -1520,7 +1658,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
         });
         return;
       }
-    } else if (selectedBook.val.availableCopies <= 0) {
+    } else if (realAvail.networkAvailable <= 0) {
       setModal({
         isOpen: true,
         type: 'alert',
@@ -1667,14 +1805,33 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
   };
 
   // 4. Exportação de Relatórios da Biblioteca (PDF e Excel)
+  const currentSchoolName = selectedSchoolFilter !== 'todas'
+    ? (schools.find((s) => s.id === selectedSchoolFilter)?.name || 'Unidade Escolar')
+    : 'Todas as Unidades (Rede Geral)';
+
+  const schoolFileSuffix = selectedSchoolFilter !== 'todas'
+    ? `_${selectedSchoolFilter}`
+    : '';
+
   const handleExportPendingLoansPDF = () => {
-    const pendentes = loans.filter((l) => l.val.status !== 'devolvido');
+    const pendentes = loans.filter((l) => {
+      if (l.val.status === 'devolvido') return false;
+      if (selectedSchoolFilter !== 'todas') {
+        if (l.val.schoolId) return l.val.schoolId === selectedSchoolFilter;
+        const loanClass = classes.find((c) => c.id === l.val.classId);
+        return loanClass?.val?.schoolId === selectedSchoolFilter;
+      }
+      return true;
+    });
+
     if (pendentes.length === 0) {
       setModal({
         isOpen: true,
         type: 'alert',
         title: 'Sem Empréstimos Pendentes',
-        message: 'Não existem empréstimos ativos ou atrasados para exportar.',
+        message: selectedSchoolFilter !== 'todas'
+          ? `Não existem empréstimos ativos ou atrasados para exportar na unidade "${currentSchoolName}".`
+          : 'Não existem empréstimos ativos ou atrasados para exportar.',
         icon: 'ℹ️'
       });
       return;
@@ -1687,7 +1844,8 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
 
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
-    doc.text(`Ano Letivo: ${currentYear}   |   Data de Emissão: ${formatDate(new Date().toISOString().split('T')[0])}`, 14, 25);
+    doc.text(`Unidade: ${currentSchoolName}`, 14, 23);
+    doc.text(`Ano Letivo: ${currentYear}   |   Data de Emissão: ${formatDate(new Date().toISOString().split('T')[0])}`, 14, 29);
 
     const tableData = pendentes.map((l) => {
       const isOverdue = isLoanOverdue(l.val);
@@ -1703,7 +1861,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
     });
 
     autoTable(doc, {
-      startY: 32,
+      startY: 34,
       head: [['Turma', 'Aluno(a)', 'Livro', 'Cód.', 'Retirada', 'Devolução Prev.', 'Situação']],
       body: tableData,
       theme: 'grid',
@@ -1735,17 +1893,28 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
       }
     });
 
-    doc.save(`emprestimos_biblioteca_${currentYear}.pdf`);
+    doc.save(`emprestimos_biblioteca${schoolFileSuffix}_${currentYear}.pdf`);
   };
 
   const handleExportPendingLoansExcel = async () => {
-    const pendentes = loans.filter((l) => l.val.status !== 'devolvido');
+    const pendentes = loans.filter((l) => {
+      if (l.val.status === 'devolvido') return false;
+      if (selectedSchoolFilter !== 'todas') {
+        if (l.val.schoolId) return l.val.schoolId === selectedSchoolFilter;
+        const loanClass = classes.find((c) => c.id === l.val.classId);
+        return loanClass?.val?.schoolId === selectedSchoolFilter;
+      }
+      return true;
+    });
+
     if (pendentes.length === 0) {
       setModal({
         isOpen: true,
         type: 'alert',
         title: 'Sem Empréstimos Pendentes',
-        message: 'Não existem empréstimos ativos para exportar em planilha.',
+        message: selectedSchoolFilter !== 'todas'
+          ? `Não existem empréstimos ativos para exportar em planilha na unidade "${currentSchoolName}".`
+          : 'Não existem empréstimos ativos para exportar em planilha.',
         icon: 'ℹ️'
       });
       return;
@@ -1779,21 +1948,24 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
     });
 
     await exportToExcelJS({
-      title: 'Biblioteca Escolar - Empréstimos em Aberto',
+      title: `Biblioteca Escolar - Empréstimos em Aberto (${currentSchoolName})`,
       year: currentYear,
       columns,
       rows,
-      filename: `emprestimos_biblioteca_${currentYear}.xlsx`
+      filename: `emprestimos_biblioteca${schoolFileSuffix}_${currentYear}.xlsx`
     });
   };
 
   const handleExportBooksCatalogExcel = async () => {
-    if (books.length === 0) {
+    const targetBooks = filteredBooks;
+    if (targetBooks.length === 0) {
       setModal({
         isOpen: true,
         type: 'alert',
         title: 'Acervo Vazio',
-        message: 'Nenhuma obra cadastrada para exportação do catálogo.',
+        message: selectedSchoolFilter !== 'todas'
+          ? `Nenhuma obra encontrada na unidade "${currentSchoolName}" para exportação.`
+          : 'Nenhuma obra cadastrada para exportação do catálogo.',
         icon: 'ℹ️'
       });
       return;
@@ -1804,30 +1976,192 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
       { header: 'Título da Obra', key: 'title', width: 35, align: 'left' },
       { header: 'Autor(a)', key: 'author', width: 26, align: 'left' },
       { header: 'Gênero Literário', key: 'genre', width: 20, align: 'left' },
+      { header: 'Unidade Escolar', key: 'school', width: 26, align: 'left' },
       { header: 'Total Exemplares', key: 'total', width: 16, align: 'center' },
-      { header: 'Disponíveis', key: 'available', width: 14, align: 'center' },
+      { header: 'Na Estante (Disponíveis)', key: 'available', width: 22, align: 'center' },
+      { header: 'Empréstimos Balcão', key: 'loaned', width: 18, align: 'center' },
+      { header: 'No Cantinho da Leitura', key: 'corner', width: 22, align: 'center' },
+      { header: 'Situação', key: 'status', width: 24, align: 'center' },
       { header: 'Localização', key: 'location', width: 18, align: 'left' },
       { header: 'Ano Edição', key: 'year', width: 14, align: 'center' }
     ];
 
-    const rows = books.map((b) => ({
-      code: b.val.code,
-      title: b.val.title,
-      author: b.val.author,
-      genre: b.val.genre || '-',
-      total: b.val.totalCopies,
-      available: b.val.availableCopies,
-      location: b.val.location || '-',
-      year: b.val.year || '-'
-    }));
+    const rows = targetBooks.map((b) => {
+      const real = getRealBookAvailability(
+        b,
+        selectedSchoolFilter !== 'todas' ? selectedSchoolFilter : undefined
+      );
+
+      let schoolLabel = 'Rede Geral';
+      let loc = b.val.location || '-';
+
+      if (selectedSchoolFilter !== 'todas') {
+        schoolLabel = currentSchoolName;
+        if (b.val.copiesBySchool && b.val.copiesBySchool[selectedSchoolFilter]?.location) {
+          loc = b.val.copiesBySchool[selectedSchoolFilter].location || loc;
+        }
+      } else if (b.val.copiesBySchool && Object.keys(b.val.copiesBySchool).length > 0) {
+        const schoolList = (Object.entries(b.val.copiesBySchool) as [string, SchoolCopyHolding][])
+          .filter(([_, h]) => (h.totalCopies || 0) > 0)
+          .map(([_, h]) => `${h.schoolName || 'Escola'} (${h.totalCopies})`);
+        if (schoolList.length > 0) {
+          schoolLabel = schoolList.join(', ');
+        }
+      } else if (b.val.schoolName) {
+        schoolLabel = b.val.schoolName;
+      }
+
+      let situacao = 'Totalmente Emprestado';
+      if (real.availableCopies > 0) {
+        situacao = 'Disponível no Balcão';
+      } else if (real.cornerCopiesCount > 0 && real.activeLoansCount === 0) {
+        situacao = 'Alocado no Cantinho da Leitura';
+      } else if (real.cornerCopiesCount > 0) {
+        situacao = 'No Cantinho / Emprestado';
+      }
+
+      return {
+        code: b.val.code || '-',
+        title: b.val.title,
+        author: b.val.author,
+        genre: b.val.genre || '-',
+        school: schoolLabel,
+        total: real.totalCopies,
+        available: real.availableCopies,
+        loaned: real.activeLoansCount,
+        corner: real.cornerCopiesCount,
+        status: situacao,
+        location: loc,
+        year: b.val.year || '-'
+      };
+    });
 
     await exportToExcelJS({
-      title: 'Catálogo do Acervo da Biblioteca Escolar',
+      title: `Catálogo do Acervo - Biblioteca Escolar (${currentSchoolName})`,
       year: currentYear,
       columns,
       rows,
-      filename: `catalogo_acervo_biblioteca_${currentYear}.xlsx`
+      filename: `catalogo_acervo_biblioteca${schoolFileSuffix}_${currentYear}.xlsx`
     });
+  };
+
+  const handleExportBooksCatalogPDF = () => {
+    const targetBooks = filteredBooks;
+    if (targetBooks.length === 0) {
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Acervo Vazio',
+        message: selectedSchoolFilter !== 'todas'
+          ? `Nenhuma obra encontrada na unidade "${currentSchoolName}" para exportação.`
+          : 'Nenhuma obra cadastrada para exportação do catálogo.',
+        icon: 'ℹ️'
+      });
+      return;
+    }
+
+    const doc = new jsPDF();
+    doc.setFontSize(16);
+    doc.setFont('helvetica', 'bold');
+    doc.text('BIBLIOTECA ESCOLAR - CATÁLOGO DO ACERVO', 105, 14, { align: 'center' });
+
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Unidade: ${currentSchoolName}`, 14, 22);
+    doc.text(`Ano Letivo: ${currentYear}   |   Data de Emissão: ${formatDate(new Date().toISOString().split('T')[0])}`, 14, 27);
+
+    let sumTotal = 0;
+    let sumAvail = 0;
+    let sumLoaned = 0;
+    let sumCorner = 0;
+
+    const tableData: (string | number)[][] = targetBooks.map((b) => {
+      const real = getRealBookAvailability(
+        b,
+        selectedSchoolFilter !== 'todas' ? selectedSchoolFilter : undefined
+      );
+      sumTotal += real.totalCopies;
+      sumAvail += real.availableCopies;
+      sumLoaned += real.activeLoansCount;
+      sumCorner += real.cornerCopiesCount;
+
+      let situacao = 'Emprestado';
+      if (real.availableCopies > 0) {
+        situacao = 'Disponível';
+      } else if (real.cornerCopiesCount > 0 && real.activeLoansCount === 0) {
+        situacao = 'No Cantinho';
+      } else if (real.cornerCopiesCount > 0) {
+        situacao = 'Cantinho/Empr.';
+      }
+
+      return [
+        b.val.code || '-',
+        b.val.title,
+        b.val.author || '-',
+        real.totalCopies.toString(),
+        real.availableCopies.toString(),
+        real.activeLoansCount.toString(),
+        real.cornerCopiesCount.toString(),
+        situacao
+      ];
+    });
+
+    // Linha de totalização ao final da tabela
+    tableData.push([
+      'TOTAL',
+      `${targetBooks.length} obra(s)`,
+      '-',
+      sumTotal.toString(),
+      sumAvail.toString(),
+      sumLoaned.toString(),
+      sumCorner.toString(),
+      '-'
+    ]);
+
+    autoTable(doc, {
+      startY: 32,
+      head: [['Cód.', 'Título', 'Autor(a)', 'Total', 'Estante', 'Balcão', 'Cantinho', 'Situação']],
+      body: tableData,
+      theme: 'grid',
+      styles: { fontSize: 8, cellPadding: 2, valign: 'middle' },
+      headStyles: {
+        fillColor: [16, 185, 129],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+        halign: 'center'
+      },
+      columnStyles: {
+        0: { cellWidth: 16, halign: 'center' },
+        1: { cellWidth: 54, halign: 'left' },
+        2: { cellWidth: 36, halign: 'left' },
+        3: { cellWidth: 13, halign: 'center' },
+        4: { cellWidth: 13, halign: 'center' },
+        5: { cellWidth: 13, halign: 'center' },
+        6: { cellWidth: 15, halign: 'center' },
+        7: { cellWidth: 22, halign: 'center' }
+      },
+      didParseCell: (data) => {
+        if (data.section === 'body') {
+          const isLastRow = data.row.index === tableData.length - 1;
+          if (isLastRow) {
+            data.cell.styles.fontStyle = 'bold';
+            data.cell.styles.fillColor = [241, 245, 249];
+          } else if (data.column.index === 7) {
+            if (data.cell.raw === 'Disponível') {
+              data.cell.styles.textColor = [5, 150, 105];
+            } else if (data.cell.raw === 'No Cantinho') {
+              data.cell.styles.textColor = [16, 185, 129];
+              data.cell.styles.fontStyle = 'bold';
+            } else {
+              data.cell.styles.textColor = [220, 38, 38];
+              data.cell.styles.fontStyle = 'bold';
+            }
+          }
+        }
+      }
+    });
+
+    doc.save(`catalogo_acervo_biblioteca${schoolFileSuffix}_${currentYear}.pdf`);
   };
 
   const handleExportMovementsExcel = async () => {
@@ -1996,10 +2330,8 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
   }, 0);
 
   const totalAvailableCopies = baseBooksForStats.reduce((acc, b) => {
-    if (selectedSchoolFilter !== 'todas' && b.val.copiesBySchool && b.val.copiesBySchool[selectedSchoolFilter]) {
-      return acc + (b.val.copiesBySchool[selectedSchoolFilter].availableCopies || 0);
-    }
-    return acc + (b.val.availableCopies || 0);
+    const real = getRealBookAvailability(b, selectedSchoolFilter !== 'todas' ? selectedSchoolFilter : undefined);
+    return acc + real.availableCopies;
   }, 0);
   const activeLoansCount = baseLoansForStats.filter((l) => l.val.status !== 'devolvido' && !isLoanOverdue(l.val)).length;
   const overdueLoansCount = baseLoansForStats.filter((l) => isLoanOverdue(l.val)).length;
@@ -2255,15 +2587,27 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
           )}
 
           {activeTab === 'acervo' && (
-            <button
-              id="btn-export-catalog-xlsx"
-              onClick={handleExportBooksCatalogExcel}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer"
-              title="Exportar catálogo completo em Excel (.xlsx)"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Exportar Catálogo (.xlsx)</span>
-            </button>
+            <>
+              <button
+                id="btn-export-catalog-pdf"
+                onClick={handleExportBooksCatalogPDF}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer"
+                title="Exportar catálogo do acervo em PDF"
+              >
+                <Download className="w-3.5 h-3.5 text-rose-600" />
+                <span>PDF Catálogo</span>
+              </button>
+
+              <button
+                id="btn-export-catalog-xlsx"
+                onClick={handleExportBooksCatalogExcel}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer"
+                title="Exportar catálogo completo em Excel (.xlsx)"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Excel (.xlsx)</span>
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -2578,16 +2922,16 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                 const holdingInSelectedSchool = selectedSchoolFilter !== 'todas' && b.val.copiesBySchool
                   ? b.val.copiesBySchool[selectedSchoolFilter]
                   : null;
-                const cardAvailableCopies = holdingInSelectedSchool
-                  ? (holdingInSelectedSchool.availableCopies ?? 0)
-                  : (b.val.availableCopies ?? 0);
-                const cardTotalCopies = holdingInSelectedSchool
-                  ? (holdingInSelectedSchool.totalCopies ?? 0)
-                  : (b.val.totalCopies ?? 1);
+                const real = getRealBookAvailability(
+                  b,
+                  selectedSchoolFilter !== 'todas' ? selectedSchoolFilter : undefined
+                );
+                const cardAvailableCopies = real.availableCopies;
+                const cardTotalCopies = real.totalCopies;
                 // Quando filtrado por escola, hasAvailable deve checar a disponibilidade física na escola selecionada
                 const hasAvailable = cardAvailableCopies > 0;
                 // hasAvailableInNetwork indica se existe estoque em qualquer escola da rede
-                const hasAvailableInNetwork = (b.val.availableCopies ?? 0) > 0;
+                const hasAvailableInNetwork = real.networkAvailable > 0;
 
                 return (
                   <div
@@ -2602,17 +2946,28 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                           {b.val.code}
                         </span>
 
-                        <span
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                            hasAvailable
-                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                              : 'bg-amber-50 text-amber-700 border border-amber-200'
-                          }`}
-                        >
-                          {hasAvailable
-                            ? `${cardAvailableCopies} disponível(is)${selectedSchoolFilter !== 'todas' ? ' nesta unidade' : ''}`
-                            : 'Esgotado / Emprestado'}
-                        </span>
+                        <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                          {real.cornerCopiesCount > 0 && (
+                            <span
+                              className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-50 text-teal-800 border border-teal-200 flex items-center gap-1"
+                              title={`${real.cornerCopiesCount} exemplar(es) alocado(s) no Cantinho da Leitura das salas de aula`}
+                            >
+                              <span>🎒 {real.cornerCopiesCount} no Cantinho</span>
+                            </span>
+                          )}
+
+                          <span
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                              hasAvailable
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : 'bg-amber-50 text-amber-700 border border-amber-200'
+                            }`}
+                          >
+                            {hasAvailable
+                              ? `${cardAvailableCopies} disponível(is)${selectedSchoolFilter !== 'todas' ? ' nesta unidade' : ''}`
+                              : (real.cornerCopiesCount > 0 ? 'Exemplares em sala' : 'Esgotado / Emprestado')}
+                          </span>
+                        </div>
                       </div>
 
                       <div className="flex items-start gap-3 mt-1">
@@ -2650,8 +3005,9 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                             {(Object.entries(b.val.copiesBySchool) as [string, SchoolCopyHolding][])
                               .filter(([_, h]) => (h.totalCopies || 0) > 0)
                               .map(([sId, h]) => {
-                                const safeTotal = Math.max(0, Number(h.totalCopies) || 0);
-                                const safeAvail = Math.min(safeTotal, Math.max(0, Number(h.availableCopies ?? h.totalCopies ?? 0)));
+                                const realSchool = real.copiesBySchool[sId];
+                                const safeTotal = realSchool?.totalCopies ?? Math.max(0, Number(h.totalCopies) || 0);
+                                const safeAvail = realSchool?.availableCopies ?? 0;
                                 return (
                                   <span
                                     key={sId}
@@ -2660,7 +3016,7 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                                         ? 'bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold'
                                         : 'bg-slate-50 text-slate-700 border border-slate-200'
                                     }`}
-                                    title={`${safeAvail} disponíveis de ${safeTotal} exemplares em ${h.schoolName || schools.find((s) => s.id === sId)?.name || 'Escola'}`}
+                                    title={`${safeAvail} na estante da biblioteca, ${realSchool?.activeLoansCount || 0} empréstimo(s) no balcão, ${realSchool?.cornerCopiesCount || 0} no Cantinho da Leitura (de ${safeTotal} exemplares da unidade ${h.schoolName || schools.find((s) => s.id === sId)?.name || ''})`}
                                   >
                                     <Building2 className="w-3 h-3 text-emerald-600 shrink-0" />
                                     <span className="truncate max-w-[120px]">
@@ -4191,9 +4547,9 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                   <option value="">-- Escolha um livro do acervo --</option>
                   {books.map((b) => {
                     const schoolId = selectedClassObj?.val?.schoolId;
-                    const holdingInClassSchool = schoolId && b.val.copiesBySchool ? b.val.copiesBySchool[schoolId] : null;
-                    const schoolAvailable = holdingInClassSchool ? holdingInClassSchool.availableCopies : b.val.availableCopies;
-                    const isOutOfStockInClassSchool = schoolId && b.val.copiesBySchool ? schoolAvailable <= 0 : b.val.availableCopies <= 0;
+                    const real = getRealBookAvailability(b, schoolId);
+                    const schoolAvailable = real.availableCopies;
+                    const isOutOfStockInClassSchool = schoolAvailable <= 0;
 
                     return (
                       <option
@@ -4203,8 +4559,8 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                       >
                         {b.val.title} ({b.val.code}) — {
                           schoolId && b.val.copiesBySchool
-                            ? (schoolAvailable > 0 ? `${schoolAvailable} disp. nesta escola` : `0 disp. nesta escola (${b.val.availableCopies} na rede)`)
-                            : (b.val.availableCopies > 0 ? `${b.val.availableCopies} disp.` : 'ESGOTADO')
+                            ? (schoolAvailable > 0 ? `${schoolAvailable} disp. nesta escola` : `0 disp. nesta escola (${real.networkAvailable} na rede)`)
+                            : (real.networkAvailable > 0 ? `${real.networkAvailable} disp.` : 'ESGOTADO')
                         }
                       </option>
                     );
@@ -4218,12 +4574,12 @@ export const LibraryScreen: React.FC<LibraryScreenProps> = ({
                 const book = books.find((b) => b.id === loanSelectedBookId);
                 if (!book || !book.val.copiesBySchool) return null;
                 const schoolId = selectedClassObj.val.schoolId;
-                const schoolHolding = book.val.copiesBySchool[schoolId];
-                const availableInSchool = schoolHolding ? Number(schoolHolding.availableCopies ?? 0) : 0;
+                const real = getRealBookAvailability(book, schoolId);
+                const availableInSchool = real.availableCopies;
 
                 if (availableInSchool <= 0) {
-                  const otherSchoolsWithStock = (Object.entries(book.val.copiesBySchool) as [string, SchoolCopyHolding][])
-                    .filter(([sId, h]) => sId !== schoolId && (h.availableCopies || 0) > 0)
+                  const otherSchoolsWithStock = (Object.entries(real.copiesBySchool) as [string, { schoolName?: string; availableCopies: number }][])
+                    .filter(([sId, h]) => sId !== schoolId && h.availableCopies > 0)
                     .map(([_, h]) => `${h.schoolName || 'Outra Escola'} (${h.availableCopies} disp.)`);
 
                   return (
