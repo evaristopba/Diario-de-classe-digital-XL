@@ -83,6 +83,8 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
   const [selectedStudentId, setSelectedStudentId] = useState('');
   const [students, setStudents] = useState<{ id: string; val: Student }[]>([]);
   const [showTransferAnnual, setShowTransferAnnual] = useState(true);
+  const [showLessonContentBimester, setShowLessonContentBimester] = useState(false);
+  const [showRABimester, setShowRABimester] = useState(true);
   const [activeTab, setActiveTab] = useState<ReportTab>('desempenho');
   const [generating, setGenerating] = useState(false);
 
@@ -366,16 +368,45 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                 <BarChart3 className="w-5 h-5" />
                 <h4 className="font-bold text-slate-800 text-sm">Boletim por Bimestre</h4>
               </div>
-              <p className="text-xs text-slate-500 leading-relaxed">
+              <p className="text-xs text-slate-500 leading-relaxed mb-3">
                 Notas individuais por aluno no {selectedBimester}º bimestre (Geral ou por Matéria Selecionada)
               </p>
+              <div className="space-y-2 mb-3">
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showRABimester}
+                    onChange={(e) => setShowRABimester(e.target.checked)}
+                    className="rounded text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>Exibir coluna de R.A. do aluno</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showLessonContentBimester}
+                    onChange={(e) => setShowLessonContentBimester(e.target.checked)}
+                    className="rounded text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>Incluir categorias trabalhadas após as notas</span>
+                </label>
+              </div>
             </div>
             <div className="flex items-center gap-2 mt-4 pt-3 border-t border-slate-100">
               <button
                 disabled={generating}
                 onClick={() =>
                   runReport(() =>
-                    generateBimesterReport(selectedClassId, selectedBimester, selectedTurma!, currentTeacher, currentYear, selectedSubject)
+                    generateBimesterReport(
+                      selectedClassId,
+                      selectedBimester,
+                      selectedTurma!,
+                      currentTeacher,
+                      currentYear,
+                      selectedSubject,
+                      showLessonContentBimester,
+                      showRABimester
+                    )
                   )
                 }
                 className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
@@ -387,7 +418,16 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                 disabled={generating}
                 onClick={() =>
                   runReport(() =>
-                    generateBimesterReportXLSX(selectedClassId, selectedBimester, selectedTurma!, currentYear, selectedSubject)
+                    generateBimesterReportXLSX(
+                      selectedClassId,
+                      selectedBimester,
+                      selectedTurma!,
+                      currentYear,
+                      selectedSubject,
+                      currentTeacher,
+                      showLessonContentBimester,
+                      showRABimester
+                    )
                   )
                 }
                 className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"

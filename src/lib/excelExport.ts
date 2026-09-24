@@ -21,6 +21,7 @@ export interface ExcelReportOptions {
   rows: Record<string, any>[];
   filename: string;
   emptyMessage?: string;
+  footerNotes?: string[];
 }
 
 function applyHeaderMetadataStyle(
@@ -204,6 +205,24 @@ export async function exportToExcelJS(options: ExcelReportOptions) {
           right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
         };
       });
+    });
+  }
+
+  // 7.1 Linhas de rodapé/conteúdo sintetizado mesclado nas colunas da tabela
+  if (options.footerNotes && options.footerNotes.length > 0) {
+    const numCols = columns.length;
+    options.footerNotes.forEach((noteText) => {
+      const addedRow = worksheet.addRow([noteText]);
+      const rNum = addedRow.number;
+      if (numCols > 1) {
+        worksheet.mergeCells(rNum, 1, rNum, numCols);
+      }
+      addedRow.height = 28;
+      for (let c = 1; c <= numCols; c++) {
+        const cell = worksheet.getCell(rNum, c);
+        cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF1E293B' } };
+        cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+      }
     });
   }
 

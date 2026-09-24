@@ -109,7 +109,9 @@ export async function generateBimesterReport(
   turma: ClassRoom,
   teacher: string,
   currentYear: string,
-  subject = 'todas'
+  subject = 'todas',
+  includeContent = false,
+  showRA = true
 ) {
   const isAllSubjects = subject === 'todas';
   const doc = new jsPDF(isAllSubjects ? 'landscape' : 'portrait');
@@ -129,11 +131,11 @@ export async function generateBimesterReport(
     .sort((a, b) => (a.number || 0) - (b.number || 0));
 
   if (isAllSubjects) {
-    // Matérias em colunas: Nº, Aluno, RA, LP, MAT, CIE, HIST, GEO, ART, EF, ING, ER, Média
+    // Matérias em colunas: Nº, Aluno, (RA opcional), LP, MAT, CIE, HIST, GEO, ART, EF, ING, ER, Média
     const head = [
       'Nº',
       'Aluno',
-      'RA',
+      ...(showRA ? ['RA'] : []),
       ...DEFAULT_SUBJECTS.map((s) => s.shortName),
       'Média'
     ];
@@ -146,7 +148,10 @@ export async function generateBimesterReport(
         studentName += ` (TR. REC.)`;
       }
 
-      const row: any[] = [student.number, studentName, student.ra];
+      const row: any[] = [student.number, studentName];
+      if (showRA) {
+        row.push(student.ra || '-');
+      }
       let sum = 0;
       let cnt = 0;
 
@@ -179,12 +184,35 @@ export async function generateBimesterReport(
       tableData.push(row);
     });
 
+    const columnStyles: Record<number, any> = {
+      0: { halign: 'center' } // Nº
+    };
+    let colIdx = 1;
+    columnStyles[colIdx] = { halign: 'left' }; // Aluno
+    colIdx++;
+
+    if (showRA) {
+      columnStyles[colIdx] = { halign: 'center' }; // RA
+      colIdx++;
+    }
+
+    // Disciplinas
+    DEFAULT_SUBJECTS.forEach(() => {
+      columnStyles[colIdx] = { halign: 'center' };
+      colIdx++;
+    });
+
+    // Média
+    columnStyles[colIdx] = { halign: 'center' };
+
     autoTable(doc, {
       startY,
       head: [head],
-      body: tableData.length > 0 ? tableData : [['-', 'Nenhum aluno cadastrado na turma.', '-', ...DEFAULT_SUBJECTS.map(() => '-'), '-']],
+      body: tableData.length > 0 ? tableData : [['-', 'Nenhum aluno cadastrado na turma.', ...(showRA ? ['-'] : []), ...DEFAULT_SUBJECTS.map(() => '-'), '-']],
       theme: 'grid',
-      styles: { fontSize: 8 }
+      styles: { fontSize: 8 },
+      headStyles: { halign: 'center' },
+      columnStyles
     });
   } else {
     // Matéria única selecionada
@@ -213,15 +241,96 @@ export async function generateBimesterReport(
       });
 
       if (student.status === 'expedida' && nota === '-') nota = 'TR. EXP.';
-      tableData.push([student.number, studentName, student.ra, nota]);
+      const singleRow = [student.number, studentName];
+      if (showRA) {
+        singleRow.push(student.ra || '-');
+      }
+      singleRow.push(nota);
+      tableData.push(singleRow);
     });
+
+    const singleHead = ['Nº', 'Aluno'];
+    if (showRA) {
+      singleHead.push('RA');
+    }
+    singleHead.push(`Nota (${getSubjectName(subject)})`);
+
+    const singleColumnStyles: Record<number, any> = {
+      0: { halign: 'center' }, // Nº
+      1: { halign: 'left' }    // Aluno
+    };
+    if (showRA) {
+      singleColumnStyles[2] = { halign: 'center' }; // RA
+      singleColumnStyles[3] = { halign: 'center' }; // Nota
+    } else {
+      singleColumnStyles[2] = { halign: 'center' }; // Nota
+    }
 
     autoTable(doc, {
       startY,
-      head: [['Nº', 'Aluno', 'RA', `Nota (${getSubjectName(subject)})`]],
-      body: tableData.length > 0 ? tableData : [['-', 'Nenhum aluno cadastrado na turma.', '-', '-']],
-      theme: 'grid'
+      head: [singleHead],
+      body: tableData.length > 0 ? tableData : [['-', 'Nenhum aluno cadastrado na turma.', ...(showRA ? ['-'] : []), '-']],
+      theme: 'grid',
+      headStyles: { halign: 'center' },
+      columnStyles: singleColumnStyles
     });
+  }
+
+  // Se solicitado, incluir a lista das categorias trabalhadas após as notas
+  if (includeContent) {
+    try {
+      const plansSnap = await get(ref(rtdb, dc('planos-aula')));
+      const catSnap = await get(ref(rtdb, 'diario-classe/categorias'));
+      const catVal = catSnap.val() || {};
+      const catMap: Record<string, string> = {};
+      Object.keys(catVal).forEach((k) => {
+        catMap[k] = catVal[k].name;
+      });
+
+      const plansVal = plansSnap.val() || {};
+      const categoryNamesSet = new Set<string>();
+
+      Object.keys(plansVal).forEach((k) => {
+        const p = plansVal[k];
+        if (
+          p.classId === classId &&
+          String(p.bimester) === String(bimester) &&
+          (!p.anoLetivo || p.anoLetivo === currentYear)
+        ) {
+          if (!isAllSubjects && p.subject && p.subject !== subject) {
+            return;
+          }
+
+          if (p.categoryId && catMap[p.categoryId]) {
+            categoryNamesSet.add(catMap[p.categoryId]);
+          } else if (p.category) {
+            categoryNamesSet.add(p.category);
+          }
+        }
+      });
+
+      const categoryList = Array.from(categoryNamesSet);
+      if (categoryList.length > 0) {
+        const joinedCategories = categoryList.join('; ');
+        const finalY = (doc as any).lastAutoTable?.finalY ? (doc as any).lastAutoTable.finalY + 6 : 200;
+        doc.setFontSize(9);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(30, 41, 59);
+
+        const marginX = 14;
+        const maxTextWidth = (isAllSubjects ? 297 : 210) - marginX * 2;
+        const splitText = doc.splitTextToSize(joinedCategories, maxTextWidth);
+
+        if (finalY + splitText.length * 4.5 > (isAllSubjects ? 190 : 275)) {
+          doc.addPage();
+          doc.text(splitText, marginX, 20);
+        } else {
+          doc.text(splitText, marginX, finalY);
+        }
+      }
+    } catch (e) {
+      console.error('Erro ao incluir categorias no relatório PDF:', e);
+    }
   }
 
   doc.save(`boletim_${bimester}bim_${subject}_${turma ? `${turma.year}_${turma.letter}` : ''}.pdf`);
@@ -234,7 +343,9 @@ export async function generateBimesterReportXLSX(
   turma: ClassRoom,
   currentYear: string,
   subject = 'todas',
-  teacher?: string
+  teacher?: string,
+  includeContent = false,
+  showRA = true
 ) {
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
   const notasSnap = await get(ref(rtdb, dc('notas')));
@@ -257,7 +368,7 @@ export async function generateBimesterReportXLSX(
     columns = [
       { header: 'Nº', key: 'number', width: 8, align: 'center' },
       { header: 'Aluno', key: 'name', width: 38 },
-      { header: 'RA', key: 'ra', width: 16, align: 'center' },
+      ...(showRA ? [{ header: 'RA', key: 'ra', width: 16, align: 'center' as const }] : []),
       ...DEFAULT_SUBJECTS.map((s) => ({
         header: s.shortName,
         key: s.id,
@@ -275,9 +386,11 @@ export async function generateBimesterReportXLSX(
 
       const rowObj: any = {
         number: student.number,
-        name: studentName,
-        ra: student.ra || '-'
+        name: studentName
       };
+      if (showRA) {
+        rowObj.ra = student.ra || '-';
+      }
       let sum = 0;
       let cnt = 0;
 
@@ -315,7 +428,7 @@ export async function generateBimesterReportXLSX(
     columns = [
       { header: 'Nº', key: 'number', width: 8, align: 'center' },
       { header: 'Aluno', key: 'name', width: 38 },
-      { header: 'RA', key: 'ra', width: 16, align: 'center' },
+      ...(showRA ? [{ header: 'RA', key: 'ra', width: 16, align: 'center' as const }] : []),
       { header: `Nota (${getSubjectName(subject)})`, key: 'nota', width: 22, align: 'center', numFmt: '0.0' }
     ];
 
@@ -345,13 +458,59 @@ export async function generateBimesterReportXLSX(
       } else {
         notaVal = 'TR. EXP.';
       }
-      rows.push({
+      const rowObj: any = {
         number: student.number,
         name: studentName,
-        ra: student.ra || '-',
         nota: notaVal
-      });
+      };
+      if (showRA) {
+        rowObj.ra = student.ra || '-';
+      }
+      rows.push(rowObj);
     });
+  }
+
+  let footerNotes: string[] | undefined = undefined;
+
+  if (includeContent) {
+    try {
+      const plansSnap = await get(ref(rtdb, dc('planos-aula')));
+      const catSnap = await get(ref(rtdb, 'diario-classe/categorias'));
+      const catVal = catSnap.val() || {};
+      const catMap: Record<string, string> = {};
+      Object.keys(catVal).forEach((k) => {
+        catMap[k] = catVal[k].name;
+      });
+
+      const plansVal = plansSnap.val() || {};
+      const categoryNamesSet = new Set<string>();
+
+      Object.keys(plansVal).forEach((k) => {
+        const p = plansVal[k];
+        if (
+          p.classId === classId &&
+          String(p.bimester) === String(bimester) &&
+          (!p.anoLetivo || p.anoLetivo === currentYear)
+        ) {
+          if (!isAllSubjects && p.subject && p.subject !== subject) {
+            return;
+          }
+
+          if (p.categoryId && catMap[p.categoryId]) {
+            categoryNamesSet.add(catMap[p.categoryId]);
+          } else if (p.category) {
+            categoryNamesSet.add(p.category);
+          }
+        }
+      });
+
+      const categoryList = Array.from(categoryNamesSet);
+      if (categoryList.length > 0) {
+        footerNotes = [categoryList.join('; ')];
+      }
+    } catch (e) {
+      console.error('Erro ao incluir categorias no relatório XLSX:', e);
+    }
   }
 
   await exportToExcelJS({
@@ -364,6 +523,7 @@ export async function generateBimesterReportXLSX(
     columns,
     rows,
     emptyMessage: 'Nenhum aluno cadastrado na turma.',
+    footerNotes,
     filename: `boletim_${bimester}bim_${subject}_${turma ? `${turma.year}_${turma.letter}` : ''}.xlsx`
   });
 }
