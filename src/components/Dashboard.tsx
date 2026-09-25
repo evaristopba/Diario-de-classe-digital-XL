@@ -2,6 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { ScreenType } from '../types';
 import { getBackupRoutineStatus } from '../lib/backupService';
 import {
+  verificarIsAdmin,
+  verificarExibirApresentacaoAdmin,
+  salvarConfigExibirApresentacaoAdmin
+} from '../lib/firebase';
+import {
   Building2,
   Users,
   UserCheck,
@@ -26,7 +31,10 @@ import {
   Code,
   Terminal,
   Globe,
-  UploadCloud
+  UploadCloud,
+  Presentation,
+  Video,
+  Sparkles
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -50,10 +58,26 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
   const [isDownloadingZip, setIsDownloadingZip] = useState(false);
   const [isDownloadingHtml, setIsDownloadingHtml] = useState(false);
   const [routineStatus, setRoutineStatus] = useState(getBackupRoutineStatus());
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showPresentationButton, setShowPresentationButton] = useState(false);
 
   useEffect(() => {
     setRoutineStatus(getBackupRoutineStatus());
+    verificarIsAdmin()
+      .then((admin) => {
+        setIsAdmin(admin);
+        if (admin) {
+          verificarExibirApresentacaoAdmin().then((show) => setShowPresentationButton(show));
+        }
+      })
+      .catch(() => setIsAdmin(false));
   }, []);
+
+  const handleTogglePresentation = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.checked;
+    setShowPresentationButton(val);
+    await salvarConfigExibirApresentacaoAdmin(val);
+  };
 
   // Função para download direto que contorna 100% o cache do navegador
   const handleDownloadFreshFile = async (url: string, filename: string, isZip: boolean) => {
@@ -472,7 +496,20 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
       icon: <ShieldCheck className="w-8 h-8" />,
       color: 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:border-emerald-400 group-hover:bg-emerald-600 group-hover:text-white',
       badge: 'Segurança'
-    }
+    },
+    ...(showPresentationButton
+      ? [
+          {
+            id: 'presentation-screen' as ScreenType,
+            title: 'Apresentação Municipal',
+            desc: 'Pitch executivo para Secretário(a) e roteiro para gravação de vídeo institucional',
+            icon: <Presentation className="w-8 h-8" />,
+            color:
+              'bg-indigo-50 text-indigo-700 border-indigo-200 hover:border-indigo-400 group-hover:bg-indigo-700 group-hover:text-white',
+            badge: 'Admin • Pitch'
+          }
+        ]
+      : [])
   ];
 
   return (
@@ -518,6 +555,35 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
         {/* Utilitários de implantação e download: visíveis apenas no ambiente de desenvolvimento/preview da plataforma, ocultos após deploy em produção na Vercel */}
         {isDevEnvironment && (
           <div className="flex flex-wrap items-center gap-2">
+            {/* Botão de Apresentação Municipal (Apenas Admin e quando o checkbox estiver ativo) */}
+            {isAdmin && showPresentationButton && (
+              <button
+                id="btn-open-pitch-screen"
+                onClick={() => onNavigate('presentation-screen')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition cursor-pointer"
+                title="Acessar Apresentação Institucional e Roteiro de Vídeo"
+              >
+                <Presentation className="w-4 h-4 text-amber-300" />
+                <span>Apresentação / Pitch</span>
+              </button>
+            )}
+
+            {/* Checkbox discreto para Professor ADMIN: ativa/desativa botão na interface sem poluição visual */}
+            {isAdmin && (
+              <label
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200/80 rounded-xl text-[11px] font-semibold text-slate-600 cursor-pointer transition select-none border border-slate-200"
+                title="Exibir ou ocultar o botão de Apresentação Municipal na interface principal sem gerar poluição visual"
+              >
+                <input
+                  type="checkbox"
+                  checked={showPresentationButton}
+                  onChange={handleTogglePresentation}
+                  className="w-3.5 h-3.5 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
+                />
+                <span>Atalho Apresentação</span>
+              </label>
+            )}
+
             {/* Botão de Rotina de Backup */}
             <button
               id="btn-open-backup-screen"

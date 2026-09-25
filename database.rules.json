@@ -60,6 +60,10 @@
           ".validate": "newData.hasChildren(['name', 'id'])"
         }
       },
+      "config": {
+        ".read": "auth != null",
+        ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)"
+      },
       "bncc": {
         ".read": "auth != null",
         ".write": "auth != null && (root.child('diario-classe/admins/' + auth.uid).val() === true || root.child('diario-classe/admins').val() === null)",

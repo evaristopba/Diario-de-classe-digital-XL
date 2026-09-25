@@ -7,7 +7,13 @@ Sistema completo para professores, bibliotecários e administradores escolares g
 ## ✨ Principais Funcionalidades
 
 - **Controle de Chamadas (Frequência)**: Registro diário rápido com presença, falta, falta justificada, histórico de aulas e cálculo automático de percentual de frequência.
-- **Notas e Avaliações Bimestrais**: Lançamento por bimestres/trimestres, cálculo de médias, recuperação, notas finais e status de aprovação.
+- **Notas, Avaliações e Boletins Escolares (Bimestral e Anual Consolidado)**:
+  - **Documentação Detalhada**: Consulte o guia completo em [`MANUAL_BOLETIM.md`](./MANUAL_BOLETIM.md).
+  - **Boletim por Bimestre**: Emissão de notas individuais por estudante no 1º, 2º, 3º ou 4º bimestre em visão geral multi-disciplinar (formato paisagem) ou por componente específico (formato retrato).
+  - **Customizações Oficiais**: Opções de exibição de R.A. do aluno e anexo detalhado das habilidades e conteúdos da BNCC trabalhados no ciclo.
+  - **Boletim Anual Consolidado**: Compilação automática dos 4 bimestres, cálculo da média anual e tratamento de estudantes transferidos (`TR. EXP.` / `TR. REC.`).
+  - **Ficha Individual do Aluno**: Visão 360º com notas, faltas, ocorrências e leituras da biblioteca em documento único.
+  - **Formatos Duplos**: Exportação com 1 clique para PDF diagramado para impressão/assinatura ou planilhas Excel (.xlsx) prontas para análise da secretaria escolar.
 - **Planos de Aula & BNCC**: Criação e acompanhamento de planos de aula integrados com habilidades da Base Nacional Comum Curricular (BNCC).
 - **Biblioteca Escolar & Cantinho da Leitura (Acervo Integrado & Descentralizado)**:
   - **Documentação Detalhada**: Consulte o guia completo em [`MANUAL_BIBLIOTECA.md`](./MANUAL_BIBLIOTECA.md).
@@ -15,12 +21,17 @@ Sistema completo para professores, bibliotecários e administradores escolares g
   - **Busca Instantânea por ISBN**: integração com APIs do Google Books e OpenLibrary para autopreenchimento imediato de todos os dados e carregamento da capa oficial.
   - **Gestão de Acervo Multi-Escola & Distribuição**: suporte a cadastros unificados no modelo Obra Mestra vs. Exemplares Físicos Locais (`copiesBySchool`), distribuição simultânea de remessas para múltiplas escolas no momento do cadastro e detecção inteligente em tempo real de obras pré-existentes para evitar duplicações.
   - **Circulação & Empréstimos**: empréstimo direto para alunos por turma, controle automático de prazos de devolução, detecção de atrasos em tempo real, renovação rápida com 1 clique (+7 dias) e identificação visual do destino físico do exemplar no momento da devolução.
-  - **Cantinho da Leitura em Sala de Aula**: extensão pedagógica na sala com segregação patrimonial atômica (sem debitar a biblioteca central durante os empréstimos aos alunos da turma), etiquetas visuais de procedência (`🏫 Cantinho da Sala` vs `📚 Biblioteca Central`) e recolhimento seguro de volta ao acervo central ao final do ciclo letivo.
+  - **Cantinho da Leitura em Sala de Aula**: extensão pedagógica na sala com segregação patrimonial atômica (sem debitar a biblioteca central durante os empréstimos aos alunos da turma), seletor de turmas agrupado por escola (`<optgroup>`), badge contextual inteligente (`🏫 Escola • 🎓 Turma` em rede completa e apenas `🎓 Turma` quando filtrado por unidade) e rastreabilidade sutil nas tabelas sem poluição visual.
   - **Remanejamento de Obras**: transferência documentada de exemplares entre bibliotecas de diferentes escolas da rede com histórico e motivo.
   - **Histórico & Auditoria**: rastreabilidade completa de leituras concluídas e movimentações físicas entre unidades.
   - **Exportações Gerenciais**: inventários e relatórios em Excel (.xlsx) e comprovantes de empréstimo formatados para impressão em PDF.
 - **Ocorrências e Eventos**: Registro pedagógico e comportamental com tipificação personalizável e histórico por estudante.
 - **Gestão de Escolas, Turmas e Professores**: Controle de acesso segregado entre Administrador, Professor e Bibliotecário, com integridade referencial.
+- **Apresentação Executiva & Pitch para Secretário(a) de Educação (Exclusivo Administrador)**:
+  - **Módulo Estratégico de Pitch**: Apresentação interativa estruturada nos 5 pilares fundamentais da gestão pública (Economia de Papel, Gestão Centralizada Multi-Escola, Agilidade Docente em Sala, Fomento ao IDEB com Leitura e Soberania dos Dados).
+  - **Assistente de Gravação de Vídeo Institucional**: Teleprompter integrado com cronômetro em tempo real, sugestões de roteiro por formato (Vídeo Completo de 3 a 4 min, Reels/Instagram de 60 a 90s, e Pílulas de Recursos de 30s), dicas técnicas e sugestões de legendas para redes sociais.
+  - **Botões de Demonstração Ao Vivo**: Atalhos para saltar diretamente para os módulos em tempo real durante a gravação ou reunião.
+  - **Gerador de Proposta Formal em PDF**: Exportação de proposta de modernização pedagógica em PDF com comparativo de custos e impacto municipal pronta para entrega à Secretaria.
 - **Relatórios Gerenciais**: Exportação para PDF formatado para impressão e planilhas Excel (.xlsx) de notas, presenças, planos e fichas de alunos.
 - **Rotina de Backup & Restauração Completa**:
   - Exportação e importação de backups integrais em arquivo JSON.

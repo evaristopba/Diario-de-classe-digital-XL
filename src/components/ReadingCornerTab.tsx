@@ -872,11 +872,29 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
               className="w-full sm:w-auto min-w-0 max-w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
             >
               <option value="todas">🏫 Todas as Turmas / Salas</option>
-              {availableClasses.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.val.year}º {c.val.letter} ({c.val.shift || 'Sala'})
-                </option>
-              ))}
+              {selectedSchoolFilter === 'todas' && schools.length > 1 ? (
+                schools.map((school) => {
+                  const schoolClasses = availableClasses.filter(
+                    (c) => (c.val.schoolId || '') === school.id
+                  );
+                  if (schoolClasses.length === 0) return null;
+                  return (
+                    <optgroup key={school.id} label={`🏫 ${school.name}`}>
+                      {schoolClasses.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.val.year}º {c.val.letter} ({c.val.shift || 'Sala'})
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })
+              ) : (
+                availableClasses.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.val.year}º {c.val.letter} ({c.val.shift || 'Sala'})
+                  </option>
+                ))
+              )}
             </select>
           </div>
 
@@ -935,12 +953,36 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
                     className="bg-white rounded-2xl border border-slate-200 p-4 shadow-xs hover:shadow-md transition flex flex-col justify-between min-w-0"
                   >
                     <div>
-                      {/* Topo do Card: Badge da Turma e Disponibilidade */}
+                      {/* Topo do Card: Badge da Turma, Escola e Disponibilidade */}
                       <div className="flex items-center justify-between gap-2 mb-3">
-                        <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-800 rounded-lg text-[11px] font-bold">
-                          <GraduationCap className="w-3 h-3 text-emerald-600" />
-                          <span className="truncate max-w-[150px]">{item.val.turmaName}</span>
-                        </span>
+                        {(() => {
+                          const cls = classes.find((c) => c.id === item.val.turmaId);
+                          const schoolObj = schools.find((s) => s.id === (cls?.val?.schoolId || item.val.schoolId));
+                          const schoolName = schoolObj?.name || item.val.schoolName || '';
+                          const showSchoolInBadge = selectedSchoolFilter === 'todas' && schools.length > 1 && schoolName;
+
+                          return (
+                            <span
+                              title={schoolName ? `${schoolName} • ${item.val.turmaName}` : item.val.turmaName}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-800 rounded-lg text-[11px] font-bold max-w-[70%]"
+                            >
+                              <GraduationCap className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                              <span className="truncate">
+                                {showSchoolInBadge ? (
+                                  <>
+                                    <span className="font-medium text-emerald-700/80">
+                                      {schoolName.replace(/^Escola Municipal\s*/i, 'E.M. ')}
+                                    </span>
+                                    <span className="mx-1 text-emerald-400">·</span>
+                                    <span>{item.val.turmaName}</span>
+                                  </>
+                                ) : (
+                                  item.val.turmaName
+                                )}
+                              </span>
+                            </span>
+                          );
+                        })()}
 
                         <span
                           className={`text-[10px] px-2 py-0.5 rounded-full font-black ${
@@ -1113,34 +1155,48 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {activeCornerLoans.map((l) => (
-                    <tr key={l.id} className="hover:bg-slate-50/80 transition">
-                      <td className="py-2.5 px-3 font-semibold text-slate-700">
-                        {l.val.className || '-'}
-                      </td>
-                      <td className="py-2.5 px-3 font-bold text-slate-900">
-                        {l.val.studentName}
-                      </td>
-                      <td className="py-2.5 px-3 font-medium text-emerald-800">
-                        {l.val.bookTitle}
-                      </td>
-                      <td className="py-2.5 px-3 text-center text-slate-600 font-mono">
-                        {formatDate(l.val.loanDate)}
-                      </td>
-                      <td className="py-2.5 px-3 text-center text-amber-700 font-bold font-mono">
-                        {formatDate(l.val.dueDate)}
-                      </td>
-                      <td className="py-2.5 px-3 text-center">
-                        <button
-                          onClick={() => handleOpenStudentReturn(l)}
-                          className="inline-flex items-center gap-1 px-3 py-1 bg-teal-50 hover:bg-teal-100 text-teal-800 font-bold rounded-lg transition cursor-pointer"
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                          <span>Receber na Sala</span>
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {activeCornerLoans.map((l) => {
+                    const cls = classes.find((c) => c.id === (l.val.readingCornerTurmaId || l.val.classId));
+                    const schoolObj = schools.find((s) => s.id === (cls?.val?.schoolId || l.val.schoolId));
+                    const schoolName = schoolObj?.name || l.val.schoolName || '';
+                    const showSchool = selectedSchoolFilter === 'todas' && schools.length > 1 && schoolName;
+
+                    return (
+                      <tr key={l.id} className="hover:bg-slate-50/80 transition">
+                        <td className="py-2.5 px-3 font-semibold text-slate-700">
+                          <div>
+                            <span>{l.val.className || '-'}</span>
+                            {showSchool && (
+                              <span className="block text-[10px] text-slate-400 font-normal truncate max-w-[140px]" title={schoolName}>
+                                {schoolName.replace(/^Escola Municipal\s*/i, 'E.M. ')}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 font-bold text-slate-900">
+                          {l.val.studentName}
+                        </td>
+                        <td className="py-2.5 px-3 font-medium text-emerald-800">
+                          {l.val.bookTitle}
+                        </td>
+                        <td className="py-2.5 px-3 text-center text-slate-600 font-mono">
+                          {formatDate(l.val.loanDate)}
+                        </td>
+                        <td className="py-2.5 px-3 text-center text-amber-700 font-bold font-mono">
+                          {formatDate(l.val.dueDate)}
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <button
+                            onClick={() => handleOpenStudentReturn(l)}
+                            className="inline-flex items-center gap-1 px-3 py-1 bg-teal-50 hover:bg-teal-100 text-teal-800 font-bold rounded-lg transition cursor-pointer"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Receber na Sala</span>
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               </div>
@@ -1207,28 +1263,42 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {completedCornerLoans.map((l) => (
-                    <tr key={l.id} className="hover:bg-slate-50/80 transition">
-                      <td className="py-2.5 px-3 font-semibold text-slate-700">
-                        {l.val.className || '-'}
-                      </td>
-                      <td className="py-2.5 px-3 font-bold text-slate-900">
-                        {l.val.studentName}
-                      </td>
-                      <td className="py-2.5 px-3 font-medium text-emerald-800">
-                        {l.val.bookTitle}
-                      </td>
-                      <td className="py-2.5 px-3 text-center text-slate-600 font-mono">
-                        {formatDate(l.val.loanDate)}
-                      </td>
-                      <td className="py-2.5 px-3 text-center text-emerald-700 font-bold font-mono">
-                        {formatDate(l.val.returnDate)}
-                      </td>
-                      <td className="py-2.5 px-3 text-slate-500 italic max-w-xs truncate">
-                        {l.val.notes || '-'}
-                      </td>
-                    </tr>
-                  ))}
+                  {completedCornerLoans.map((l) => {
+                    const cls = classes.find((c) => c.id === (l.val.readingCornerTurmaId || l.val.classId));
+                    const schoolObj = schools.find((s) => s.id === (cls?.val?.schoolId || l.val.schoolId));
+                    const schoolName = schoolObj?.name || l.val.schoolName || '';
+                    const showSchool = selectedSchoolFilter === 'todas' && schools.length > 1 && schoolName;
+
+                    return (
+                      <tr key={l.id} className="hover:bg-slate-50/80 transition">
+                        <td className="py-2.5 px-3 font-semibold text-slate-700">
+                          <div>
+                            <span>{l.val.className || '-'}</span>
+                            {showSchool && (
+                              <span className="block text-[10px] text-slate-400 font-normal truncate max-w-[140px]" title={schoolName}>
+                                {schoolName.replace(/^Escola Municipal\s*/i, 'E.M. ')}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 font-bold text-slate-900">
+                          {l.val.studentName}
+                        </td>
+                        <td className="py-2.5 px-3 font-medium text-emerald-800">
+                          {l.val.bookTitle}
+                        </td>
+                        <td className="py-2.5 px-3 text-center text-slate-600 font-mono">
+                          {formatDate(l.val.loanDate)}
+                        </td>
+                        <td className="py-2.5 px-3 text-center text-emerald-700 font-bold font-mono">
+                          {formatDate(l.val.returnDate)}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-500 italic max-w-xs truncate">
+                          {l.val.notes || '-'}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               </div>

@@ -18,10 +18,11 @@ Este documento fornece o guia operacional e técnico completo de todas as funcio
    - [Devolução](#43-devolução)
 5. [Cantinho da Leitura (Biblioteca em Sala de Aula)](#5-cantinho-da-leitura-biblioteca-em-sala-de-aula)
    - [Conceito Pedagógico](#51-conceito-pedagógico)
-   - [Disponibilização / Alocação para a Sala](#52-disponibilização--alocação-para-a-sala)
-   - [Empréstimo Rápido com Aluno da Turma](#53-empréstimo-rápido-com-aluno-da-turma)
-   - [Recebimento do Aluno](#54-recebimento-do-aluno)
-   - [Retorno ao Acervo Central](#55-retorno-ao-acervo-central)
+   - [Identificação Visual Limpa de Escola e Turma](#52-identificação-visual-limpa-de-escola-e-turma-sem-poluição-visual)
+   - [Disponibilização / Alocação para a Sala](#53-disponibilização--alocação-para-a-sala)
+   - [Empréstimo Rápido com Aluno da Turma](#54-empréstimo-rápido-com-aluno-da-turma)
+   - [Recebimento do Aluno](#55-recebimento-do-aluno)
+   - [Retorno ao Acervo Central](#56-retorno-ao-acervo-central)
 6. [Remanejamento entre Escolas](#6-remanejamento-entre-escolas)
 7. [Histórico de Movimentações e Leituras](#7-histórico-de-movimentações-e-leituras)
 8. [Relatórios e Exportações (Excel e PDF)](#8-relatórios-e-exportações-excel-e-pdf)
@@ -153,7 +154,23 @@ O **Cantinho da Leitura** é a extensão física da biblioteca escolar dentro da
 - A disponibilidade na sala decorre da verdade material: $\text{Exemplares Livres na Sala} = \text{Total Alocado para a Turma} - \text{Empréstimos Ativos com Alunos da Turma}$.
 - Essa modelagem atômica previne erros de concorrência e divergências entre o estoque do sistema e o estoque físico real.
 
-### 5.2 Disponibilização / Alocação para a Sala
+### 5.2 Identificação Visual Limpa de Escola e Turma (Sem Poluição Visual)
+Para redes com múltiplas escolas e turmas, o Cantinho da Leitura adota o padrão **"Contexto no Topo + Badge Limpo e Hierárquico"**, garantindo clareza operacional absoluta sem sobrecarregar a interface:
+
+1. **Seletor de Turmas com Agrupamento por Escola (`<optgroup>`)**:
+   - No dropdown de turmas do Cantinho, quando a rede completa está ativa, as séries são agrupadas sob o cabeçalho de sua respectiva instituição:
+     - `🏫 E.M. Cora Coralina` ➔ `1º A (Manhã)`, `4º B (Manhã)`
+     - `🏫 E.M. Monteiro Lobato` ➔ `2º C (Tarde)`
+   - Permite localizar rapidamente o cantinho desejado sem duplicidade de nomes de salas entre escolas.
+
+2. **Badge Inteligente e Contextual no Card do Livro**:
+   - **Visão Geral da Rede**: O card exibe o badge unificado no canto superior esquerdo com hierarquia clara: `🏫 E.M. Cora Coralina • 🎓 1º A (Manhã)`.
+   - **Visão Filtrada por Escola**: Quando uma escola específica já foi selecionada no topo, o nome da escola é omitido do badge para manter o design minimalista e focado: `🎓 1º A (Manhã)`.
+
+3. **Rastreabilidade nas Tabelas de Empréstimos Ativos e Histórico**:
+   - Na listagem de empréstimos em sala, a coluna **Turma** exibe o nome da sala e, sutilmente em texto secundário abaixo dela, a unidade escolar correspondente quando em visualização da rede.
+
+### 5.3 Disponibilização / Alocação para a Sala
 1. Na aba **"Acervo"**, clique no botão **"Cantinho"** de qualquer obra que possua exemplares disponíveis (ou use o botão **"Disponibilizar Obras no Cantinho"** na aba Cantinho).
 2. Selecione a **Turma / Sala de Aula** de destino.
 3. Escolha a **Quantidade de Exemplares** que serão levados para a sala (respeitando o limite de exemplares livres no acervo central).
@@ -163,17 +180,17 @@ O **Cantinho da Leitura** é a extensão física da biblioteca escolar dentro da
    - Entram no inventário da sala de aula com quantidade total e quantidade livre na estante da sala.
    - É gerado um registro formal de movimentação no histórico da escola.
 
-### 5.3 Empréstimo Rápido com Aluno da Turma
+### 5.4 Empréstimo Rápido com Aluno da Turma
 1. Na aba **"Cantinho da Leitura"**, localize o card do livro na turma.
 2. Clique em **"Emprestar"**.
 3. Selecione o aluno da turma e o prazo (padrão de 7 dias).
 4. O livro passa a constar como "Com Aluno" na contagem da sala de aula e na aba **Empréstimos Ativos**.
 
-### 5.4 Recebimento do Aluno
+### 5.5 Recebimento do Aluno
 - Quando o estudante termina a leitura e traz o livro de volta para a sala, o professor acessa a aba **"Empréstimos Ativos"** do Cantinho e clica em **"Receber na Sala"**.
 - O livro volta a ficar livre na estante da turma.
 
-### 5.5 Retorno ao Acervo Central
+### 5.6 Retorno ao Acervo Central
 - Ao término do bimestre ou do projeto de leitura, o professor ou bibliotecário clica no botão **"Acervo"** no card do livro na sala de aula.
 - Informa quantos exemplares físicos estão sendo devolvidos à biblioteca geral.
 - O saldo do acervo central é recomposto e a alocação na sala é liquidada.

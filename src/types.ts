@@ -152,6 +152,7 @@ export interface Teacher {
   subject?: string; // Disciplina principal / Especialidade (ex: 'Regente', 'Arte', 'Educação Física', 'Inglês')
   status?: 'active' | 'inactive';
   canManageLibrary?: boolean; // Permissão configurável para gerenciar acervo e empréstimos da biblioteca
+  exibirApresentacaoAdmin?: boolean; // Checkbox para exibir atalho da Apresentação Municipal/Pitch no painel principal
   createdAt?: number;
   updatedAt?: number;
 }
@@ -335,7 +336,9 @@ export type ScreenType =
   | 'library-screen'
   | 'library'
   | 'backup-screen'
-  | 'backup';
+  | 'backup'
+  | 'presentation-screen'
+  | 'presentation';
 
 export interface ModalConfig {
   isOpen: boolean;

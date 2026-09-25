@@ -43,6 +43,7 @@ import { CategoriesScreen } from './components/CategoriesScreen';
 import { SubjectsScreen } from './components/SubjectsScreen';
 import { LibraryScreen } from './components/LibraryScreen';
 import { BackupScreen } from './components/BackupScreen';
+import { PresentationScreen } from './components/PresentationScreen';
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -260,6 +261,10 @@ export function App() {
 
         {(currentScreen === 'backup-screen' || currentScreen === 'backup') && (
           <BackupScreen setModal={setModal} onNavigate={setCurrentScreen} />
+        )}
+
+        {(currentScreen === 'presentation-screen' || currentScreen === 'presentation') && (
+          <PresentationScreen setModal={setModal} onNavigate={setCurrentScreen} />
         )}
       </main>
 

@@ -83,7 +83,8 @@ const CAMINHOS_COMPARTILHADOS = [
   'diario-classe/tipos-evento',
   'diario-classe/admins',
   'diario-classe/professores',
-  'diario-classe/biblioteca'
+  'diario-classe/biblioteca',
+  'diario-classe/config'
 ];
 
 export function dc(subPath?: string): string {
@@ -111,6 +112,77 @@ export async function verificarIsAdmin(uid?: string | null): Promise<boolean> {
     return false;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Verifica se a opção de exibir a Apresentação Municipal/Pitch no painel principal está ativada.
+ * Somente tem efeito se o usuário for Administrador.
+ */
+export async function verificarExibirApresentacaoAdmin(uid?: string | null): Promise<boolean> {
+  const isAdmin = await verificarIsAdmin(uid);
+  if (!isAdmin) return false;
+
+  const targetUid = uid || getCurrentAuthUid();
+
+  try {
+    // 1. Verifica no banco se há configuração global/do admin
+    const configSnap = await get(ref(rtdb, 'diario-classe/config/exibirApresentacaoAdmin'));
+    if (configSnap.exists()) {
+      return configSnap.val() === true;
+    }
+
+    if (targetUid) {
+      // 2. Verifica se no nó do professor o campo exibirApresentacaoAdmin está true
+      const profDirectSnap = await get(ref(rtdb, `diario-classe/professores/${targetUid}`));
+      if (profDirectSnap.exists() && profDirectSnap.val()?.exibirApresentacaoAdmin !== undefined) {
+        return profDirectSnap.val()?.exibirApresentacaoAdmin === true;
+      }
+
+      // Buscar professores pelo authUid
+      const allProfsSnap = await get(ref(rtdb, 'diario-classe/professores'));
+      if (allProfsSnap.exists()) {
+        const profs = allProfsSnap.val();
+        for (const k of Object.keys(profs)) {
+          const p = profs[k];
+          if (p?.authUid === targetUid && p?.exibirApresentacaoAdmin !== undefined) {
+            return p.exibirApresentacaoAdmin === true;
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 3. Fallback no localStorage
+  return localStorage.getItem('dc_exibir_apresentacao_admin') === 'true';
+}
+
+/**
+ * Salva a preferência de exibição do atalho de Apresentação Municipal para o Administrador.
+ */
+export async function salvarConfigExibirApresentacaoAdmin(exibir: boolean, teacherId?: string): Promise<void> {
+  localStorage.setItem('dc_exibir_apresentacao_admin', exibir ? 'true' : 'false');
+  try {
+    await set(ref(rtdb, 'diario-classe/config/exibirApresentacaoAdmin'), exibir);
+    if (teacherId) {
+      await update(ref(rtdb, `diario-classe/professores/${teacherId}`), {
+        exibirApresentacaoAdmin: exibir,
+        updatedAt: Date.now()
+      });
+    } else {
+      const uid = getCurrentAuthUid();
+      if (uid) {
+        const profRef = ref(rtdb, `diario-classe/professores/${uid}`);
+        const profSnap = await get(profRef);
+        if (profSnap.exists()) {
+          await update(profRef, { exibirApresentacaoAdmin: exibir, updatedAt: Date.now() });
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Erro ao sincronizar configuração de apresentação:', err);
   }
 }
 

@@ -5,6 +5,8 @@ import {
   salvarProfessor,
   excluirProfessor,
   cadastrarContaProfessorAuth,
+  verificarIsAdmin,
+  salvarConfigExibirApresentacaoAdmin,
   get,
   ref,
   rtdb
@@ -56,6 +58,8 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
   const [subject, setSubject] = useState('');
   const [status, setStatus] = useState<'active' | 'inactive'>('active');
   const [canManageLibrary, setCanManageLibrary] = useState(false);
+  const [exibirApresentacaoAdmin, setExibirApresentacaoAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const loadSubjectsList = async () => {
@@ -97,6 +101,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
   useEffect(() => {
     loadData();
     loadSubjectsList();
+    verificarIsAdmin().then((admin) => setIsAdmin(admin)).catch(() => setIsAdmin(false));
   }, []);
 
   const handleOpenForm = (t?: { id: string; val: Teacher }) => {
@@ -110,6 +115,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
       setSubject(t.val.subject || '');
       setStatus(t.val.status || 'active');
       setCanManageLibrary(!!t.val.canManageLibrary);
+      setExibirApresentacaoAdmin(!!t.val.exibirApresentacaoAdmin);
     } else {
       setEditingId(null);
       setName('');
@@ -120,6 +126,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
       setSubject(availableSubjects.length > 0 ? availableSubjects[0].name : 'Polivalente');
       setStatus('active');
       setCanManageLibrary(false);
+      setExibirApresentacaoAdmin(false);
     }
     setIsFormOpen(true);
   };
@@ -186,11 +193,17 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
           : (subject.trim() || 'Polivalente / Geral'),
         status,
         canManageLibrary: !!canManageLibrary,
+        exibirApresentacaoAdmin: !!exibirApresentacaoAdmin,
         ...(preservedAuthUid ? { authUid: preservedAuthUid } : {})
       };
 
       const finalId = editingId || authUid || undefined;
       await salvarProfessor(teacherData, finalId);
+
+      // Sincroniza configuração global se for Admin
+      if (isAdmin) {
+        await salvarConfigExibirApresentacaoAdmin(!!exibirApresentacaoAdmin, finalId);
+      }
 
       const isLibrarian = !!canManageLibrary;
       const roleTitle = isLibrarian ? 'Bibliotecário(a)' : 'Professor(a)';
@@ -380,6 +393,11 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
                     {t.val.canManageLibrary && (
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200" title="Possui permissão para gerenciar acervo e empréstimos da biblioteca">
                         📚 Biblioteca
+                      </span>
+                    )}
+                    {t.val.exibirApresentacaoAdmin && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200" title="Botão de Apresentação Municipal ativo na interface principal">
+                        🎬 Pitch Ativo
                       </span>
                     )}
                     <span
@@ -637,6 +655,33 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
                   </p>
                 </div>
               </div>
+
+              {/* Opção para Administrador: Apresentação Municipal & Pitch */}
+              {isAdmin && (
+                <div className="p-3.5 bg-amber-50/70 border border-amber-200/80 rounded-2xl flex items-start gap-3">
+                  <input
+                    id="teacher-can-show-presentation"
+                    type="checkbox"
+                    checked={exibirApresentacaoAdmin}
+                    onChange={(e) => setExibirApresentacaoAdmin(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 text-amber-600 rounded border-amber-300 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <div>
+                    <label
+                      htmlFor="teacher-can-show-presentation"
+                      className="text-xs font-bold text-slate-800 block cursor-pointer flex items-center gap-1.5"
+                    >
+                      <span>Exibir botão de Apresentação / Pitch no Painel Principal</span>
+                      <span className="text-[9px] font-extrabold px-1.5 py-0.2 bg-amber-100 text-amber-900 rounded-md border border-amber-300">
+                        Admin
+                      </span>
+                    </label>
+                    <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                      Disponibiliza o botão discreto de acesso à Apresentação para Secretário e Gravação de Vídeo na tela inicial. Quando desmarcado, a tela inicial permanece 100% limpa (zero poluição visual).
+                    </p>
+                  </div>
+                </div>
+              )}
 
               <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
                 <button
