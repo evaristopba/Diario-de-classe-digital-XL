@@ -77,6 +77,7 @@ export const DEFAULT_SUBJECTS: SubjectItem[] = [
   { id: 'arte', name: 'Arte', shortName: 'ART', category: 'diversificada' },
   { id: 'ed_fisica', name: 'Educação Física', shortName: 'EF', category: 'diversificada' },
   { id: 'ingles', name: 'Língua Inglesa', shortName: 'ING', category: 'diversificada' },
+  { id: 'computacao', name: 'Computação e Tecnologia', shortName: 'COMP', category: 'diversificada' },
   { id: 'ens_religioso', name: 'Ensino Religioso', shortName: 'ER', category: 'regente' }
 ];
 

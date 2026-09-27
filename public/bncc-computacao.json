@@ -1,0 +1,254 @@
+[
+  {
+    "code": "EF01CO01",
+    "desc": "Organizar objetos físicos ou digitais considerando diferentes características para essa organização, explicitando semelhanças (padrões) e diferenças.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF01CO02",
+    "desc": "Identificar e seguir sequências de passos aplicados no dia a dia para resolver problemas.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF01CO03",
+    "desc": "Reorganizar e criar sequências de passos em meios físicos ou digitais, relacionando essas sequências ao conceito de algoritmos.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF01CO04",
+    "desc": "Reconhecer o que é informação, que ela pode ser armazenada, transmitida como mensagem por diversos meios e descrita em várias linguagens.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF01CO05",
+    "desc": "Representar a informação usando diferentes codificações.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF01CO06",
+    "desc": "Reconhecer e explorar artefatos computacionais voltados a atender necessidades pessoais ou coletivas.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF01CO07",
+    "desc": "Conhecer as possibilidades de uso seguro das tecnologias computacionais para proteção dos dados pessoais e para garantir a própria segurança.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF01CO08",
+    "desc": "Reconhecer e utilizar tecnologias computacionais para pesquisar e acessar informações, expressar-se crítica e criativamente e resolver problemas.",
+    "years": ["1"],
+    "year": "1"
+  },
+  {
+    "code": "EF02CO01",
+    "desc": "Criar e comparar modelos ou representações de objetos, identificando características essenciais (padrões e atributos).",
+    "years": ["2"],
+    "year": "2"
+  },
+  {
+    "code": "EF02CO02",
+    "desc": "Criar e simular algoritmos representados em linguagem oral, escrita ou pictográfica, construídos como sequências com repetições simples definidas, a partir de instruções pré-estabelecidas ou criadas, analisando como a precisão das instruções afeta a sua execução.",
+    "years": ["2"],
+    "year": "2"
+  },
+  {
+    "code": "EF02CO03",
+    "desc": "Identificar que máquinas diferentes executam conjuntos próprios de instruções e podem ser usadas para definir algoritmos.",
+    "years": ["2"],
+    "year": "2"
+  },
+  {
+    "code": "EF02CO04",
+    "desc": "Diferenciar componentes físicos (hardware) e programas ou instruções (software) de um dispositivo computacional.",
+    "years": ["2"],
+    "year": "2"
+  },
+  {
+    "code": "EF02CO05",
+    "desc": "Reconhecer as características e os diferentes usos das tecnologias computacionais no cotidiano, dentro e fora da escola.",
+    "years": ["2"],
+    "year": "2"
+  },
+  {
+    "code": "EF02CO06",
+    "desc": "Reconhecer os cuidados necessários e as práticas responsáveis no uso de dispositivos e tecnologias computacionais.",
+    "years": ["2"],
+    "year": "2"
+  },
+  {
+    "code": "EF03CO01",
+    "desc": "Associar os valores 'verdadeiro' e 'falso' a sentenças lógicas do dia a dia, usando termos de negação.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF03CO02",
+    "desc": "Criar e simular algoritmos representados em linguagem oral, escrita ou pictográfica, incluindo sequências e repetições simples com condição para resolver problemas.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF03CO03",
+    "desc": "Aplicar a estratégia de decomposição para resolver problemas complexos, dividindo-os em partes menores e mais fáceis de gerenciar.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF03CO04",
+    "desc": "Relacionar o conceito de informação com o de dado.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF03CO05",
+    "desc": "Compreender que dados são estruturados em formatos específicos de acordo com a informação armazenada.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF03CO06",
+    "desc": "Reconhecer que, para realizar tarefas, o computador se comunica com o mundo exterior por meio de interfaces físicas (dispositivos de entrada e saída).",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF03CO07",
+    "desc": "Utilizar diferentes navegadores e ferramentas de busca para pesquisar e acessar informações com critérios de relevância.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF03CO08",
+    "desc": "Usar ferramentas computacionais em situações didáticas para se expressar em diferentes formatos digitais (textos, ilustrações, animações).",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF03CO09",
+    "desc": "Reconhecer o potencial impacto do compartilhamento de informações pessoais ou de seus pares em meio digital e a importância da privacidade.",
+    "years": ["3"],
+    "year": "3"
+  },
+  {
+    "code": "EF04CO01",
+    "desc": "Reconhecer objetos do mundo real e/ou digital que podem ser representados por meio de matrizes, onde cada componente está em uma posição definida por coordenadas, e realizar manipulações simples sobre essas representações.",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF04CO02",
+    "desc": "Reconhecer objetos do mundo real e/ou digital que podem ser representados por meio de registros que estabelecem uma organização na qual cada componente é identificado por um nome, realizando manipulações sobre essas representações.",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF04CO03",
+    "desc": "Criar e simular algoritmos representados em linguagem oral, escrita ou pictográfica, que incluam sequências e repetições simples e aninhadas (iterações definidas e indefinidas), para resolver problemas de forma independente e em colaboração.",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF04CO04",
+    "desc": "Entender que, para guardar, manipular e transmitir dados, deve-se codificá-los de alguma forma que seja compreendida pela máquina (formato digital).",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF04CO05",
+    "desc": "Codificar diferentes informações para representação em computador (binária, ASCII, atributos de pixel, como RGB etc.).",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF04CO06",
+    "desc": "Usar diferentes ferramentas computacionais para criação e autoria de conteúdo em múltiplos formatos digitais (textos, apresentações, vídeos).",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF04CO07",
+    "desc": "Demonstrar postura ética e cidadã nas atividades de coleta, transferência, guarda, compartilhamento e uso de dados e mídias.",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF04CO08",
+    "desc": "Reconhecer a importância de verificar a confiabilidade e credibilidade das fontes de informações obtidas na Internet (autoria, data, domínio).",
+    "years": ["4"],
+    "year": "4"
+  },
+  {
+    "code": "EF05CO01",
+    "desc": "Reconhecer objetos reais e digitais que podem ser representados como listas, e realizar manipulações simples sobre essas representações.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF05CO02",
+    "desc": "Reconhecer objetos reais e digitais que podem ser representados por meio de grafos (redes de informação com vértices e arestas), e realizar manipulações simples sobre essas representações.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF05CO03",
+    "desc": "Realizar operações de negação, conjunção e disjunção sobre sentenças lógicas e valores de 'verdadeiro' e 'falso'.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF05CO04",
+    "desc": "Criar e simular algoritmos representados em linguagem oral, escrita ou pictográfica, incorporando sequências, repetições (laços) e seleções condicionais (se/então/senão) para resolver problemas de forma independente e colaborativa.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF05CO05",
+    "desc": "Identificar os principais componentes da arquitetura de um computador, como dispositivos de entrada e saída, processadores e armazenamento.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF05CO06",
+    "desc": "Reconhecer que os dados podem ser armazenados em dispositivos locais (disco rígido, memória) ou remotos (servidores, nuvem).",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF05CO07",
+    "desc": "Reconhecer a necessidade e a função de um sistema operacional para a execução de programas e gerenciamento integrado do hardware.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF05CO08",
+    "desc": "Acessar informações na Internet de forma crítica para distinguir conteúdos confiáveis de não confiáveis e identificar desinformação.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF05CO09",
+    "desc": "Usar informações considerando as aplicações e os limites dos direitos autorais e licenças de uso em diferentes mídias digitais.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF05CO10",
+    "desc": "Expressar-se crítica e criativamente na compreensão das mudanças tecnológicas no mundo do trabalho e sobre a evolução da sociedade.",
+    "years": ["5"],
+    "year": "5"
+  },
+  {
+    "code": "EF05CO11",
+    "desc": "Identificar a adequação de diferentes tecnologias computacionais e ferramentas digitais na resolução de problemas do cotidiano.",
+    "years": ["5"],
+    "year": "5"
+  }
+]

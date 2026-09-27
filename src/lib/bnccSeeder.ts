@@ -7,7 +7,7 @@
  */
 
 import { rtdb, ref, get, update, push } from '../lib/firebase';
-import { OFFICIAL_BNCC_BLOCKS_SEED, BNCCSeedItem } from './bnccSeed';
+import { OFFICIAL_BNCC_BLOCKS_SEED, OFFICIAL_BNCC_COMPUTACAO_SEED, BNCCSeedItem } from './bnccSeed';
 import { getSkillApplicableYears } from './bnccHelper';
 
 export interface SeedResult {
@@ -19,16 +19,14 @@ export interface SeedResult {
 }
 
 /**
- * Insere ou sincroniza as habilidades da BNCC diretamente no nó `diario-classe/bncc` do Firebase RTDB.
- * - Não duplica habilidades existentes (busca por código normativo único).
- * - Se a habilidade já existir mas estiver com escopo de anos incompleto, atualiza o escopo para contemplar os blocos.
- * - Preserva chaves e integridade de planos de aula já associados.
+ * Função utilitária interna para sincronizar qualquer lista de sementes BNCC no Firebase RTDB.
  */
-export async function seedBNCCDatabase(
+async function seedBNCCList(
+  seedList: BNCCSeedItem[],
   onProgress?: (current: number, total: number, code: string) => void
 ): Promise<SeedResult> {
   const result: SeedResult = {
-    totalInSeed: OFFICIAL_BNCC_BLOCKS_SEED.length,
+    totalInSeed: seedList.length,
     inserted: 0,
     updated: 0,
     unchanged: 0,
@@ -52,14 +50,14 @@ export async function seedBNCCDatabase(
 
     const updates: Record<string, any> = {};
 
-    // 2. Iterar sobre o catálogo oficial de sementes (incluindo habilidades em bloco)
+    // 2. Iterar sobre os itens a serem semeados
     let processed = 0;
-    for (const seedItem of OFFICIAL_BNCC_BLOCKS_SEED) {
+    for (const seedItem of seedList) {
       processed++;
       const cleanCode = seedItem.code.trim().toUpperCase();
 
       if (onProgress) {
-        onProgress(processed, OFFICIAL_BNCC_BLOCKS_SEED.length, cleanCode);
+        onProgress(processed, seedList.length, cleanCode);
       }
 
       const existing = existingByCode[cleanCode];
@@ -115,4 +113,24 @@ export async function seedBNCCDatabase(
     result.errors.push(err?.message || 'Falha ao sincronizar com o banco de dados');
     throw err;
   }
+}
+
+/**
+ * Insere ou sincroniza o catálogo completo da BNCC (incluindo BNCC Computação)
+ * diretamente no nó `diario-classe/bncc` do Firebase RTDB (616 habilidades).
+ */
+export async function seedBNCCDatabase(
+  onProgress?: (current: number, total: number, code: string) => void
+): Promise<SeedResult> {
+  return seedBNCCList(OFFICIAL_BNCC_BLOCKS_SEED, onProgress);
+}
+
+/**
+ * Insere ou sincroniza exclusivamente as 42 habilidades da BNCC Computação
+ * (Resolução CNE/CEB nº 1/2022 - Anos Iniciais 1º ao 5º ano) no Firebase RTDB.
+ */
+export async function seedBNCCComputacaoDatabase(
+  onProgress?: (current: number, total: number, code: string) => void
+): Promise<SeedResult> {
+  return seedBNCCList(OFFICIAL_BNCC_COMPUTACAO_SEED, onProgress);
 }

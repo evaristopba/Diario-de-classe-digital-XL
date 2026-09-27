@@ -10,7 +10,7 @@ export interface BNCCSeedItem {
  * Fonte: Base Nacional Comum Curricular (MEC - Resolução CNE/CP nº 2/2017).
  * Total: 574 habilidades normativas (todas as disciplinas e blocos plurianuais).
  */
-export const OFFICIAL_BNCC_BLOCKS_SEED: BNCCSeedItem[] = [
+const CORE_BNCC_SEED: BNCCSeedItem[] = [
   {
     "code": "EF01CI01",
     "desc": "Comparar características de diferentes materiais presentes em objetos de uso cotidiano, discutindo sua origem, os modos como são descartados e como podem ser usados de forma mais consciente.",
@@ -4907,3 +4907,18 @@ export const OFFICIAL_BNCC_BLOCKS_SEED: BNCCSeedItem[] = [
     "year": "35"
   }
 ];
+
+import { OFFICIAL_BNCC_COMPUTACAO_SEED } from './bnccComputacaoSeed';
+export { OFFICIAL_BNCC_COMPUTACAO_SEED };
+
+/**
+ * CATÁLOGO COMPLETO OFICIAL DA BNCC + BNCC COMPUTAÇÃO - ENSINO FUNDAMENTAL I (1º AO 5º ANO)
+ * Fonte: Base Nacional Comum Curricular (MEC - Resolução CNE/CP nº 2/2017)
+ * e Normas sobre Computação na Educação Básica (MEC - Resolução CNE/CEB nº 1/2022).
+ * Total: 616 habilidades normativas (574 base BNCC + 42 BNCC Computação).
+ */
+export const OFFICIAL_BNCC_BLOCKS_SEED: BNCCSeedItem[] = [
+  ...CORE_BNCC_SEED,
+  ...OFFICIAL_BNCC_COMPUTACAO_SEED
+];
+

@@ -10,7 +10,8 @@ import {
   formatSkillYearsLabel,
   isSkillApplicableToYear
 } from '../lib/bnccHelper';
-import { seedBNCCDatabase } from '../lib/bnccSeeder';
+import { seedBNCCDatabase, seedBNCCComputacaoDatabase } from '../lib/bnccSeeder';
+import { OFFICIAL_BNCC_COMPUTACAO_SEED } from '../lib/bnccSeed';
 import {
   Bookmark,
   Plus,
@@ -28,7 +29,9 @@ import {
   Database,
   RefreshCw,
   Settings,
-  ChevronDown
+  ChevronDown,
+  Laptop,
+  Search
 } from 'lucide-react';
 
 interface BNCCScreenProps {
@@ -41,11 +44,14 @@ export const BNCCScreen: React.FC<BNCCScreenProps> = ({ setModal }) => {
   const [code, setCode] = useState('');
   const [desc, setDesc] = useState('');
   const [filterYear, setFilterYear] = useState('');
+  const [filterSubject, setFilterSubject] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [migrating, setMigrating] = useState(false);
   const [isSeeding, setIsSeeding] = useState(false);
+  const [isSeedingComputacao, setIsSeedingComputacao] = useState(false);
   const [showToolsMenu, setShowToolsMenu] = useState(false);
 
   const loadBNCC = async () => {
@@ -509,10 +515,114 @@ export const BNCCScreen: React.FC<BNCCScreenProps> = ({ setModal }) => {
     });
   };
 
+  const handleSeedComputacao = () => {
+    if (!isAdmin) {
+      return setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Acesso Restrito',
+        message: '⛔ Apenas Administradores têm permissão para popular dados no banco.',
+        icon: '⛔'
+      });
+    }
+
+    setModal({
+      isOpen: true,
+      type: 'confirm',
+      title: 'Popular Habilidades BNCC Computação',
+      message:
+        'Deseja carregar as 42 habilidades oficiais da BNCC Computação (Resolução CNE/CEB nº 1/2022 - 1º ao 5º ano: Pensamento Computacional, Mundo Digital e Cultura Digital) no Firebase RTDB? Habilidades já existentes não serão duplicadas.',
+      icon: '💻',
+      onConfirm: async () => {
+        try {
+          setIsSeedingComputacao(true);
+          const result = await seedBNCCComputacaoDatabase();
+          setModal({
+            isOpen: true,
+            type: 'alert',
+            title: 'BNCC Computação Populada!',
+            message: `Habilidades de Computação gravadas com sucesso!\n• Inseridas: ${result.inserted}\n• Atualizadas: ${result.updated}\n• Já presentes: ${result.unchanged}\n• Total do catálogo: ${result.totalInSeed}`,
+            icon: '✅'
+          });
+          loadBNCC();
+        } catch (err: any) {
+          setModal({
+            isOpen: true,
+            type: 'alert',
+            title: 'Erro ao Gravar Computação',
+            message: formatFriendlyError(err, 'Não foi possível gravar as habilidades de computação na base'),
+            icon: '❌'
+          });
+        } finally {
+          setIsSeedingComputacao(false);
+        }
+      }
+    });
+  };
+
+  const downloadComputacaoJSON = () => {
+    const blob = new Blob([JSON.stringify(OFFICIAL_BNCC_COMPUTACAO_SEED, null, 2)], {
+      type: 'application/json'
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'bncc_computacao_1ao5ano_oficial.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const filteredList = bnccList.filter((b) => {
-    if (!filterYear) return true;
-    return isSkillApplicableToYear(b.val, filterYear);
+    if (filterYear && !isSkillApplicableToYear(b.val, filterYear)) {
+      return false;
+    }
+    if (filterSubject) {
+      const codeUpper = (b.val.code || '').toUpperCase();
+      const match = codeUpper.match(/^EF\d+([A-Z]+)/);
+      const subCode = match ? match[1] : '';
+      if (subCode !== filterSubject) {
+        return false;
+      }
+    }
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase().trim();
+      const codeMatch = (b.val.code || '').toLowerCase().includes(term);
+      const descMatch = (b.val.desc || b.val.description || '').toLowerCase().includes(term);
+      if (!codeMatch && !descMatch) {
+        return false;
+      }
+    }
+    return true;
   });
+
+  const getSubjectBadge = (code: string) => {
+    if (!code) return null;
+    const upper = code.toUpperCase();
+    const match = upper.match(/^EF\d+([A-Z]+)/);
+    const tag = match ? match[1] : '';
+    switch (tag) {
+      case 'CO':
+        return { label: 'Computação', bg: 'bg-cyan-100 text-cyan-800 border-cyan-300', isComp: true };
+      case 'LP':
+        return { label: 'Língua Portuguesa', bg: 'bg-blue-100 text-blue-800 border-blue-200' };
+      case 'MA':
+        return { label: 'Matemática', bg: 'bg-emerald-100 text-emerald-800 border-emerald-200' };
+      case 'CI':
+        return { label: 'Ciências', bg: 'bg-teal-100 text-teal-800 border-teal-200' };
+      case 'HI':
+        return { label: 'História', bg: 'bg-amber-100 text-amber-800 border-amber-200' };
+      case 'GE':
+        return { label: 'Geografia', bg: 'bg-orange-100 text-orange-800 border-orange-200' };
+      case 'AR':
+        return { label: 'Arte', bg: 'bg-pink-100 text-pink-800 border-pink-200' };
+      case 'EF':
+        return { label: 'Educação Física', bg: 'bg-lime-100 text-lime-800 border-lime-200' };
+      case 'ER':
+        return { label: 'Ensino Religioso', bg: 'bg-violet-100 text-violet-800 border-violet-200' };
+      default:
+        return null;
+    }
+  };
 
   return (
     <div className="max-w-5xl mx-auto p-4 sm:p-6">
@@ -572,7 +682,7 @@ export const BNCCScreen: React.FC<BNCCScreenProps> = ({ setModal }) => {
                       className="fixed inset-0 z-20"
                       onClick={() => setShowToolsMenu(false)}
                     />
-                    <div className="absolute right-0 mt-1.5 w-64 rounded-xl bg-white p-1.5 shadow-lg ring-1 ring-black/5 border border-slate-200 z-30 space-y-1">
+                    <div className="absolute right-0 mt-1.5 w-72 rounded-xl bg-white p-1.5 shadow-lg ring-1 ring-black/5 border border-slate-200 z-30 space-y-1">
                       <div className="px-2.5 py-1.5 text-[11px] font-bold tracking-wider text-slate-400 uppercase">
                         Carga & Sincronização
                       </div>
@@ -593,13 +703,58 @@ export const BNCCScreen: React.FC<BNCCScreenProps> = ({ setModal }) => {
                         )}
                         <div>
                           <div className="font-bold text-slate-800">
-                            {isSeeding ? 'Gravando na Base...' : 'Popular Base BNCC'}
+                            {isSeeding ? 'Gravando na Base...' : 'Popular Catálogo Completo (616)'}
                           </div>
                           <p className="text-[11px] text-slate-500 font-normal">
-                            Carrega o catálogo normativo oficial e blocos plurianuais
+                            Carrega base normativa completa incluindo as 42 de Computação
                           </p>
                         </div>
                       </button>
+
+                      <button
+                        id="seed-bncc-computacao-btn"
+                        onClick={() => {
+                          setShowToolsMenu(false);
+                          handleSeedComputacao();
+                        }}
+                        disabled={isSeedingComputacao}
+                        className="w-full flex items-start gap-2.5 px-2.5 py-2 text-left rounded-lg text-xs font-medium text-slate-700 hover:bg-cyan-50 hover:text-cyan-900 disabled:opacity-50 transition-colors"
+                      >
+                        {isSeedingComputacao ? (
+                          <RefreshCw className="w-4 h-4 text-cyan-600 animate-spin shrink-0 mt-0.5" />
+                        ) : (
+                          <Laptop className="w-4 h-4 text-cyan-600 shrink-0 mt-0.5" />
+                        )}
+                        <div>
+                          <div className="font-bold text-slate-800">
+                            {isSeedingComputacao ? 'Gravando Computação...' : 'Popular Somente Computação (42)'}
+                          </div>
+                          <p className="text-[11px] text-slate-500 font-normal">
+                            Carrega as 42 habilidades da BNCC Computação (CNE 1/2022)
+                          </p>
+                        </div>
+                      </button>
+
+                      <button
+                        id="download-computacao-json-btn"
+                        onClick={() => {
+                          setShowToolsMenu(false);
+                          downloadComputacaoJSON();
+                        }}
+                        className="w-full flex items-start gap-2.5 px-2.5 py-2 text-left rounded-lg text-xs font-medium text-slate-700 hover:bg-emerald-50 hover:text-emerald-900 transition-colors"
+                      >
+                        <Download className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="font-bold text-slate-800">
+                            Baixar JSON BNCC Computação
+                          </div>
+                          <p className="text-[11px] text-slate-500 font-normal">
+                            Arquivo .json autônomo com as 42 habilidades
+                          </p>
+                        </div>
+                      </button>
+
+                      <div className="my-1 border-t border-slate-100" />
 
                       <button
                         id="align-bncc-btn"
@@ -765,50 +920,127 @@ export const BNCCScreen: React.FC<BNCCScreenProps> = ({ setModal }) => {
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200/80 p-5 sm:p-6 shadow-xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-          <h3 className="text-base font-bold text-slate-800">
-            Códigos Cadastrados ({filteredList.length})
-          </h3>
-          <div className="flex items-center gap-2">
-            <Filter className="w-4 h-4 text-slate-400" />
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-4">
+          <div>
+            <h3 className="text-base font-bold text-slate-800">
+              Códigos Cadastrados ({filteredList.length})
+            </h3>
+            <p className="text-[11px] text-slate-400">
+              Total na base: {bnccList.length} habilidades | Exibindo filtradas: {filteredList.length}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Campo de Busca Livre */}
+            <div className="relative flex-1 sm:w-60 min-w-[200px]">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                id="search-bncc-input"
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Buscar código ou palavra..."
+                className="w-full pl-8 pr-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              />
+              {searchTerm && (
+                <button
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+
+            {/* Filtro por Componente / Matéria */}
             <select
-              id="filter-bncc-year"
-              value={filterYear}
-              onChange={(e) => setFilterYear(e.target.value)}
-              className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              id="filter-bncc-subject"
+              value={filterSubject}
+              onChange={(e) => setFilterSubject(e.target.value)}
+              className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-medium text-slate-700"
             >
-              <option value="">Todas as Séries / Blocos</option>
-              <option value="1">Atende 1º Ano</option>
-              <option value="2">Atende 2º Ano</option>
-              <option value="3">Atende 3º Ano</option>
-              <option value="4">Atende 4º Ano</option>
-              <option value="5">Atende 5º Ano</option>
+              <option value="">Todas as Disciplinas</option>
+              <option value="CO">💻 Computação (BNCC 2022)</option>
+              <option value="LP">📖 Língua Portuguesa</option>
+              <option value="MA">🔢 Matemática</option>
+              <option value="CI">🔬 Ciências</option>
+              <option value="HI">🏛️ História</option>
+              <option value="GEO">🌍 Geografia</option>
+              <option value="AR">🎨 Arte</option>
+              <option value="EF">⚽ Educação Física</option>
+              <option value="ER">🕊️ Ensino Religioso</option>
             </select>
+
+            {/* Filtro por Série / Bloco */}
+            <div className="flex items-center gap-1.5">
+              <Filter className="w-3.5 h-3.5 text-slate-400" />
+              <select
+                id="filter-bncc-year"
+                value={filterYear}
+                onChange={(e) => setFilterYear(e.target.value)}
+                className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-medium text-slate-700"
+              >
+                <option value="">Todas as Séries</option>
+                <option value="1">1º Ano</option>
+                <option value="2">2º Ano</option>
+                <option value="3">3º Ano</option>
+                <option value="4">4º Ano</option>
+                <option value="5">5º Ano</option>
+              </select>
+            </div>
           </div>
         </div>
 
         {loading ? (
           <div className="py-8 text-center text-sm text-slate-400">Carregando códigos BNCC...</div>
         ) : filteredList.length === 0 ? (
-          <div className="py-8 text-center text-sm text-slate-400">
-            Nenhum código BNCC cadastrado para o filtro selecionado.
+          <div className="py-8 text-center text-sm text-slate-400 bg-slate-50/50 rounded-xl border border-dashed border-slate-200 p-6">
+            <p className="font-semibold text-slate-600">Nenhum código BNCC encontrado com os filtros atuais.</p>
+            <p className="text-xs text-slate-400 mt-1">
+              {isAdmin ? (
+                <span>
+                  Você pode usar o menu <strong>Manutenção</strong> no topo para popular o catálogo oficial ou importar um arquivo JSON.
+                </span>
+              ) : (
+                'Tente alterar os termos da busca ou selecionar outra disciplina.'
+              )}
+            </p>
           </div>
         ) : (
-          <div className="space-y-3 max-h-[500px] overflow-y-auto pr-1">
+          <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
             {filteredList.map((item) => {
               const yearsLabel = formatSkillYearsLabel(item.val);
               const isPluriannual = getSkillApplicableYears(item.val).length > 1;
+              const badge = getSubjectBadge(item.val.code);
 
               return (
                 <div
                   key={item.id}
-                  className="flex items-start justify-between p-4 rounded-xl border border-slate-100 bg-slate-50/60 hover:bg-slate-50 transition-colors gap-3"
+                  className={`flex items-start justify-between p-4 rounded-xl border transition-colors gap-3 ${
+                    badge?.isComp
+                      ? 'border-cyan-200/90 bg-cyan-50/20 hover:bg-cyan-50/40'
+                      : 'border-slate-100 bg-slate-50/60 hover:bg-slate-50'
+                  }`}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-extrabold text-sm text-indigo-700 font-mono">
+                      <span
+                        className={`font-extrabold text-sm font-mono ${
+                          badge?.isComp ? 'text-cyan-800' : 'text-indigo-700'
+                        }`}
+                      >
                         {item.val.code}
                       </span>
+
+                      {badge && (
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border ${badge.bg}`}
+                        >
+                          {badge.isComp && <Laptop className="w-3 h-3 text-cyan-600" />}
+                          {badge.label}
+                        </span>
+                      )}
+
                       <span
                         className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
                           isPluriannual
@@ -823,7 +1055,7 @@ export const BNCCScreen: React.FC<BNCCScreenProps> = ({ setModal }) => {
                       {item.val.desc || item.val.description}
                     </p>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       id={`bncc-edit-${item.id}`}
                       onClick={() => handleEdit(item)}
