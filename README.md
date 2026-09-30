@@ -6,9 +6,12 @@ Sistema completo para professores, bibliotecários e administradores escolares g
 
 ## ✨ Principais Funcionalidades
 
-- **Controle de Chamadas (Frequência)**: Registro diário rápido com presença, falta, falta justificada, histórico de aulas e cálculo automático de percentual de frequência.
+- **Controle de Chamadas (Frequência) & Relatórios de Assiduidade**:
+  - Registro diário rápido com presença, falta, falta justificada, histórico de aulas e cálculo automático de percentual de frequência.
+  - **Ata de Frequência Bimestral**: emissão em PDF e Excel com número de chamada (`Nº`), opções modulares de exibição (`RA`, `% Ausência` e `Status`) e exclusão automática de transferidos por padrão.
+  - **Ranking de Faltas / Absenteísmo**: classificação por ordem decrescente de faltas, mantendo a posição e o número de chamada (`Nº`), com foco em busca ativa pedagógica e chave para incluir transferências de saída quando necessário.
 - **Notas, Avaliações e Boletins Escolares (Bimestral e Anual Consolidado)**:
-  - **Documentação Detalhada**: Consulte o guia completo em [`MANUAL_BOLETIM.md`](./MANUAL_BOLETIM.md).
+  - **Documentação Detalhada**: Consulte o guia completo em [`MANUAL_BOLETIM.md`](./MANUAL_BOLETIM.md) (inclui seção sobre Atas de Frequência e Ranking de Faltas).
   - **Boletim por Bimestre**: Emissão de notas individuais por estudante no 1º, 2º, 3º ou 4º bimestre em visão geral multi-disciplinar (formato paisagem) ou por componente específico (formato retrato).
   - **Customizações Oficiais**: Opções de exibição de R.A. do aluno e anexo detalhado das habilidades e conteúdos da BNCC trabalhados no ciclo.
   - **Boletim Anual Consolidado**: Compilação automática dos 4 bimestres, cálculo da média anual e tratamento de estudantes transferidos (`TR. EXP.` / `TR. REC.`).

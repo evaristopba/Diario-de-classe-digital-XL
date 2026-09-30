@@ -18,6 +18,60 @@ export function formatDate(dateString?: string): string {
   return `${parts[2]}/${parts[1]}/${parts[0]}`;
 }
 
+export function formatStudentTransferTag(student: any, multiLine: boolean = false): string {
+  if (!student) return '';
+  const inDate = student.transferInDate || (student.status === 'recebida' ? student.transferDate : '');
+  const outDate = student.transferOutDate || (student.status === 'expedida' ? student.transferDate : '');
+  const sep = multiLine ? '\n' : ' ';
+
+  if (student.status === 'expedida') {
+    if (inDate && outDate) {
+      return `${sep}(TR. REC. em ${formatDate(inDate)} | TR. EXP. em ${formatDate(outDate)})`;
+    }
+    return `${sep}(TR. EXP.${outDate ? ` em ${formatDate(outDate)}` : ''})`;
+  } else if (student.status === 'recebida') {
+    return `${sep}(TR. REC.${inDate ? ` em ${formatDate(inDate)}` : ''})`;
+  } else if (inDate) {
+    return `${sep}(TR. REC. em ${formatDate(inDate)})`;
+  }
+  return '';
+}
+
+export function isStudentTransferredOutBeforeBimester(student: any, bimester: string | number): boolean {
+  if (!student || student.status !== 'expedida') return false;
+  const outDate = student.transferOutDate || student.transferDate;
+  const bimNum = typeof bimester === 'number' ? bimester : parseInt(String(bimester), 10);
+  if (isNaN(bimNum)) return false;
+
+  // Se não tem data informada, o status expedida aplica-se aos bimestres futuros/atuais
+  if (!outDate) return true;
+
+  const parts = outDate.split('T')[0].split('-');
+  if (parts.length < 3) return true;
+  const month = parseInt(parts[1], 10);
+  const day = parseInt(parts[2], 10);
+
+  // Cortes do calendário escolar padrão:
+  // 1º Bimestre: Fev a Abr
+  if (bimNum === 1) {
+    return month === 1 || (month === 2 && day < 15);
+  }
+  // 2º Bimestre: Mai a Jul (saiu até 30 de Abril)
+  if (bimNum === 2) {
+    return month < 4 || (month === 4 && day <= 30);
+  }
+  // 3º Bimestre: Ago a Set (saiu até 31 de Julho)
+  if (bimNum === 3) {
+    return month < 7 || (month === 7 && day <= 31);
+  }
+  // 4º Bimestre: Out a Dez (saiu até 30 de Setembro)
+  if (bimNum === 4) {
+    return month < 9 || (month === 9 && day <= 30);
+  }
+
+  return false;
+}
+
 export function getSubjectName(subId?: string): string {
   if (!subId || subId === 'todas') return 'Todas as Matérias';
   const found = DEFAULT_SUBJECTS.find((s) => s.id === subId);
@@ -154,10 +208,11 @@ export async function generateBimesterReport(
       }
       let sum = 0;
       let cnt = 0;
+      const isTransferredOut = isStudentTransferredOutBeforeBimester(student, bimester);
 
       DEFAULT_SUBJECTS.forEach((sub) => {
         let nota = '-';
-        if (student.status !== 'expedida') {
+        if (!isTransferredOut) {
           Object.keys(notasVal).forEach((k) => {
             const g = notasVal[k];
             const gSub = g.subject || 'portugues';
@@ -176,6 +231,9 @@ export async function generateBimesterReport(
               }
             }
           });
+        }
+        if (isTransferredOut || (student.status === 'expedida' && nota === '-')) {
+          nota = 'TR. EXP.';
         }
         row.push(nota);
       });
@@ -217,30 +275,30 @@ export async function generateBimesterReport(
   } else {
     // Matéria única selecionada
     sortedStudents.forEach((student: any) => {
-      let studentName = student.name;
-      if (student.status === 'expedida') {
-        studentName += `\n(TR. EXP.${student.transferDate ? ` em ${formatDate(student.transferDate)}` : ''})`;
-      } else if (student.status === 'recebida') {
-        studentName += `\n(TR. REC.${student.transferDate ? ` em ${formatDate(student.transferDate)}` : ''})`;
-      }
+      let studentName = student.name + formatStudentTransferTag(student, true);
+      const isTransferredOut = isStudentTransferredOutBeforeBimester(student, bimester);
 
       let nota = '-';
-      Object.keys(notasVal).forEach((k) => {
-        const g = notasVal[k];
-        const gSub = g.subject || 'portugues';
-        if (
-          g.classId === classId &&
-          (!g.anoLetivo || g.anoLetivo === currentYear) &&
-          String(g.bimester) === String(bimester) &&
-          g.studentId === student.id &&
-          gSub === subject
-        ) {
-          const val = parseFloat(g.value);
-          if (!isNaN(val)) nota = val.toFixed(1);
-        }
-      });
+      if (!isTransferredOut) {
+        Object.keys(notasVal).forEach((k) => {
+          const g = notasVal[k];
+          const gSub = g.subject || 'portugues';
+          if (
+            g.classId === classId &&
+            (!g.anoLetivo || g.anoLetivo === currentYear) &&
+            String(g.bimester) === String(bimester) &&
+            g.studentId === student.id &&
+            gSub === subject
+          ) {
+            const val = parseFloat(g.value);
+            if (!isNaN(val)) nota = val.toFixed(1);
+          }
+        });
+      }
 
-      if (student.status === 'expedida' && nota === '-') nota = 'TR. EXP.';
+      if (isTransferredOut || (student.status === 'expedida' && nota === '-')) {
+        nota = 'TR. EXP.';
+      }
       const singleRow = [student.number, studentName];
       if (showRA) {
         singleRow.push(student.ra || '-');
@@ -393,10 +451,11 @@ export async function generateBimesterReportXLSX(
       }
       let sum = 0;
       let cnt = 0;
+      const isTransferredOut = isStudentTransferredOutBeforeBimester(student, bimester);
 
       DEFAULT_SUBJECTS.forEach((sub) => {
         let notaVal: any = '-';
-        if (student.status !== 'expedida') {
+        if (!isTransferredOut) {
           Object.keys(notasVal).forEach((k) => {
             const g = notasVal[k];
             const gSub = g.subject || 'portugues';
@@ -415,7 +474,8 @@ export async function generateBimesterReportXLSX(
               }
             }
           });
-        } else {
+        }
+        if (isTransferredOut || (student.status === 'expedida' && notaVal === '-')) {
           notaVal = 'TR. EXP.';
         }
         rowObj[sub.id] = notaVal;
@@ -436,9 +496,10 @@ export async function generateBimesterReportXLSX(
       let studentName = student.name;
       if (student.status === 'expedida') studentName += ' (TR. EXP.)';
       else if (student.status === 'recebida') studentName += ' (TR. REC.)';
+      const isTransferredOut = isStudentTransferredOutBeforeBimester(student, bimester);
 
       let notaVal: any = '-';
-      if (student.status !== 'expedida') {
+      if (!isTransferredOut) {
         Object.keys(notasVal).forEach((k) => {
           const g = notasVal[k];
           const gSub = g.subject || 'portugues';
@@ -455,7 +516,9 @@ export async function generateBimesterReportXLSX(
             }
           }
         });
-      } else {
+      }
+
+      if (isTransferredOut || (student.status === 'expedida' && notaVal === '-')) {
         notaVal = 'TR. EXP.';
       }
       const rowObj: any = {
@@ -563,11 +626,7 @@ export async function generateAnnualReport(
     let studentName = student.name;
     const isExpedido = student.status === 'expedida';
     if (showTransfer) {
-      if (isExpedido) {
-        studentName += `\n(TR. EXP.${student.transferDate ? ` em ${formatDate(student.transferDate)}` : ''})`;
-      } else if (student.status === 'recebida') {
-        studentName += `\n(TR. REC.${student.transferDate ? ` em ${formatDate(student.transferDate)}` : ''})`;
-      }
+      studentName += formatStudentTransferTag(student, true);
     }
 
     const row: any[] = [student.number, studentName, student.ra];
@@ -576,10 +635,11 @@ export async function generateAnnualReport(
 
     for (let b = 1; b <= 4; b++) {
       let nota = '-';
-      if (!isExpedido) {
-        let bSum = 0;
-        let bCnt = 0;
+      let bSum = 0;
+      let bCnt = 0;
+      const isTransferredOutInBim = isStudentTransferredOutBeforeBimester(student, b);
 
+      if (!isTransferredOutInBim) {
         Object.keys(notasVal).forEach((k) => {
           const g = notasVal[k];
           const gSub = g.subject || 'portugues';
@@ -604,6 +664,10 @@ export async function generateAnnualReport(
           total += bAvg;
           count++;
         }
+      }
+
+      if (isTransferredOutInBim || (isExpedido && nota === '-')) {
+        nota = 'TR. EXP.';
       }
       row.push(nota);
     }
@@ -681,11 +745,7 @@ export async function generateAnnualReportXLSX(
     let studentName = student.name;
     const isExpedido = student.status === 'expedida';
     if (showTransfer) {
-      if (isExpedido) {
-        studentName += ` (TR. EXP.${student.transferDate ? ` em ${formatDate(student.transferDate)}` : ''})`;
-      } else if (student.status === 'recebida') {
-        studentName += ` (TR. REC.${student.transferDate ? ` em ${formatDate(student.transferDate)}` : ''})`;
-      }
+      studentName += formatStudentTransferTag(student, false);
     }
 
     const rowObj: any = {
@@ -698,9 +758,11 @@ export async function generateAnnualReportXLSX(
 
     for (let b = 1; b <= 4; b++) {
       let notaVal: any = '-';
-      if (!isExpedido) {
-        let bSum = 0;
-        let bCnt = 0;
+      let bSum = 0;
+      let bCnt = 0;
+      const isTransferredOutInBim = isStudentTransferredOutBeforeBimester(student, b);
+
+      if (!isTransferredOutInBim) {
         Object.keys(notasVal).forEach((k) => {
           const g = notasVal[k];
           const gSub = g.subject || 'portugues';
@@ -724,7 +786,9 @@ export async function generateAnnualReportXLSX(
           total += avg;
           count++;
         }
-      } else {
+      }
+
+      if (isTransferredOutInBim || (isExpedido && notaVal === '-')) {
         notaVal = 'TR. EXP.';
       }
       rowObj[`b${b}`] = notaVal;
@@ -1313,7 +1377,17 @@ export async function generateClassesComparisonReportXLSX(currentYear: string) {
 // TAB 2: FREQUÊNCIA
 // ----------------------------------------------------
 
-export async function generateAttendanceReport(classId: string, bimester: string, turma: ClassRoom, teacher: string, currentYear: string) {
+export async function generateAttendanceReport(
+  classId: string,
+  bimester: string,
+  turma: ClassRoom,
+  teacher: string,
+  currentYear: string,
+  showRA = true,
+  showAbsencePct = true,
+  showStatus = true,
+  includeTransfers = false
+) {
   const doc = new jsPDF();
   const startY = addPDFHeader(doc, `ATA DE FREQUÊNCIA - ${bimester}º BIMESTRE`, turma, teacher, currentYear);
 
@@ -1325,7 +1399,7 @@ export async function generateAttendanceReport(classId: string, bimester: string
 
   const sortedStudents = Object.keys(studentsVal)
     .map((k) => ({ id: k, ...studentsVal[k] }))
-    .filter((s) => !s.anoLetivo || s.anoLetivo === currentYear)
+    .filter((s) => (!s.anoLetivo || s.anoLetivo === currentYear) && (includeTransfers || (s.status !== 'expedida' && s.transferType !== 'saida')))
     .sort((a, b) => (a.number || 0) - (b.number || 0));
 
   const tableData: any[] = [];
@@ -1351,28 +1425,64 @@ export async function generateAttendanceReport(classId: string, bimester: string
     if (student.status === 'expedida') situacao = 'TR. EXP.';
     else if (total > 0 && (p / total) < 0.75) situacao = 'Risco (<75%)';
 
-    tableData.push([student.number, student.name, student.ra, p, f, total, pct, situacao]);
+    const studentName = student.name + formatStudentTransferTag(student, true);
+    const row: any[] = [student.number || '-', studentName];
+    if (showRA) {
+      row.push(student.ra || '-');
+    }
+    row.push(p, f, total, pct);
+    if (showAbsencePct) {
+      const absPct = total > 0 ? `${((f / total) * 100).toFixed(1)}%` : '-';
+      row.push(absPct);
+    }
+    if (showStatus) {
+      row.push(situacao);
+    }
+    tableData.push(row);
   });
+
+  const head: string[] = ['Nº', 'Aluno'];
+  if (showRA) head.push('RA');
+  head.push('Presenças', 'Faltas', 'Total Aulas', '% Freq');
+  if (showAbsencePct) head.push('% Ausência');
+  if (showStatus) head.push('Situação');
+
+  const columnStyles: Record<number, any> = {
+    0: { cellWidth: 10, halign: 'center' }, // Nº
+    1: { halign: 'left' } // Aluno (dinâmico)
+  };
+  let colIdx = 2;
+  if (showRA) {
+    columnStyles[colIdx] = { cellWidth: 26, halign: 'center' };
+    colIdx++;
+  }
+  columnStyles[colIdx] = { cellWidth: 18, halign: 'center' }; colIdx++; // Presenças
+  columnStyles[colIdx] = { cellWidth: 16, halign: 'center' }; colIdx++; // Faltas
+  columnStyles[colIdx] = { cellWidth: 18, halign: 'center' }; colIdx++; // Total Aulas
+  columnStyles[colIdx] = { cellWidth: 18, halign: 'center' }; colIdx++; // % Freq
+  if (showAbsencePct) {
+    columnStyles[colIdx] = { cellWidth: 18, halign: 'center' }; colIdx++; // % Ausência
+  }
+  if (showStatus) {
+    columnStyles[colIdx] = { cellWidth: 22, halign: 'center' }; colIdx++; // Situação
+  }
+
+  const emptyRow: any[] = ['-', 'Nenhum aluno cadastrado na turma.'];
+  if (showRA) emptyRow.push('-');
+  emptyRow.push('-', '-', '-', '-');
+  if (showAbsencePct) emptyRow.push('-');
+  if (showStatus) emptyRow.push('-');
 
   autoTable(doc, {
     startY,
     margin: { left: 14, right: 14 },
     tableWidth: 182,
-    head: [['Nº', 'Aluno', 'RA', 'Presenças', 'Faltas', 'Total Aulas', '% Freq', 'Situação']],
-    body: tableData.length > 0 ? tableData : [['-', 'Nenhum aluno cadastrado na turma.', '-', '-', '-', '-', '-', '-']],
+    head: [head],
+    body: tableData.length > 0 ? tableData : [emptyRow],
     theme: 'grid',
     styles: { fontSize: 8.5, cellPadding: 2, valign: 'middle' },
     headStyles: { fillColor: [16, 185, 129], textColor: [255, 255, 255], fontStyle: 'bold', halign: 'center' },
-    columnStyles: {
-      0: { cellWidth: 10, halign: 'center' },
-      1: { cellWidth: 56, halign: 'left' },
-      2: { cellWidth: 26, halign: 'center' },
-      3: { cellWidth: 18, halign: 'center' },
-      4: { cellWidth: 16, halign: 'center' },
-      5: { cellWidth: 18, halign: 'center' },
-      6: { cellWidth: 18, halign: 'center' },
-      7: { cellWidth: 20, halign: 'center' }
-    }
+    columnStyles
   });
 
   doc.save(`frequencia_${bimester}bim_${turma ? `${turma.year}_${turma.letter}` : ''}.pdf`);
@@ -1383,28 +1493,41 @@ export async function generateAttendanceReportXLSX(
   bimester: string,
   turma: ClassRoom,
   currentYear: string,
-  teacher?: string
+  teacher?: string,
+  showRA = true,
+  showAbsencePct = true,
+  showStatus = true,
+  includeTransfers = false
 ) {
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
   const attSnap = await get(ref(rtdb, dc('chamada')));
 
   const columns: ExcelColumnDef[] = [
     { header: 'Nº', key: 'number', width: 8, align: 'center' },
-    { header: 'Aluno', key: 'name', width: 38 },
-    { header: 'RA', key: 'ra', width: 16, align: 'center' },
+    { header: 'Aluno', key: 'name', width: 38 }
+  ];
+  if (showRA) {
+    columns.push({ header: 'RA', key: 'ra', width: 16, align: 'center' });
+  }
+  columns.push(
     { header: 'Presenças', key: 'p', width: 14, align: 'center' },
     { header: 'Faltas', key: 'f', width: 12, align: 'center' },
     { header: 'Total Aulas', key: 'total', width: 14, align: 'center' },
-    { header: '% Frequência', key: 'pct', width: 16, align: 'center' },
-    { header: 'Situação', key: 'sit', width: 18, align: 'center' }
-  ];
+    { header: '% Frequência', key: 'pct', width: 16, align: 'center' }
+  );
+  if (showAbsencePct) {
+    columns.push({ header: '% Ausência', key: 'absPct', width: 16, align: 'center' });
+  }
+  if (showStatus) {
+    columns.push({ header: 'Situação', key: 'sit', width: 18, align: 'center' });
+  }
 
   const studentsVal = snap.val() || {};
   const attVal = attSnap.val() || {};
 
   const sortedStudents = Object.keys(studentsVal)
     .map((k) => ({ id: k, ...studentsVal[k] }))
-    .filter((s) => !s.anoLetivo || s.anoLetivo === currentYear)
+    .filter((s) => (!s.anoLetivo || s.anoLetivo === currentYear) && (includeTransfers || (s.status !== 'expedida' && s.transferType !== 'saida')))
     .sort((a, b) => (a.number || 0) - (b.number || 0));
 
   const rows: any[] = [];
@@ -1428,16 +1551,26 @@ export async function generateAttendanceReportXLSX(
     const pct = total > 0 ? `${((p / total) * 100).toFixed(1)}%` : '-';
     const sit = student.status === 'expedida' ? 'TR. EXP.' : (total > 0 && (p / total) < 0.75 ? 'Risco (<75%)' : 'Regular');
 
-    rows.push({
-      number: student.number,
-      name: student.name,
-      ra: student.ra || '-',
+    const studentName = student.name + formatStudentTransferTag(student, false);
+    const rowObj: any = {
+      number: student.number || '-',
+      name: studentName,
       p,
       f,
       total,
-      pct,
-      sit
-    });
+      pct
+    };
+    if (showRA) {
+      rowObj.ra = student.ra || '-';
+    }
+    if (showAbsencePct) {
+      rowObj.absPct = total > 0 ? `${((f / total) * 100).toFixed(1)}%` : '-';
+    }
+    if (showStatus) {
+      rowObj.sit = sit;
+    }
+
+    rows.push(rowObj);
   });
 
   await exportToExcelJS({
@@ -1453,7 +1586,17 @@ export async function generateAttendanceReportXLSX(
   });
 }
 
-export async function generateAbsenceReport(classId: string, bimester: string, turma: ClassRoom, teacher: string, currentYear: string) {
+export async function generateAbsenceReport(
+  classId: string,
+  bimester: string,
+  turma: ClassRoom,
+  teacher: string,
+  currentYear: string,
+  showRA = true,
+  showAbsencePct = true,
+  showStatus = true,
+  includeTransfers = false
+) {
   const doc = new jsPDF();
   const startY = addPDFHeader(doc, `RANKING DE FALTAS / ABSENTEÍSMO - ${bimester}º BIMESTRE`, turma, teacher, currentYear);
 
@@ -1483,35 +1626,72 @@ export async function generateAbsenceReport(classId: string, bimester: string, t
       const pct = total > 0 ? (f / total) * 100 : 0;
       return { ...s, id: k, p, f, total, pct };
     })
-    .filter((s) => !s.anoLetivo || s.anoLetivo === currentYear)
+    .filter((s) => (!s.anoLetivo || s.anoLetivo === currentYear) && (includeTransfers || (s.status !== 'expedida' && s.transferType !== 'saida')))
     .sort((a, b) => b.f - a.f);
 
-  const tableData = list.map((s, idx) => [
-    idx + 1,
-    s.name,
-    s.ra || '-',
-    s.f,
-    `${s.pct.toFixed(1)}%`,
-    s.status === 'expedida' ? 'TR. EXP.' : (s.pct > 25 ? 'CRÍTICO' : 'NORMAL')
-  ]);
+  const tableData = list.map((s, idx) => {
+    const studentName = s.name + formatStudentTransferTag(s, true);
+    const row: any[] = [
+      `${idx + 1}º`,
+      s.number || '-',
+      studentName
+    ];
+    if (showRA) {
+      row.push(s.ra || '-');
+    }
+    row.push(s.f);
+    if (showAbsencePct) {
+      row.push(`${s.pct.toFixed(1)}%`);
+    }
+    if (showStatus) {
+      row.push(s.status === 'expedida' ? 'TR. EXP.' : (s.pct > 25 ? 'CRÍTICO' : 'NORMAL'));
+    }
+    return row;
+  });
+
+  const head: string[] = ['Posição', 'Nº', 'Aluno'];
+  if (showRA) head.push('RA');
+  head.push('Total Faltas');
+  if (showAbsencePct) head.push('% de Ausência');
+  if (showStatus) head.push('Status');
+
+  const columnStyles: Record<number, any> = {
+    0: { cellWidth: 16, halign: 'center' }, // Posição
+    1: { cellWidth: 10, halign: 'center' }, // Nº (número da chamada)
+    2: { halign: 'left' } // Aluno (dinâmico)
+  };
+  let colIdx = 3;
+  if (showRA) {
+    columnStyles[colIdx] = { cellWidth: 26, halign: 'center' };
+    colIdx++;
+  }
+  columnStyles[colIdx] = { cellWidth: 24, halign: 'center' }; // Total Faltas
+  colIdx++;
+  if (showAbsencePct) {
+    columnStyles[colIdx] = { cellWidth: 24, halign: 'center' }; // % Ausência
+    colIdx++;
+  }
+  if (showStatus) {
+    columnStyles[colIdx] = { cellWidth: 22, halign: 'center' }; // Status
+    colIdx++;
+  }
+
+  const emptyRow: any[] = ['-', '-', 'Nenhum registro de falta no período.'];
+  if (showRA) emptyRow.push('-');
+  emptyRow.push('-');
+  if (showAbsencePct) emptyRow.push('-');
+  if (showStatus) emptyRow.push('-');
 
   autoTable(doc, {
     startY,
     margin: { left: 14, right: 14 },
     tableWidth: 182,
-    head: [['Posição', 'Aluno', 'RA', 'Total Faltas', '% de Ausência', 'Status']],
-    body: tableData.length > 0 ? tableData : [['-', 'Nenhum registro de falta no período.', '-', '-', '-', '-']],
+    head: [head],
+    body: tableData.length > 0 ? tableData : [emptyRow],
     theme: 'grid',
     styles: { fontSize: 8.5, cellPadding: 2, valign: 'middle' },
     headStyles: { fillColor: [16, 185, 129], textColor: [255, 255, 255], fontStyle: 'bold', halign: 'center' },
-    columnStyles: {
-      0: { cellWidth: 18, halign: 'center' },
-      1: { cellWidth: 64, halign: 'left' },
-      2: { cellWidth: 28, halign: 'center' },
-      3: { cellWidth: 24, halign: 'center' },
-      4: { cellWidth: 24, halign: 'center' },
-      5: { cellWidth: 24, halign: 'center' }
-    }
+    columnStyles
   });
 
   doc.save(`ranking_faltas_${bimester}bim.pdf`);
@@ -1522,19 +1702,30 @@ export async function generateAbsenceReportXLSX(
   bimester: string,
   turma: ClassRoom,
   currentYear: string,
-  teacher?: string
+  teacher?: string,
+  showRA = true,
+  showAbsencePct = true,
+  showStatus = true,
+  includeTransfers = false
 ) {
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
   const attSnap = await get(ref(rtdb, dc('chamada')));
 
   const columns: ExcelColumnDef[] = [
     { header: 'Posição', key: 'pos', width: 10, align: 'center' },
-    { header: 'Aluno', key: 'name', width: 38 },
-    { header: 'RA', key: 'ra', width: 16, align: 'center' },
-    { header: 'Faltas', key: 'f', width: 12, align: 'center' },
-    { header: '% Ausência', key: 'pct', width: 16, align: 'center' },
-    { header: 'Status', key: 'status', width: 18, align: 'center' }
+    { header: 'Nº', key: 'number', width: 8, align: 'center' },
+    { header: 'Aluno', key: 'name', width: 38 }
   ];
+  if (showRA) {
+    columns.push({ header: 'RA', key: 'ra', width: 16, align: 'center' });
+  }
+  columns.push({ header: 'Total Faltas', key: 'f', width: 14, align: 'center' });
+  if (showAbsencePct) {
+    columns.push({ header: '% Ausência', key: 'pct', width: 16, align: 'center' });
+  }
+  if (showStatus) {
+    columns.push({ header: 'Status', key: 'status', width: 18, align: 'center' });
+  }
 
   const studentsVal = snap.val() || {};
   const attVal = attSnap.val() || {};
@@ -1559,17 +1750,28 @@ export async function generateAbsenceReportXLSX(
       const pct = total > 0 ? (f / total) * 100 : 0;
       return { ...s, id: k, p, f, total, pct };
     })
-    .filter((s) => !s.anoLetivo || s.anoLetivo === currentYear)
+    .filter((s) => (!s.anoLetivo || s.anoLetivo === currentYear) && (includeTransfers || (s.status !== 'expedida' && s.transferType !== 'saida')))
     .sort((a, b) => b.f - a.f);
 
-  const rows = list.map((s, idx) => ({
-    pos: idx + 1,
-    name: s.name,
-    ra: s.ra || '-',
-    f: s.f,
-    pct: `${s.pct.toFixed(1)}%`,
-    status: s.status === 'expedida' ? 'TR. EXP.' : (s.pct > 25 ? 'CRÍTICO' : 'NORMAL')
-  }));
+  const rows = list.map((s, idx) => {
+    const studentName = s.name + formatStudentTransferTag(s, false);
+    const rowObj: any = {
+      pos: `${idx + 1}º`,
+      number: s.number || '-',
+      name: studentName,
+      f: s.f
+    };
+    if (showRA) {
+      rowObj.ra = s.ra || '-';
+    }
+    if (showAbsencePct) {
+      rowObj.pct = `${s.pct.toFixed(1)}%`;
+    }
+    if (showStatus) {
+      rowObj.status = s.status === 'expedida' ? 'TR. EXP.' : (s.pct > 25 ? 'CRÍTICO' : 'NORMAL');
+    }
+    return rowObj;
+  });
 
   await exportToExcelJS({
     title: `RANKING DE ABSENTEÍSMO - ${bimester}º BIMESTRE`,
@@ -1975,14 +2177,26 @@ export async function generateTransfersReport(classId: string | null, currentYea
 
     Object.keys(studentsVal).forEach((sid) => {
       const s = studentsVal[sid];
-      if ((s.status === 'expedida' || s.status === 'recebida') && (!s.anoLetivo || s.anoLetivo === currentYear)) {
+      if ((s.status === 'expedida' || s.status === 'recebida' || s.transferInDate || s.transferOutDate) && (!s.anoLetivo || s.anoLetivo === currentYear)) {
+        const inDate = s.transferInDate || (s.status === 'recebida' ? s.transferDate : '');
+        const outDate = s.transferOutDate || (s.status === 'expedida' ? s.transferDate : '');
+        let tipo = '';
+        if (s.status === 'expedida') {
+          tipo = inDate ? 'Recebida e Expedida' : 'Expedida (Saída)';
+        } else if (s.status === 'recebida') {
+          tipo = 'Recebida (Entrada)';
+        } else {
+          tipo = 'Ativo (Ingresso Transferência)';
+        }
+
         tableData.push([
           `${t.val.year}º ${t.val.letter}`,
           s.number,
           s.name,
-          s.ra,
-          s.status === 'expedida' ? 'Expedida (Saída)' : 'Recebida (Entrada)',
-          formatDate(s.transferDate) || '-'
+          s.ra || '-',
+          tipo,
+          formatDate(inDate) || '-',
+          formatDate(outDate) || '-'
         ]);
       }
     });
@@ -1990,8 +2204,8 @@ export async function generateTransfersReport(classId: string | null, currentYea
 
   autoTable(doc, {
     startY: 32,
-    head: [['Turma', 'Nº', 'Aluno', 'RA', 'Tipo de Transferência', 'Data']],
-    body: tableData.length > 0 ? tableData : [['-', '-', 'Nenhuma transferência registrada no período.', '-', '-', '-']],
+    head: [['Turma', 'Nº', 'Aluno', 'RA', 'Situação', 'Data Entrada (REC)', 'Data Saída (EXP)']],
+    body: tableData.length > 0 ? tableData : [['-', '-', 'Nenhuma transferência registrada no período.', '-', '-', '-', '-']],
     theme: 'grid'
   });
 
@@ -2003,10 +2217,11 @@ export async function generateTransfersReportXLSX(classId: string | null, curren
   const columns: ExcelColumnDef[] = [
     { header: 'Turma', key: 'turma', width: 14, align: 'center' },
     { header: 'Nº', key: 'number', width: 8, align: 'center' },
-    { header: 'Aluno', key: 'name', width: 38 },
+    { header: 'Aluno', key: 'name', width: 36 },
     { header: 'RA', key: 'ra', width: 16, align: 'center' },
-    { header: 'Tipo de Transferência', key: 'tipo', width: 24, align: 'center' },
-    { header: 'Data Transferência', key: 'data', width: 18, align: 'center' }
+    { header: 'Situação / Tipo', key: 'tipo', width: 24, align: 'center' },
+    { header: 'Data Entrada (TR. REC.)', key: 'dataEntrada', width: 22, align: 'center' },
+    { header: 'Data Saída (TR. EXP.)', key: 'dataSaida', width: 22, align: 'center' }
   ];
 
   const rows: any[] = [];
@@ -2018,14 +2233,26 @@ export async function generateTransfersReportXLSX(classId: string | null, curren
 
     Object.keys(studentsVal).forEach((sid) => {
       const s = studentsVal[sid];
-      if ((s.status === 'expedida' || s.status === 'recebida') && (!s.anoLetivo || s.anoLetivo === currentYear)) {
+      if ((s.status === 'expedida' || s.status === 'recebida' || s.transferInDate || s.transferOutDate) && (!s.anoLetivo || s.anoLetivo === currentYear)) {
+        const inDate = s.transferInDate || (s.status === 'recebida' ? s.transferDate : '');
+        const outDate = s.transferOutDate || (s.status === 'expedida' ? s.transferDate : '');
+        let tipo = '';
+        if (s.status === 'expedida') {
+          tipo = inDate ? 'Recebida e Expedida' : 'Expedida (Saída)';
+        } else if (s.status === 'recebida') {
+          tipo = 'Recebida (Entrada)';
+        } else {
+          tipo = 'Ativo (Ingresso Transferência)';
+        }
+
         rows.push({
           turma: `${t.val.year}º ${t.val.letter}`,
           number: s.number,
           name: s.name,
           ra: s.ra || '-',
-          tipo: s.status === 'expedida' ? 'Expedida (Saída)' : 'Recebida (Entrada)',
-          data: formatDate(s.transferDate) || '-'
+          tipo,
+          dataEntrada: formatDate(inDate) || '-',
+          dataSaida: formatDate(outDate) || '-'
         });
       }
     });

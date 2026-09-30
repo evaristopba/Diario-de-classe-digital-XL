@@ -38,7 +38,8 @@ import {
   generateEventsByTypeReport,
   generateEventsByTypeReportXLSX,
   generateConsolidatedReport,
-  generateConsolidatedReportXLSX
+  generateConsolidatedReportXLSX,
+  formatDate
 } from '../lib/reports';
 import {
   FileSpreadsheet,
@@ -85,6 +86,14 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
   const [showTransferAnnual, setShowTransferAnnual] = useState(true);
   const [showLessonContentBimester, setShowLessonContentBimester] = useState(false);
   const [showRABimester, setShowRABimester] = useState(true);
+  const [showRAAttendance, setShowRAAttendance] = useState(true);
+  const [showAbsencePctAttendance, setShowAbsencePctAttendance] = useState(true);
+  const [showStatusAttendance, setShowStatusAttendance] = useState(true);
+  const [includeTransfersAttendance, setIncludeTransfersAttendance] = useState(false);
+  const [showRARanking, setShowRARanking] = useState(true);
+  const [showAbsencePctRanking, setShowAbsencePctRanking] = useState(true);
+  const [showStatusRanking, setShowStatusRanking] = useState(true);
+  const [includeTransfersRanking, setIncludeTransfersRanking] = useState(false);
   const [activeTab, setActiveTab] = useState<ReportTab>('desempenho');
   const [generating, setGenerating] = useState(false);
 
@@ -272,9 +281,23 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
               {students.map((s) => {
                 const isExpedido = s.val.status === 'expedida';
                 const isRecebida = s.val.status === 'recebida';
+                const inDate = s.val.transferInDate || (isRecebida ? s.val.transferDate : '');
+                const outDate = s.val.transferOutDate || (isExpedido ? s.val.transferDate : '');
+                let tag = '';
+                if (isExpedido) {
+                  if (inDate && outDate) {
+                    tag = `(TR. REC. ${formatDate(inDate)} | TR. EXP. ${formatDate(outDate)})`;
+                  } else {
+                    tag = `(TR. EXP. ${formatDate(outDate)})`;
+                  }
+                } else if (isRecebida) {
+                  tag = `(TR. REC. ${formatDate(inDate)})`;
+                } else if (inDate) {
+                  tag = `(TR. REC. ${formatDate(inDate)})`;
+                }
                 return (
                   <option key={s.id} value={s.id}>
-                    Nº {s.val.number} - {s.val.name} {isExpedido ? '(Transferência Expedida)' : isRecebida ? '(Transferência Recebida)' : ''}
+                    Nº {s.val.number} - {s.val.name} {tag}
                   </option>
                 );
               })}
@@ -611,16 +634,64 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                 <CheckSquare className="w-5 h-5" />
                 <h4 className="font-bold text-slate-800 text-sm">Frequência Bimestral</h4>
               </div>
-              <p className="text-xs text-slate-500 leading-relaxed">
+              <p className="text-xs text-slate-500 leading-relaxed mb-3">
                 Presenças, faltas e percentual de frequência calculado de cada aluno no {selectedBimester}º bimestre
               </p>
+              <div className="space-y-2 mb-3">
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showRAAttendance}
+                    onChange={(e) => setShowRAAttendance(e.target.checked)}
+                    className="rounded text-sky-600 focus:ring-sky-500"
+                  />
+                  <span>Exibir coluna de R.A.</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showAbsencePctAttendance}
+                    onChange={(e) => setShowAbsencePctAttendance(e.target.checked)}
+                    className="rounded text-sky-600 focus:ring-sky-500"
+                  />
+                  <span>Exibir % de Ausência</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showStatusAttendance}
+                    onChange={(e) => setShowStatusAttendance(e.target.checked)}
+                    className="rounded text-sky-600 focus:ring-sky-500"
+                  />
+                  <span>Exibir Situação / Status</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none font-medium">
+                  <input
+                    type="checkbox"
+                    checked={includeTransfersAttendance}
+                    onChange={(e) => setIncludeTransfersAttendance(e.target.checked)}
+                    className="rounded text-sky-600 focus:ring-sky-500"
+                  />
+                  <span>Incluir Transferências de Saída</span>
+                </label>
+              </div>
             </div>
             <div className="flex items-center gap-2 mt-4 pt-3 border-t border-slate-100">
               <button
                 disabled={generating}
                 onClick={() =>
                   runReport(() =>
-                    generateAttendanceReport(selectedClassId, selectedBimester, selectedTurma!, currentTeacher, currentYear)
+                    generateAttendanceReport(
+                      selectedClassId,
+                      selectedBimester,
+                      selectedTurma!,
+                      currentTeacher,
+                      currentYear,
+                      showRAAttendance,
+                      showAbsencePctAttendance,
+                      showStatusAttendance,
+                      includeTransfersAttendance
+                    )
                   )
                 }
                 className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
@@ -632,7 +703,17 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                 disabled={generating}
                 onClick={() =>
                   runReport(() =>
-                    generateAttendanceReportXLSX(selectedClassId, selectedBimester, selectedTurma!, currentYear, currentTeacher)
+                    generateAttendanceReportXLSX(
+                      selectedClassId,
+                      selectedBimester,
+                      selectedTurma!,
+                      currentYear,
+                      currentTeacher,
+                      showRAAttendance,
+                      showAbsencePctAttendance,
+                      showStatusAttendance,
+                      includeTransfersAttendance
+                    )
                   )
                 }
                 className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
@@ -650,16 +731,64 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                 <Flame className="w-5 h-5" />
                 <h4 className="font-bold text-slate-800 text-sm">Ranking de Faltas / Absenteísmo</h4>
               </div>
-              <p className="text-xs text-slate-500 leading-relaxed">
+              <p className="text-xs text-slate-500 leading-relaxed mb-3">
                 Lista ordenada com destaque para alunos que atingiram status crítico de faltas
               </p>
+              <div className="space-y-2 mb-3">
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showRARanking}
+                    onChange={(e) => setShowRARanking(e.target.checked)}
+                    className="rounded text-rose-600 focus:ring-rose-500"
+                  />
+                  <span>Exibir coluna de R.A.</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showAbsencePctRanking}
+                    onChange={(e) => setShowAbsencePctRanking(e.target.checked)}
+                    className="rounded text-rose-600 focus:ring-rose-500"
+                  />
+                  <span>Exibir % de Ausência</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showStatusRanking}
+                    onChange={(e) => setShowStatusRanking(e.target.checked)}
+                    className="rounded text-rose-600 focus:ring-rose-500"
+                  />
+                  <span>Exibir Situação / Status</span>
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none font-medium">
+                  <input
+                    type="checkbox"
+                    checked={includeTransfersRanking}
+                    onChange={(e) => setIncludeTransfersRanking(e.target.checked)}
+                    className="rounded text-rose-600 focus:ring-rose-500"
+                  />
+                  <span>Incluir Transferências de Saída</span>
+                </label>
+              </div>
             </div>
             <div className="flex items-center gap-2 mt-4 pt-3 border-t border-slate-100">
               <button
                 disabled={generating}
                 onClick={() =>
                   runReport(() =>
-                    generateAbsenceReport(selectedClassId, selectedBimester, selectedTurma!, currentTeacher, currentYear)
+                    generateAbsenceReport(
+                      selectedClassId,
+                      selectedBimester,
+                      selectedTurma!,
+                      currentTeacher,
+                      currentYear,
+                      showRARanking,
+                      showAbsencePctRanking,
+                      showStatusRanking,
+                      includeTransfersRanking
+                    )
                   )
                 }
                 className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
@@ -671,7 +800,17 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                 disabled={generating}
                 onClick={() =>
                   runReport(() =>
-                    generateAbsenceReportXLSX(selectedClassId, selectedBimester, selectedTurma!, currentYear, currentTeacher)
+                    generateAbsenceReportXLSX(
+                      selectedClassId,
+                      selectedBimester,
+                      selectedTurma!,
+                      currentYear,
+                      currentTeacher,
+                      showRARanking,
+                      showAbsencePctRanking,
+                      showStatusRanking,
+                      includeTransfersRanking
+                    )
                   )
                 }
                 className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"

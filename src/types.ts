@@ -16,7 +16,9 @@ export interface Student {
   rm?: string;
   birthdate: string;
   status: 'ativo' | 'recebida' | 'expedida';
-  transferDate?: string;
+  transferDate?: string; // Legado / espelho da última data de transferência
+  transferInDate?: string; // Data da Transferência Recebida (Entrada)
+  transferOutDate?: string; // Data da Transferência Expedida (Saída)
   anoLetivo: string;
   createdAt?: number;
   updatedAt?: number;

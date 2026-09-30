@@ -552,62 +552,64 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
           </p>
         </div>
 
-        {/* Utilitários de implantação e download: visíveis apenas no ambiente de desenvolvimento/preview da plataforma, ocultos após deploy em produção na Vercel */}
-        {isDevEnvironment && (
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Botão de Apresentação Municipal (Apenas Admin e quando o checkbox estiver ativo) */}
-            {isAdmin && showPresentationButton && (
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Botão de Apresentação Municipal / Pitch (Apenas Admin e quando o flag estiver ativo) */}
+          {isAdmin && showPresentationButton && (
+            <button
+              id="btn-open-pitch-screen"
+              onClick={() => onNavigate('presentation-screen')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition cursor-pointer"
+              title="Acessar Apresentação Institucional e Pitch para Secretário"
+            >
+              <Presentation className="w-4 h-4 text-amber-300" />
+              <span>Apresentação / Pitch</span>
+            </button>
+          )}
+
+          {/* Checkbox discreto para Professor ADMIN: ativa/desativa botão e card do Pitch no Painel */}
+          {isAdmin && (
+            <label
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50/70 hover:bg-amber-100/70 rounded-xl text-[11px] font-semibold text-amber-900 cursor-pointer transition select-none border border-amber-200"
+              title="Exibir ou ocultar o botão e card de Apresentação / Pitch no Painel de Controle"
+            >
+              <input
+                type="checkbox"
+                checked={showPresentationButton}
+                onChange={handleTogglePresentation}
+                className="w-3.5 h-3.5 text-amber-600 rounded border-amber-300 focus:ring-amber-500 cursor-pointer"
+              />
+              <span>Atalho Pitch / Apresentação</span>
+            </label>
+          )}
+
+          {/* Botão de Rotina de Backup */}
+          <button
+            id="btn-open-backup-screen"
+            onClick={() => onNavigate('backup-screen')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold rounded-xl shadow-xs transition cursor-pointer"
+            title="Acessar Rotina de Backup e Restauração"
+          >
+            <ShieldCheck className="w-4 h-4 text-emerald-600" />
+            <span>Backup dos Dados</span>
+          </button>
+
+          {/* Utilitários de implantação e download: visíveis apenas no ambiente de desenvolvimento/preview da plataforma, ocultos após deploy em produção na Vercel */}
+          {isDevEnvironment && (
+            <>
+              {/* Botão de Guia GitHub & Vercel */}
               <button
-                id="btn-open-pitch-screen"
-                onClick={() => onNavigate('presentation-screen')}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition cursor-pointer"
-                title="Acessar Apresentação Institucional e Roteiro de Vídeo"
+                id="btn-open-deploy-guide"
+                onClick={() => setShowDeployGuide(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-xs font-bold rounded-xl shadow-xs transition"
+                title="Guia passo a passo para GitHub e Vercel"
               >
-                <Presentation className="w-4 h-4 text-amber-300" />
-                <span>Apresentação / Pitch</span>
+                <ExternalLink className="w-4 h-4 text-indigo-600" />
+                <span>Guia GitHub & Vercel</span>
               </button>
-            )}
 
-            {/* Checkbox discreto para Professor ADMIN: ativa/desativa botão na interface sem poluição visual */}
-            {isAdmin && (
-              <label
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200/80 rounded-xl text-[11px] font-semibold text-slate-600 cursor-pointer transition select-none border border-slate-200"
-                title="Exibir ou ocultar o botão de Apresentação Municipal na interface principal sem gerar poluição visual"
-              >
-                <input
-                  type="checkbox"
-                  checked={showPresentationButton}
-                  onChange={handleTogglePresentation}
-                  className="w-3.5 h-3.5 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500 cursor-pointer"
-                />
-                <span>Atalho Apresentação</span>
-              </label>
-            )}
-
-            {/* Botão de Rotina de Backup */}
-            <button
-              id="btn-open-backup-screen"
-              onClick={() => onNavigate('backup-screen')}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold rounded-xl shadow-xs transition cursor-pointer"
-              title="Acessar Rotina de Backup e Restauração"
-            >
-              <ShieldCheck className="w-4 h-4 text-emerald-600" />
-              <span>Backup dos Dados</span>
-            </button>
-            {/* Botão de Guia GitHub & Vercel */}
-            <button
-              id="btn-open-deploy-guide"
-              onClick={() => setShowDeployGuide(true)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-xs font-bold rounded-xl shadow-xs transition"
-              title="Guia passo a passo para GitHub e Vercel"
-            >
-              <ExternalLink className="w-4 h-4 text-indigo-600" />
-              <span>Guia GitHub & Vercel</span>
-            </button>
-
-            {/* Botão de Regras do Firebase */}
-            <button
-              id="btn-open-rules-modal"
+              {/* Botão de Regras do Firebase */}
+              <button
+                id="btn-open-rules-modal"
               onClick={() => setShowRulesModal(true)}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-bold rounded-xl shadow-xs transition"
               title="Visualizar e copiar as regras do Firebase Realtime Database"
@@ -655,11 +657,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
                 </>
               )}
             </button>
-          </div>
+          </>
         )}
       </div>
+    </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
+    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
         {menuItems.map((item) => (
           <button
             id={`menu-card-${item.id}`}

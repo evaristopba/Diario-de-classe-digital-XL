@@ -10,6 +10,7 @@ import {
   verificarIsAdmin
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
+import { formatDate, isStudentTransferredOutBeforeBimester } from '../lib/reports';
 import {
   Award,
   Save,
@@ -174,6 +175,10 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
       const prevGradesMap: Record<string, Record<number, string>> = {};
 
       const currentBimNum = parseInt(selectedBimester, 10) || 1;
+      const studentMap: Record<string, any> = {};
+      students.forEach((s) => {
+        studentMap[s.id] = s.val;
+      });
 
       Object.keys(notasVal).forEach((k) => {
         const g = notasVal[k];
@@ -203,7 +208,11 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
         detectedSubs.add(gSubject);
 
         if (g.value !== undefined && g.value !== null && g.value !== '') {
-          counts[gSubject] = (counts[gSubject] || 0) + 1;
+          const studentObj = studentMap[g.studentId];
+          const isTransferredOut = studentObj && isStudentTransferredOutBeforeBimester(studentObj, selectedBimester);
+          if (!isTransferredOut) {
+            counts[gSubject] = (counts[gSubject] || 0) + 1;
+          }
 
           // Matriz de todas as notas
           if (!matrixMap[g.studentId]) {
@@ -283,7 +292,20 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
       const updates: Record<string, any> = {};
 
       students.forEach((s) => {
-        if (s.val.status === 'expedida') return;
+        if (s.val.status === 'expedida') {
+          if (isStudentTransferredOutBeforeBimester(s.val, selectedBimester)) {
+            const canonicalKey = `${selectedClassId}_${selectedBimester}_${selectedSubject}_${s.id}`;
+            const existingKeys = gradeKeysMap[s.id] || [];
+            existingKeys.forEach((oldKey) => {
+              updates[dc(`notas/${oldKey}`)] = null;
+            });
+            updates[dc(`notas/${canonicalKey}`)] = null;
+            if (selectedSubject === 'portugues') {
+              updates[dc(`notas/${selectedClassId}_${selectedBimester}_${s.id}`)] = null;
+            }
+          }
+          return;
+        }
         const valStr = grades[s.id];
         const canonicalKey = `${selectedClassId}_${selectedBimester}_${selectedSubject}_${s.id}`;
 
@@ -1031,13 +1053,20 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                           <div className="flex items-center gap-2 flex-wrap">
                             <span>{s.val.name}</span>
                             {isExpedido && (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-200 uppercase tracking-wider">
-                                Transferência Expedida
-                              </span>
+                              <div className="flex items-center gap-1 flex-wrap">
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-200 uppercase tracking-wider">
+                                  TR. EXP. {s.val.transferOutDate || s.val.transferDate ? `(${formatDate(s.val.transferOutDate || s.val.transferDate)})` : ''}
+                                </span>
+                                {s.val.transferInDate && (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 uppercase tracking-wider">
+                                    Entrada: {formatDate(s.val.transferInDate)}
+                                  </span>
+                                )}
+                              </div>
                             )}
                             {isRecebida && (
                               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 uppercase tracking-wider">
-                                Transferência Recebida
+                                TR. REC. {s.val.transferInDate || s.val.transferDate ? `(${formatDate(s.val.transferInDate || s.val.transferDate)})` : ''}
                               </span>
                             )}
                           </div>
@@ -1058,9 +1087,7 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                                 key={`td-prev-${s.id}-${b}`}
                                 className="px-3 py-3.5 text-center bg-slate-50/60 border-x border-slate-100 font-medium"
                               >
-                                {isExpedido ? (
-                                  <span className="text-xs text-slate-300">-</span>
-                                ) : hasPrevGrade ? (
+                                {hasPrevGrade ? (
                                   <span
                                     className={`inline-block px-2.5 py-1 rounded-md text-xs font-bold border ${
                                       prevNum >= 6
@@ -1071,6 +1098,8 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                                   >
                                     {prevNum.toFixed(1)}
                                   </span>
+                                ) : isExpedido ? (
+                                  <span className="text-xs text-slate-400 font-medium">TR. EXP.</span>
                                 ) : (
                                   <span className="text-xs text-slate-300 italic">-</span>
                                 )}
@@ -1081,9 +1110,19 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
 
                         <td className="px-5 py-3.5 text-center bg-indigo-50/20 border-x border-indigo-100/50">
                           {isExpedido ? (
-                            <span className="inline-block w-24 px-3 py-1.5 text-center text-xs font-semibold text-slate-400 bg-slate-100 border border-slate-200 rounded-lg italic select-none">
-                              Não aplicável
-                            </span>
+                            <div className="flex flex-col items-center justify-center gap-1">
+                              <span className="inline-block w-24 px-3 py-1.5 text-center text-xs font-semibold text-slate-400 bg-slate-100 border border-slate-200 rounded-lg italic select-none">
+                                Não aplicável
+                              </span>
+                              {hasValidGrade && (
+                                <span
+                                  className="text-[10px] text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 font-semibold"
+                                  title="Nota lançada anteriormente. Clique na lixeira ao lado para excluir esta nota residual se desejar."
+                                >
+                                  Residual: {gradeVal}
+                                </span>
+                              )}
+                            </div>
                           ) : (
                             <input
                               type="text"
@@ -1096,7 +1135,14 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                         </td>
                         <td className="px-5 py-3.5 text-center">
                           {isExpedido ? (
-                            <span className="text-xs text-slate-400 italic">Não aplicável</span>
+                            <div className="flex flex-col items-center">
+                              <span className="text-xs text-slate-400 italic">Não aplicável</span>
+                              {hasValidGrade && (
+                                <span className="text-[10px] text-rose-500 font-medium">
+                                  (Transferido)
+                                </span>
+                              )}
+                            </div>
                           ) : hasValidGrade ? (
                             <span
                               className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold ${
@@ -1124,8 +1170,16 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                             )}
                             <button
                               onClick={() => handleDeleteSingle(s.id)}
-                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
-                              title="Excluir nota"
+                              className={`p-1.5 rounded-lg transition cursor-pointer ${
+                                isExpedido && hasValidGrade
+                                  ? 'text-amber-600 hover:text-rose-600 hover:bg-amber-50 ring-1 ring-amber-300'
+                                  : 'text-slate-400 hover:text-rose-600 hover:bg-rose-50'
+                              }`}
+                              title={
+                                isExpedido && hasValidGrade
+                                  ? `Excluir nota residual (${gradeVal}) lançada antes da transferência`
+                                  : 'Excluir nota'
+                              }
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>

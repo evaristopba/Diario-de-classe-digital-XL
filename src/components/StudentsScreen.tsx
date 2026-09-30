@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Student, ClassRoom, ModalConfig } from '../types';
 import {
   get,
@@ -15,8 +15,9 @@ import {
 import { formatFriendlyError } from '../lib/errorHandler';
 import { checkStudentDeleteIntegrity } from '../lib/referentialIntegrity';
 import { formatDate } from '../lib/reports';
-import { UserCheck, Plus, Edit2, Trash2, Download, Upload, X, Filter, ArrowRightLeft } from 'lucide-react';
+import { UserCheck, Plus, Edit2, Trash2, Download, Upload, X, Filter, ArrowRightLeft, Search } from 'lucide-react';
 import { TransferStudentModal } from './TransferStudentModal';
+import { AuditTransfersModal } from './AuditTransfersModal';
 
 interface StudentsScreenProps {
   currentYear: string;
@@ -37,6 +38,9 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
   const [birthdate, setBirthdate] = useState('');
   const [status, setStatus] = useState<'ativo' | 'recebida' | 'expedida'>('ativo');
   const [transferDate, setTransferDate] = useState('');
+  const [transferInDate, setTransferInDate] = useState('');
+  const [transferOutDate, setTransferOutDate] = useState('');
+  const [hasTransferIn, setHasTransferIn] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingOriginalClassId, setEditingOriginalClassId] = useState<string | null>(null);
@@ -45,7 +49,37 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
   // Estado para Transferência de Aluno
   const [isAdmin, setIsAdmin] = useState(false);
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
+  const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [studentToTransfer, setStudentToTransfer] = useState<{ id: string; classId: string; val: Student } | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'todos' | 'ativo' | 'transferencia' | 'recebida' | 'expedida'>('todos');
+
+  const displayedStudents = useMemo(() => {
+    return students.filter((item) => {
+      const s = item.val;
+      const q = searchQuery.toLowerCase().trim();
+      if (q) {
+        const matchName = s.name.toLowerCase().includes(q);
+        const matchRa = (s.ra || '').toLowerCase().includes(q);
+        const matchRm = (s.rm || '').toLowerCase().includes(q);
+        if (!matchName && !matchRa && !matchRm) return false;
+      }
+
+      if (statusFilter === 'ativo') return s.status === 'ativo';
+      if (statusFilter === 'recebida') return s.status === 'recebida';
+      if (statusFilter === 'expedida') return s.status === 'expedida';
+      if (statusFilter === 'transferencia') {
+        return (
+          s.status === 'recebida' ||
+          s.status === 'expedida' ||
+          Boolean(s.transferInDate) ||
+          Boolean(s.transferOutDate)
+        );
+      }
+
+      return true;
+    });
+  }, [students, searchQuery, statusFilter]);
 
   const loadClasses = async () => {
     try {
@@ -137,14 +171,41 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
       });
     }
 
-    if ((status === 'recebida' || status === 'expedida') && !transferDate) {
-      return setModal({
-        isOpen: true,
-        type: 'alert',
-        title: 'Atenção',
-        message: 'Informe a data da transferência!',
-        icon: '⚠️'
-      });
+    const effectiveInDate = transferInDate || (status === 'recebida' ? transferDate : '');
+    const effectiveOutDate = status === 'expedida' ? (transferOutDate || transferDate) : '';
+
+    if (status === 'recebida') {
+      if (!effectiveInDate) {
+        return setModal({
+          isOpen: true,
+          type: 'alert',
+          title: 'Atenção',
+          message: 'Informe a data da transferência recebida (entrada)!',
+          icon: '⚠️'
+        });
+      }
+    }
+
+    if (status === 'expedida') {
+      if (!effectiveOutDate) {
+        return setModal({
+          isOpen: true,
+          type: 'alert',
+          title: 'Atenção',
+          message: 'Informe a data da transferência expedida (saída)!',
+          icon: '⚠️'
+        });
+      }
+
+      if (effectiveInDate && effectiveOutDate && effectiveOutDate < effectiveInDate) {
+        return setModal({
+          isOpen: true,
+          type: 'alert',
+          title: 'Data Inválida',
+          message: 'A data da transferência expedida (saída) não pode ser anterior à data da transferência recebida (entrada)!',
+          icon: '⚠️'
+        });
+      }
     }
 
     const data: any = {
@@ -158,8 +219,22 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
       anoLetivo: currentYear
     };
 
-    if (status === 'recebida' || status === 'expedida') {
-      data.transferDate = transferDate;
+    if (status === 'recebida') {
+      data.transferInDate = effectiveInDate;
+      data.transferDate = effectiveInDate;
+      data.transferOutDate = null;
+    } else if (status === 'expedida') {
+      data.transferOutDate = effectiveOutDate;
+      data.transferDate = effectiveOutDate;
+      if (effectiveInDate) {
+        data.transferInDate = effectiveInDate;
+      }
+    } else {
+      if (effectiveInDate) {
+        data.transferInDate = effectiveInDate;
+        data.transferDate = effectiveInDate;
+      }
+      data.transferOutDate = null;
     }
 
     try {
@@ -196,6 +271,9 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
       setBirthdate('');
       setStatus('ativo');
       setTransferDate('');
+      setTransferInDate('');
+      setTransferOutDate('');
+      setHasTransferIn(false);
       setEditingId(null);
       setEditingOriginalClassId(null);
       calculateNextNumber(selectedClassId);
@@ -220,7 +298,12 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
     setRm(item.val.rm || '');
     setBirthdate(item.val.birthdate);
     setStatus(item.val.status || 'ativo');
-    setTransferDate(item.val.transferDate || '');
+    const inDate = item.val.transferInDate || (item.val.status === 'recebida' ? item.val.transferDate : '') || '';
+    const outDate = item.val.transferOutDate || (item.val.status === 'expedida' ? item.val.transferDate : '') || '';
+    setTransferInDate(inDate);
+    setTransferOutDate(outDate);
+    setTransferDate(item.val.transferDate || (item.val.status === 'expedida' ? outDate : inDate) || '');
+    setHasTransferIn(Boolean(inDate));
     setEditingId(item.id);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -232,6 +315,9 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
     setBirthdate('');
     setStatus('ativo');
     setTransferDate('');
+    setTransferInDate('');
+    setTransferOutDate('');
+    setHasTransferIn(false);
     setEditingId(null);
     setEditingOriginalClassId(null);
     calculateNextNumber(selectedClassId);
@@ -537,7 +623,22 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
               <select
                 id="student-status-select"
                 value={status}
-                onChange={(e) => setStatus(e.target.value as any)}
+                onChange={(e) => {
+                  const newStatus = e.target.value as 'ativo' | 'recebida' | 'expedida';
+                  setStatus(newStatus);
+                  if (newStatus === 'recebida') {
+                    setTransferOutDate('');
+                    if (!transferInDate && transferDate) {
+                      setTransferInDate(transferDate);
+                    }
+                  } else if (newStatus === 'expedida') {
+                    if (!transferOutDate && transferDate) {
+                      setTransferOutDate(transferDate);
+                    }
+                  } else {
+                    setTransferOutDate('');
+                  }
+                }}
                 className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
               >
                 <option value="ativo">Ativo</option>
@@ -546,18 +647,73 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
               </select>
             </div>
 
-            {(status === 'recebida' || status === 'expedida') && (
+            {status === 'recebida' && (
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Data da Transferência *
+                  Data de Entrada (TR. REC.) *
                 </label>
                 <input
-                  id="student-transfer-date-input"
+                  id="student-transfer-in-date-input"
                   type="date"
-                  value={transferDate}
-                  onChange={(e) => setTransferDate(e.target.value)}
+                  value={transferInDate}
+                  onChange={(e) => {
+                    setTransferInDate(e.target.value);
+                    setTransferDate(e.target.value);
+                  }}
                   className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
                   required
+                />
+              </div>
+            )}
+
+            {status === 'expedida' && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Data de Saída (TR. EXP.) *
+                </label>
+                <input
+                  id="student-transfer-out-date-input"
+                  type="date"
+                  value={transferOutDate}
+                  onChange={(e) => {
+                    setTransferOutDate(e.target.value);
+                    setTransferDate(e.target.value);
+                  }}
+                  className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                  required
+                />
+              </div>
+            )}
+
+            {status === 'expedida' && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Data de Entrada Anterior (TR. REC.)
+                  <span className="text-[10px] text-slate-400 font-normal ml-1">(Opcional)</span>
+                </label>
+                <input
+                  id="student-transfer-in-prev-input"
+                  type="date"
+                  value={transferInDate}
+                  onChange={(e) => setTransferInDate(e.target.value)}
+                  placeholder="Se o aluno também ingressou por transferência"
+                  className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                />
+              </div>
+            )}
+
+            {status === 'ativo' && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Data de Entrada por Transferência
+                  <span className="text-[10px] text-slate-400 font-normal ml-1">(Se houver)</span>
+                </label>
+                <input
+                  id="student-transfer-in-active-input"
+                  type="date"
+                  value={transferInDate}
+                  onChange={(e) => setTransferInDate(e.target.value)}
+                  className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
                 />
               </div>
             )}
@@ -577,37 +733,80 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200/80 p-5 sm:p-6 shadow-xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-          <h3 className="text-base font-bold text-slate-800">
-            Alunos Cadastrados ({students.length})
-          </h3>
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-4">
           <div className="flex items-center gap-2">
-            <Filter className="w-4 h-4 text-slate-400" />
-            <select
-              id="filter-students-class"
-              value={filterClassId}
-              onChange={(e) => setFilterClassId(e.target.value)}
-              className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+            <h3 className="text-base font-bold text-slate-800">
+              Alunos Cadastrados ({displayedStudents.length}
+              {displayedStudents.length !== students.length ? ` de ${students.length}` : ''})
+            </h3>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              id="btn-open-audit-transfers"
+              onClick={() => setIsAuditModalOpen(true)}
+              className="px-3.5 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-xl inline-flex items-center gap-1.5 transition-colors shadow-2xs"
+              title="Auditar e corrigir datas de transferências (entrada e saída)"
             >
-              <option value="">Todas as Turmas</option>
-              {classes.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.val.year}º {c.val.letter} — {c.val.shift}
-                </option>
-              ))}
-            </select>
+              <ArrowRightLeft className="w-4 h-4 text-indigo-600" />
+              Auditoria de Transferências
+            </button>
+
+            <div className="relative min-w-[180px]">
+              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Buscar por nome, RA..."
+                className="w-full pl-8 pr-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <select
+                id="filter-students-status"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as any)}
+                className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-medium"
+              >
+                <option value="todos">Todos os Status</option>
+                <option value="ativo">Apenas Ativos</option>
+                <option value="transferencia">Com Transferência</option>
+                <option value="recebida">Tr. Recebida</option>
+                <option value="expedida">Tr. Expedida</option>
+              </select>
+
+              <div className="flex items-center gap-1">
+                <Filter className="w-3.5 h-3.5 text-slate-400" />
+                <select
+                  id="filter-students-class"
+                  value={filterClassId}
+                  onChange={(e) => setFilterClassId(e.target.value)}
+                  className="px-2.5 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 font-medium"
+                >
+                  <option value="">Todas as Turmas</option>
+                  {classes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.val.year}º {c.val.letter} — {c.val.shift}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
           </div>
         </div>
 
         {loading ? (
           <div className="py-8 text-center text-sm text-slate-400">Carregando alunos...</div>
-        ) : students.length === 0 ? (
+        ) : displayedStudents.length === 0 ? (
           <div className="py-8 text-center text-sm text-slate-400">
             Nenhum aluno encontrado para os filtros selecionados.
           </div>
         ) : (
           <div className="space-y-3">
-            {students.map((item) => {
+            {displayedStudents.map((item) => {
               const student = item.val;
               const turma = classes.find((c) => c.id === item.classId)?.val;
               const turmaStr = turma ? `${turma.year}º ${turma.letter} (${turma.shift})` : 'Turma';
@@ -627,18 +826,25 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
                       </h4>
                       {student.status === 'ativo' && (
                         <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-800">
-                          Ativo
+                          Ativo {student.transferInDate ? `(TR. REC. ${formatDate(student.transferInDate)})` : ''}
                         </span>
                       )}
                       {student.status === 'recebida' && (
                         <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800">
-                          TR. REC. {student.transferDate ? `(${formatDate(student.transferDate)})` : ''}
+                          TR. REC. {formatDate(student.transferInDate || student.transferDate)}
                         </span>
                       )}
                       {student.status === 'expedida' && (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-800">
-                          TR. EXP. {student.transferDate ? `(${formatDate(student.transferDate)})` : ''}
-                        </span>
+                        <div className="flex items-center gap-1 flex-wrap">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-800">
+                            TR. EXP. {formatDate(student.transferOutDate || student.transferDate)}
+                          </span>
+                          {student.transferInDate && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800">
+                              Entrada: {formatDate(student.transferInDate)}
+                            </span>
+                          )}
+                        </div>
                       )}
                     </div>
                     <p className="text-xs text-slate-500 mt-1">
@@ -695,6 +901,19 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
         currentYear={currentYear}
         initialStudent={studentToTransfer}
         onSuccess={() => {
+          loadStudents();
+          loadClasses();
+        }}
+        setModal={setModal}
+      />
+
+      {/* Modal de Auditoria e Correção Rápida de Transferências */}
+      <AuditTransfersModal
+        isOpen={isAuditModalOpen}
+        onClose={() => setIsAuditModalOpen(false)}
+        currentYear={currentYear}
+        classes={classes}
+        onSaved={() => {
           loadStudents();
           loadClasses();
         }}

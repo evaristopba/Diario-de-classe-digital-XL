@@ -622,12 +622,23 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
                         {student.name}
                       </h4>
                       {isExpedido ? (
-                        <span className="text-[10px] uppercase font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-100 inline-block mt-0.5">
-                          Transferência Expedida
-                        </span>
+                        <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                          <span className="text-[10px] uppercase font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-100 inline-block">
+                            Transferência Expedida {student.transferOutDate || student.transferDate ? `(${formatDate(student.transferOutDate || student.transferDate)})` : ''}
+                          </span>
+                          {student.transferInDate && (
+                            <span className="text-[10px] uppercase font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-100 inline-block">
+                              Entrada: {formatDate(student.transferInDate)}
+                            </span>
+                          )}
+                        </div>
                       ) : student.status === 'recebida' ? (
                         <span className="text-[10px] uppercase font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-100 inline-block mt-0.5">
-                          Transferência Recebida
+                          Transferência Recebida {student.transferInDate || student.transferDate ? `(${formatDate(student.transferInDate || student.transferDate)})` : ''}
+                        </span>
+                      ) : student.transferInDate ? (
+                        <span className="text-[10px] uppercase font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-100 inline-block mt-0.5">
+                          TR. REC. ({formatDate(student.transferInDate)})
                         </span>
                       ) : null}
                     </div>

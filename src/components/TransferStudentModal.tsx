@@ -302,7 +302,14 @@ export const TransferStudentModal: React.FC<TransferStudentModalProps> = ({
 
       // 1. Atualiza Aluno na Turma de Origem -> status "expedida"
       updatesPayload[`diario-classe/turmas/${sourceClassId}/alunos/${selectedStudentId}/status`] = 'expedida';
+      updatesPayload[`diario-classe/turmas/${sourceClassId}/alunos/${selectedStudentId}/transferOutDate`] = transferDate;
       updatesPayload[`diario-classe/turmas/${sourceClassId}/alunos/${selectedStudentId}/transferDate`] = transferDate;
+      // Se o aluno já tinha ingressado por transferência na turma de origem, preserva a data de entrada!
+      if (selectedStudentData.transferInDate) {
+        updatesPayload[`diario-classe/turmas/${sourceClassId}/alunos/${selectedStudentId}/transferInDate`] = selectedStudentData.transferInDate;
+      } else if (selectedStudentData.status === 'recebida' && selectedStudentData.transferDate) {
+        updatesPayload[`diario-classe/turmas/${sourceClassId}/alunos/${selectedStudentId}/transferInDate`] = selectedStudentData.transferDate;
+      }
       updatesPayload[`diario-classe/turmas/${sourceClassId}/alunos/${selectedStudentId}/updatedAt`] = now;
 
       // 2. Cria novo registro do Aluno na Turma de Destino -> status "recebida"
@@ -317,6 +324,7 @@ export const TransferStudentModal: React.FC<TransferStudentModalProps> = ({
         rm: selectedStudentData.rm?.trim() || '',
         birthdate: selectedStudentData.birthdate,
         status: 'recebida',
+        transferInDate: transferDate,
         transferDate: transferDate,
         anoLetivo: selectedStudentData.anoLetivo || currentYear,
         createdAt: now,
@@ -497,21 +505,28 @@ export const TransferStudentModal: React.FC<TransferStudentModalProps> = ({
                       )}
                     </div>
                   </div>
-                  <div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     {selectedStudentData.status === 'ativo' && (
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                        Ativo
+                        Ativo {selectedStudentData.transferInDate ? `(TR. REC. ${formatDate(selectedStudentData.transferInDate)})` : ''}
                       </span>
                     )}
                     {selectedStudentData.status === 'recebida' && (
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
-                        Tr. Recebida
+                        Tr. Recebida ({formatDate(selectedStudentData.transferInDate || selectedStudentData.transferDate)})
                       </span>
                     )}
                     {selectedStudentData.status === 'expedida' && (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800">
-                        Tr. Expedida
-                      </span>
+                      <>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800">
+                          Tr. Expedida ({formatDate(selectedStudentData.transferOutDate || selectedStudentData.transferDate)})
+                        </span>
+                        {selectedStudentData.transferInDate && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
+                            Entrada: {formatDate(selectedStudentData.transferInDate)}
+                          </span>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>

@@ -21,6 +21,11 @@ Este documento fornece o guia operacional e técnico completo de todas as funcio
 5. [Regras de Negócio e Fórmulas de Avaliação](#5-regras-de-negócio-e-fórmulas-de-avaliação)
 6. [Segurança e Regras de Acesso (Firebase Realtime Database)](#6-segurança-e-regras-de-acesso-firebase-realtime-database)
 7. [Guia Passo a Passo de Emissão](#7-guia-passo-a-passo-de-emissão)
+8. [Relatórios de Frequência e Ranking de Absenteísmo](#8-relatórios-de-frequência-e-ranking-de-absenteísmo)
+   - [8.1 Frequência Bimestral (Ata de Frequência)](#81-frequência-bimestral-ata-de-frequência)
+   - [8.2 Ranking de Faltas / Absenteísmo](#82-ranking-de-faltas--absenteísmo)
+   - [8.3 Customizações (RA, % Ausência, Status e Transferências de Saída)](#83-customizações-ra--ausência-status-e-transferências-de-saída)
+   - [8.4 Exportações Duplas (PDF e Excel)](#84-exportações-duplas-pdf-e-excel)
 
 ---
 
@@ -175,6 +180,49 @@ Toda a infraestrutura de notas e dados escolares que alimentam os boletins segue
 1. Na mesma tela de Relatórios, localize o card destacado **"Boletim Anual Consolidado"** (borda verde).
 2. Marque a opção **"Indicar alunos transferidos (TR. REC / EXP)"** para que o documento aponte claramente os históricos de movimentação.
 3. Clique em **"PDF"** ou **"XLSX"**. O sistema compilará os 4 bimestres automaticamente em poucos segundos.
+
+---
+
+## 8. Relatórios de Frequência e Ranking de Absenteísmo
+
+Na aba **Frequência** da tela de Relatórios (`CheckSquare`), estão disponíveis dois relatórios oficiais para auditoria da assiduidade escolar e intervenção pedagógica preventiva contra a evasão.
+
+### 8.1 Frequência Bimestral (Ata de Frequência)
+- **Finalidade**: Ata oficial de apuração da frequência dos estudantes no bimestre selecionado.
+- **Colunas Oficiais**:
+  1. **Nº**: Número de chamada do estudante na turma.
+  2. **Aluno**: Nome completo do estudante (com indicativo de transferência, se houver).
+  3. **RA** *(opcional)*: Registro Acadêmico do estudante.
+  4. **Presenças**: Total de dias ou aulas com presença registrada (`P`).
+  5. **Faltas**: Total de faltas registradas (`F`).
+  6. **Total Aulas**: Somatório de presenças e faltas no período.
+  7. **% Frequência**: Percentual apurado $(\text{Presenças} \div \text{Total}) \times 100$.
+  8. **% Ausência** *(opcional)*: Percentual de faltas em relação ao total de aulas.
+  9. **Situação / Status** *(opcional)*: Classificação do aluno (`Regular`, `Risco (<75%)` ou `TR. EXP.`).
+
+### 8.2 Ranking de Faltas / Absenteísmo
+- **Finalidade**: Ordenação decrescente de faltas na turma para apoiar a **busca ativa**, conselhos tutelares e coordenação pedagógica.
+- **Colunas Oficiais**:
+  1. **Posição**: Classificação ordinal no ranking (`1º`, `2º`, `3º`...).
+  2. **Nº**: Número de chamada do estudante na turma.
+  3. **Aluno**: Nome do estudante.
+  4. **RA** *(opcional)*: Registro do Aluno.
+  5. **Total Faltas**: Quantidade de faltas acumuladas no bimestre.
+  6. **% de Ausência** *(opcional)*: Taxa percentual de absenteísmo.
+  7. **Status** *(opcional)*: `CRÍTICO` (ausência $> 25\%$), `NORMAL` ou `TR. EXP.`.
+
+### 8.3 Customizações (RA, % Ausência, Status e Transferências de Saída)
+Ambos os relatórios contam com caixas de seleção independentes na interface:
+- **☑ Exibir coluna de R.A.**: Inclui ou oculta o Registro Acadêmico.
+- **☑ Exibir % de Ausência**: Inclui ou oculta a coluna de percentual de faltas.
+- **☑ Exibir Situação / Status**: Inclui ou oculta o status escolar do estudante.
+- **☐ Incluir Transferências de Saída** *(Padrão: Desmarcado)*:
+  - **Desmarcado (Padrão)**: Exibe apenas os estudantes ativos (e transferências de entrada), garantindo que a lista reflita com precisão os alunos atualmente presentes na sala de aula e evitando distorções no ranking de faltas.
+  - **Marcado**: Inclui os estudantes que se transferiram para outra escola durante o ano letivo, registrando formalmente a anotação `TR. EXP.` e a data de expedição para fins de auditoria de secretaria.
+
+### 8.4 Exportações Duplas (PDF e Excel)
+- **PDF**: Diagramação com cabeçalho oficial da escola e dimensionamento responsivo automático (a coluna do aluno se expande dinamicamente para preencher a página quando colunas opcionais forem desmarcadas).
+- **Excel (.xlsx)**: Planilha estruturada montada dinamicamente conforme as colunas ativadas, com larguras calibradas e células prontas para cálculos.
 
 ---
 
