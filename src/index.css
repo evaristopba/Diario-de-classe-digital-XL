@@ -1,1 +1,88 @@
 @import "tailwindcss";
+
+@media print {
+  html, body, #root, #root > div, main {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    position: static !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  
+  /* Hide background dashboard when modal is open during print */
+  body.evolution-modal-open #root > div > *:not(#student-evolution-modal-root) {
+    display: none !important;
+  }
+
+  /* Reset fixed positioning and overlays on print */
+  .fixed.inset-0,
+  .evolution-modal-overlay {
+    position: static !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+  }
+
+  .evolution-modal-container {
+    position: static !important;
+    border: none !important;
+    box-shadow: none !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    margin: 0 !important;
+  }
+
+  .evolution-modal-body,
+  .evolution-modal-scroll,
+  .max-h-\[94vh\], 
+  .max-h-\[640px\], 
+  .max-h-\[600px\], 
+  .max-h-\[560px\] {
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .overflow-y-auto, 
+  .overflow-x-auto, 
+  .overflow-hidden {
+    overflow: visible !important;
+  }
+
+  /* Prevent card breaking across printed pages */
+  .student-evolution-row-card {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    margin-bottom: 12px !important;
+    box-shadow: none !important;
+    border: 1px solid #cbd5e1 !important;
+  }
+
+  /* Hide interactive buttons, navigation, modals backdrop, footers and tabs */
+  .print-hide,
+  button,
+  input,
+  select,
+  .no-print {
+    display: none !important;
+  }
+
+  /* Ensure card borders, colors and backgrounds are preserved */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .bg-white {
+    box-shadow: none !important;
+    border-color: #cbd5e1 !important;
+  }
+}

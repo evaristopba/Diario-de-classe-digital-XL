@@ -29,7 +29,12 @@ Sistema completo para professores, bibliotecários e administradores escolares g
   - **Histórico & Auditoria**: rastreabilidade completa de leituras concluídas e movimentações físicas entre unidades.
   - **Exportações Gerenciais**: inventários e relatórios em Excel (.xlsx) e comprovantes de empréstimo formatados para impressão em PDF.
 - **Ocorrências e Eventos**: Registro pedagógico e comportamental com tipificação personalizável e histórico por estudante.
-- **Gestão de Escolas, Turmas e Professores**: Controle de acesso segregado entre Administrador, Professor e Bibliotecário, com integridade referencial.
+- **Gestão de Escolas, Turmas, Professores & Alunos (com Reingresso Automatizado & Auditoria)**:
+  - Controle de acesso segregado entre Administrador, Professor e Bibliotecário, com integridade referencial estrita.
+  - Cadastro de estudantes com histórico de transferências (`TR. EXP.` e `TR. REC.`).
+  - **Fluxo Oficial de Reingresso Assistido**: atalhos para alunos com `TR. EXP.` permitindo "Gravar em Memória" e "Colar Dados" com recálculo automático da próxima numeração da chamada, preservando a matrícula 1 arquivada e abrindo a matrícula 2 ativa com total integridade.
+  - **Auditoria Ativa de Divergências Cadastrais**: comparação em tempo real entre o registro de saída e o de reingresso (Nome, Nascimento e RM), com painel comparativo lado a lado e alertas na tela de notas.
+  - **Frequência Normativa & Localizador de Chamadas Dia a Dia**: bloqueio de presenças anteriores à data de reingresso para alunos `TR. REC.`, ferramenta de 1 clique para purga de presenças indevidas e navegador interativo com pílulas de datas de chamada no bimestre.
 - **Apresentação Executiva & Pitch para Secretário(a) de Educação (Exclusivo Administrador)**:
   - **Módulo Estratégico de Pitch**: Apresentação interativa estruturada nos 5 pilares fundamentais da gestão pública (Economia de Papel, Gestão Centralizada Multi-Escola, Agilidade Docente em Sala, Fomento ao IDEB com Leitura e Soberania dos Dados).
   - **Assistente de Gravação de Vídeo Institucional**: Teleprompter integrado com cronômetro em tempo real, sugestões de roteiro por formato (Vídeo Completo de 3 a 4 min, Reels/Instagram de 60 a 90s, e Pílulas de Recursos de 30s), dicas técnicas e sugestões de legendas para redes sociais.

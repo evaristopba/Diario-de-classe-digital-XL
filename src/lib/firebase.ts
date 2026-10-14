@@ -1981,6 +1981,140 @@ export async function reconciliarDisponibilidadeAcervo(
   }
 }
 
+/**
+ * Transpõe (copia) com segurança absoluta as notas do aluno de origem (arquivado)
+ * para o novo cadastro de reingresso.
+ * Não altera, não muta e não remove NENHUM dado do aluno de origem (zero corrupção).
+ */
+export async function transporNotasParaReingresso(
+  sourceStudentId: string,
+  newStudentId: string,
+  classId: string,
+  anoLetivo: string
+): Promise<{ count: number; bimesters: string[]; subjects: string[] }> {
+  const result = {
+    count: 0,
+    bimesters: [] as string[],
+    subjects: [] as string[]
+  };
+
+  if (!sourceStudentId || !newStudentId || !classId) return result;
+
+  try {
+    const currentUid = getCurrentAuthUid();
+    if (!currentUid) return result;
+
+    const isAdmin = await verificarIsAdmin(currentUid);
+    const bimestersSet = new Set<string>();
+    const subjectsSet = new Set<string>();
+    const updates: Record<string, any> = {};
+
+    // 1. Busca todas as notas nos nós dos usuários (professores/admins)
+    const usersSnap = await get(ref(rtdb, 'diario-classe/dados'));
+    if (usersSnap.exists()) {
+      const allUsers = usersSnap.val() || {};
+      Object.keys(allUsers).forEach((uId) => {
+        const uData = allUsers[uId] || {};
+        const notas = uData.notas || {};
+        Object.keys(notas).forEach((k) => {
+          const g = notas[k];
+          if (
+            g &&
+            g.studentId === sourceStudentId &&
+            g.classId === classId &&
+            (!g.anoLetivo || String(g.anoLetivo) === String(anoLetivo))
+          ) {
+            const bim = String(g.bimester);
+            const sub = g.subject || 'portugues';
+            const valNum = parseFloat(g.value);
+            if (!isNaN(valNum) && valNum >= 0 && valNum <= 10) {
+              const newKey = `${classId}_${bim}_${sub}_${newStudentId}`;
+              
+              // Sempre grava com sucesso no nó do usuário autenticado atual (garantia de permissão de escrita)
+              updates[dc(`notas/${newKey}`)] = {
+                classId,
+                studentId: newStudentId,
+                bimester: bim,
+                subject: sub,
+                value: valNum,
+                teacher: g.teacher || '',
+                anoLetivo: g.anoLetivo || anoLetivo,
+                createdAt: Date.now()
+              };
+
+              // Se o usuário atual for admin E for o nó de outro usuário, atualiza também no nó original
+              if (isAdmin && uId !== currentUid) {
+                updates[`diario-classe/dados/${uId}/notas/${newKey}`] = {
+                  classId,
+                  studentId: newStudentId,
+                  bimester: bim,
+                  subject: sub,
+                  value: valNum,
+                  teacher: g.teacher || '',
+                  anoLetivo: g.anoLetivo || anoLetivo,
+                  createdAt: Date.now()
+                };
+              }
+
+              result.count++;
+              bimestersSet.add(bim);
+              subjectsSet.add(sub);
+            }
+          }
+        });
+      });
+    }
+
+    // 2. Se o usuário atual possui notas em seu próprio nó dc('notas')
+    const myNotasSnap = await get(ref(rtdb, dc('notas')));
+    if (myNotasSnap.exists()) {
+      const myNotas = myNotasSnap.val() || {};
+      Object.keys(myNotas).forEach((k) => {
+        const g = myNotas[k];
+        if (
+          g &&
+          g.studentId === sourceStudentId &&
+          g.classId === classId &&
+          (!g.anoLetivo || String(g.anoLetivo) === String(anoLetivo))
+        ) {
+          const bim = String(g.bimester);
+          const sub = g.subject || 'portugues';
+          const valNum = parseFloat(g.value);
+          if (!isNaN(valNum) && valNum >= 0 && valNum <= 10) {
+            const newKey = `${classId}_${bim}_${sub}_${newStudentId}`;
+            if (!updates[dc(`notas/${newKey}`)]) {
+              updates[dc(`notas/${newKey}`)] = {
+                classId,
+                studentId: newStudentId,
+                bimester: bim,
+                subject: sub,
+                value: valNum,
+                teacher: g.teacher || '',
+                anoLetivo: g.anoLetivo || anoLetivo,
+                createdAt: Date.now()
+              };
+              result.count++;
+              bimestersSet.add(bim);
+              subjectsSet.add(sub);
+            }
+          }
+        }
+      });
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await update(ref(rtdb), updates);
+    }
+
+    result.bimesters = Array.from(bimestersSet).sort();
+    result.subjects = Array.from(subjectsSet);
+  } catch (err) {
+    console.warn('[transporNotasParaReingresso] Erro ao transpor notas:', err);
+  }
+
+  return result;
+}
+
 export type { User };
 
 export {

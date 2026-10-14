@@ -9,6 +9,30 @@
     <meta property="og:description" content="Sistema de gestão escolar completo com controle de turmas, alunos, chamada, notas, planos de aula, BNCC, biblioteca escolar com cadastro inteligente por IA e relatórios em PDF e Excel integrado ao Firebase Realtime Database." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      // Suprime erros benignos de reconexão de WebSocket/HMR do Vite no iframe da sandbox
+      window.addEventListener('error', function (event) {
+        if (
+          (event.message && (event.message.includes('WebSocket') || event.message.includes('createWebSocketModuleRunnerTransport'))) ||
+          (event.filename && event.filename.includes('@vite/client'))
+        ) {
+          event.stopImmediatePropagation();
+          event.preventDefault();
+          return true;
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function (event) {
+        var reason = String(event.reason || '');
+        if (
+          reason.includes('WebSocket') ||
+          reason.includes('createWebSocketModuleRunnerTransport') ||
+          reason.includes('@vite/client')
+        ) {
+          event.stopImmediatePropagation();
+          event.preventDefault();
+        }
+      }, true);
+    </script>
   </head>
   <body>
     <div id="root"></div>

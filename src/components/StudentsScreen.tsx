@@ -10,14 +10,29 @@ import {
   rtdb,
   carregarMinhasTurmas,
   alunosDasMinhasTurmas,
-  verificarIsAdmin
+  verificarIsAdmin,
+  transporNotasParaReingresso
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
 import { checkStudentDeleteIntegrity } from '../lib/referentialIntegrity';
 import { formatDate } from '../lib/reports';
-import { UserCheck, Plus, Edit2, Trash2, Download, Upload, X, Filter, ArrowRightLeft, Search } from 'lucide-react';
+import { UserCheck, Plus, Edit2, Trash2, Download, Upload, X, Filter, ArrowRightLeft, Search, Copy, ClipboardPaste, Sparkles, AlertTriangle, CheckCircle2, TrendingUp } from 'lucide-react';
 import { TransferStudentModal } from './TransferStudentModal';
 import { AuditTransfersModal } from './AuditTransfersModal';
+import { StudentEvolutionChartModal } from './StudentEvolutionChartModal';
+
+export interface StudentClipboardData {
+  id?: string;
+  classId: string;
+  name: string;
+  ra: string;
+  rm: string;
+  birthdate: string;
+  originalNumber: number;
+  originalStatus: string;
+  originalTransferOutDate?: string;
+  copiedAt: number;
+}
 
 interface StudentsScreenProps {
   currentYear: string;
@@ -41,6 +56,14 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
   const [transferInDate, setTransferInDate] = useState('');
   const [transferOutDate, setTransferOutDate] = useState('');
   const [hasTransferIn, setHasTransferIn] = useState(false);
+  const [studentClipboard, setStudentClipboard] = useState<StudentClipboardData | null>(() => {
+    try {
+      const saved = sessionStorage.getItem('dc_student_clipboard');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingOriginalClassId, setEditingOriginalClassId] = useState<string | null>(null);
@@ -51,6 +74,16 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [studentToTransfer, setStudentToTransfer] = useState<{ id: string; classId: string; val: Student } | null>(null);
+  const [reingressoComparison, setReingressoComparison] = useState<{
+    sourceStudent: { id: string; val: Student };
+    targetStudent: { id: string; val: Student };
+    divergences: { field: string; origVal: string; recVal: string }[];
+  } | null>(null);
+  const [evolutionChartStudent, setEvolutionChartStudent] = useState<{
+    studentId: string;
+    classId: string;
+    turma: ClassRoom | null;
+  } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'todos' | 'ativo' | 'transferencia' | 'recebida' | 'expedida'>('todos');
 
@@ -101,8 +134,8 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
     }
   };
 
-  const calculateNextNumber = async (classId: string) => {
-    if (!classId) return;
+  const calculateNextNumber = async (classId: string): Promise<number> => {
+    if (!classId) return 1;
     try {
       const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
       let maxNum = 0;
@@ -118,8 +151,10 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
       });
       const next = maxNum > 0 ? maxNum + 1 : count + 1;
       setNumber(next);
+      return next;
     } catch (err) {
       console.error(err);
+      return 1;
     }
   };
 
@@ -255,13 +290,63 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
         });
       } else {
         data.createdAt = Date.now();
-        await push(ref(rtdb, `diario-classe/turmas/${selectedClassId}/alunos`), data);
+        const newRef = await push(ref(rtdb, `diario-classe/turmas/${selectedClassId}/alunos`), data);
+        const newStudentId = newRef.key;
+        const isReingressoOuRecebida = status === 'recebida';
+
+        let notasTranspostasMsg = '';
+        let divergenciasMsg = '';
+
+        if (isReingressoOuRecebida && newStudentId) {
+          // Localiza aluno de origem: pelo clipboard ou por RA idêntico na turma com status expedida
+          let sourceItem = studentClipboard?.id ? students.find(s => s.id === studentClipboard.id) : null;
+          if (!sourceItem) {
+            sourceItem = students.find(
+              (s) => s.classId === selectedClassId && s.val.status === 'expedida' && s.val.ra === ra.trim()
+            ) || null;
+          }
+
+          if (sourceItem) {
+            // Auditoria ativa de divergências entre saída e retorno
+            const diffs: { field: string; origVal: string; recVal: string }[] = [];
+            if (sourceItem.val.name.trim().toLowerCase() !== name.trim().toLowerCase()) {
+              diffs.push({ field: 'Nome Completo', origVal: sourceItem.val.name, recVal: name.trim() });
+            }
+            if ((sourceItem.val.birthdate || '') !== (birthdate || '')) {
+              diffs.push({ field: 'Data de Nascimento', origVal: formatDate(sourceItem.val.birthdate), recVal: formatDate(birthdate) });
+            }
+            if ((sourceItem.val.rm || '').trim() !== (rm || '').trim()) {
+              diffs.push({ field: 'RM', origVal: sourceItem.val.rm || 'Não informado', recVal: rm.trim() || 'Não informado' });
+            }
+
+            if (diffs.length > 0) {
+              divergenciasMsg = `\n\n⚠️ Divergências Cadastrais Detectadas (TR EXP x TR REC):\n` +
+                diffs.map(d => `• ${d.field}: "${d.origVal}" (Saída) ➔ "${d.recVal}" (Reingresso)`).join('\n') +
+                `\nVerifique se os dados estão corretos ou se houve erro de digitação.`;
+            } else {
+              divergenciasMsg = `\n\n✅ Auditoria Cadastral: Nenhum conflito detectado. Todos os dados cadastrais conferem 100% com o registro original.`;
+            }
+
+            const transResult = await transporNotasParaReingresso(
+              sourceItem.id,
+              newStudentId,
+              selectedClassId,
+              currentYear
+            );
+            if (transResult.count > 0) {
+              notasTranspostasMsg = `\n\n✨ Aproveitamento Automático de Notas:\nForam migradas com sucesso ${transResult.count} nota(s) do(s) ${transResult.bimesters.map((b) => `${b}º`).join(', ')} Bimestre(s) de todas as disciplinas já cursadas nesta escola!\nO cadastro original continua 100% arquivado e preservado.`;
+            }
+          }
+        }
+
         setModal({
           isOpen: true,
           type: 'alert',
-          title: 'Sucesso',
-          message: 'Aluno adicionado com sucesso!',
-          icon: '✅'
+          title: isReingressoOuRecebida ? 'Aluno Adicionado (Reingresso / Transferência)' : 'Sucesso',
+          message: isReingressoOuRecebida
+            ? `Aluno(a) "${name.trim()}" cadastrado(a) com sucesso como Transferência Recebida!${divergenciasMsg}${notasTranspostasMsg}\n\n📝 Próximo Passo:\nAcesse o menu "Notas" caso precise complementar avaliações do período em que o aluno esteve fora (da guia de transferência trazida da outra escola).`
+            : 'Aluno adicionado com sucesso!',
+          icon: isReingressoOuRecebida ? '📝' : '✅'
         });
       }
 
@@ -321,6 +406,272 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
     setEditingId(null);
     setEditingOriginalClassId(null);
     calculateNextNumber(selectedClassId);
+  };
+
+  const handleCopyStudentToMemory = (item: { id: string; classId: string; val: Student }) => {
+    const data: StudentClipboardData = {
+      id: item.id,
+      classId: item.classId,
+      name: item.val.name,
+      ra: item.val.ra,
+      rm: item.val.rm || '',
+      birthdate: item.val.birthdate,
+      originalNumber: item.val.number,
+      originalStatus: item.val.status,
+      originalTransferOutDate: item.val.transferOutDate || (item.val.status === 'expedida' ? item.val.transferDate : '') || '',
+      copiedAt: Date.now()
+    };
+    setStudentClipboard(data);
+    try {
+      sessionStorage.setItem('dc_student_clipboard', JSON.stringify(data));
+    } catch {}
+    setModal({
+      isOpen: true,
+      type: 'alert',
+      title: 'Dados Gravados em Memória',
+      message: `Os dados de "${item.val.name}" (RA: ${item.val.ra}) foram gravados em memória!\n\nAgora você pode clicar no botão "Colar Dados de Reingresso" na seção Novo Aluno para cadastrá-lo com o próximo número de chamada da turma.`,
+      icon: '📋'
+    });
+  };
+
+  const handleCopyCurrentFormToMemory = () => {
+    if (!name.trim() || !ra.trim()) {
+      return setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Dados Incompletos',
+        message: 'Nome e RA são obrigatórios para gravar o aluno em memória.',
+        icon: '⚠️'
+      });
+    }
+    const data: StudentClipboardData = {
+      id: editingId || undefined,
+      classId: selectedClassId,
+      name: name.trim(),
+      ra: ra.trim(),
+      rm: rm.trim(),
+      birthdate,
+      originalNumber: Number(number) || 0,
+      originalStatus: status,
+      originalTransferOutDate: transferOutDate || (status === 'expedida' ? transferDate : '') || '',
+      copiedAt: Date.now()
+    };
+    setStudentClipboard(data);
+    try {
+      sessionStorage.setItem('dc_student_clipboard', JSON.stringify(data));
+    } catch {}
+    setModal({
+      isOpen: true,
+      type: 'alert',
+      title: 'Dados Gravados em Memória',
+      message: `Os dados de "${data.name}" foram gravados em memória!\n\nVocê pode cancelar esta edição ou clicar em Novo Aluno para colar os dados com a numeração de chamada atualizada.`,
+      icon: '📋'
+    });
+  };
+
+  const handleClearClipboard = (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setStudentClipboard(null);
+    try {
+      sessionStorage.removeItem('dc_student_clipboard');
+    } catch {}
+  };
+
+  const handlePasteStudentFromMemory = async () => {
+    if (!studentClipboard) return;
+
+    // 1. Garante que sai do modo de edição para não sobrescrever o registro antigo
+    setEditingId(null);
+    setEditingOriginalClassId(null);
+
+    // 2. Define a turma (mantém a selecionada ou adota a do aluno copiado)
+    const targetClassId = selectedClassId || studentClipboard.classId;
+    if (targetClassId && targetClassId !== selectedClassId) {
+      setSelectedClassId(targetClassId);
+    }
+
+    // 3. Preenche os dados cadastrais copiados
+    setName(studentClipboard.name);
+    setRa(studentClipboard.ra);
+    setRm(studentClipboard.rm || '');
+    setBirthdate(studentClipboard.birthdate);
+
+    // 4. Configura como Reingresso / Transferência Recebida (Entrada)
+    setStatus('recebida');
+    const today = new Date().toISOString().split('T')[0];
+    setTransferInDate(today);
+    setTransferDate(today);
+    setTransferOutDate(studentClipboard.originalTransferOutDate || '');
+
+    // 5. Calcula automaticamente o próximo número de chamada
+    const nextNum = await calculateNextNumber(targetClassId);
+
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    setModal({
+      isOpen: true,
+      type: 'alert',
+      title: 'Dados Colados com Sucesso',
+      message: `Os dados de "${studentClipboard.name}" foram preenchidos para reingresso!\n\n• Nº de Chamada Atualizado: ${nextNum}\n• Status: Transferência Recebida (Entrada)\n• Data de Retorno: preenchida com a data de hoje (${formatDate(today)}), ajuste se necessário.\n\n📌 Lembrete Importante de Notas:\nApós salvar, acesse o menu "Notas" para transcrever as notas dos bimestres anteriores (aproveitamento de estudos). Assim, o Boletim Anual deste novo número terá a média anual completa dos 4 bimestres!\n\nConfira as informações e clique em "Adicionar Aluno" para salvar.`,
+      icon: '✅'
+    });
+  };
+
+  const handleQuickReingresso = async (item: { id: string; classId: string; val: Student }) => {
+    // 1. Salva na memória
+    const data: StudentClipboardData = {
+      id: item.id,
+      classId: item.classId,
+      name: item.val.name,
+      ra: item.val.ra,
+      rm: item.val.rm || '',
+      birthdate: item.val.birthdate,
+      originalNumber: item.val.number,
+      originalStatus: item.val.status,
+      originalTransferOutDate: item.val.transferOutDate || (item.val.status === 'expedida' ? item.val.transferDate : '') || '',
+      copiedAt: Date.now()
+    };
+    setStudentClipboard(data);
+    try {
+      sessionStorage.setItem('dc_student_clipboard', JSON.stringify(data));
+    } catch {}
+
+    // 2. Preenche imediatamente o formulário em modo Novo Aluno
+    setEditingId(null);
+    setEditingOriginalClassId(null);
+    setSelectedClassId(item.classId);
+    setName(item.val.name);
+    setRa(item.val.ra);
+    setRm(item.val.rm || '');
+    setBirthdate(item.val.birthdate);
+    setStatus('recebida');
+    const today = new Date().toISOString().split('T')[0];
+    setTransferInDate(today);
+    setTransferDate(today);
+    setTransferOutDate(data.originalTransferOutDate || '');
+
+    const nextNum = await calculateNextNumber(item.classId);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    setModal({
+      isOpen: true,
+      type: 'alert',
+      title: 'Reingresso Preparado',
+      message: `Dados de "${item.val.name}" carregados para novo cadastro!\n\n• Nº de Chamada Atribuído: ${nextNum} (final da turma)\n• Status: Transferência Recebida (Entrada)\n• Data de Retorno: ${formatDate(today)}\n\n📌 Lembrete de Escrituração (Notas Anteriores):\nO cadastro original com TR. EXP. continuará formalmente arquivado. Ao salvar, as notas dos bimestres anteriores já cursados nesta escola serão migradas automaticamente para este novo número!\n\nBasta clicar em "Adicionar Aluno" para concluir.`,
+      icon: '🚀'
+    });
+  };
+
+  const handleOpenComparisonModal = (item: { id: string; classId: string; val: Student }) => {
+    const matchedSource = students.find(
+      (s) => s.classId === item.classId && s.id !== item.id && s.val.status === 'expedida' && s.val.ra === item.val.ra
+    );
+    if (!matchedSource) {
+      return setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Cadastro Anterior Não Localizado',
+        message: `Não foi encontrado nenhum cadastro arquivado com status TR. EXP. e mesmo RA (${item.val.ra}) nesta turma para comparar.`,
+        icon: 'ℹ️'
+      });
+    }
+
+    const diffs: { field: string; origVal: string; recVal: string }[] = [];
+    if (matchedSource.val.name.trim().toLowerCase() !== item.val.name.trim().toLowerCase()) {
+      diffs.push({ field: 'Nome Completo', origVal: matchedSource.val.name, recVal: item.val.name });
+    }
+    if ((matchedSource.val.birthdate || '') !== (item.val.birthdate || '')) {
+      diffs.push({ field: 'Data de Nascimento', origVal: formatDate(matchedSource.val.birthdate), recVal: formatDate(item.val.birthdate) });
+    }
+    if ((matchedSource.val.rm || '').trim() !== (item.val.rm || '').trim()) {
+      diffs.push({ field: 'RM', origVal: matchedSource.val.rm || 'Não informado', recVal: item.val.rm || 'Não informado' });
+    }
+
+    setReingressoComparison({
+      sourceStudent: matchedSource,
+      targetStudent: item,
+      divergences: diffs
+    });
+  };
+
+  const handleTransporNotasManualmente = async (item: { id: string; classId: string; val: Student }) => {
+    // Procura na mesma turma outro aluno com status 'expedida' e o mesmo RA
+    const matchedSource = students.find(
+      (s) => s.classId === item.classId && s.id !== item.id && s.val.status === 'expedida' && s.val.ra === item.val.ra
+    );
+
+    if (!matchedSource) {
+      return setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Cadastro Anterior Não Localizado',
+        message: `Não foi encontrado nenhum cadastro arquivado com status TR. EXP. e mesmo RA (${item.val.ra}) nesta turma para transpor notas.`,
+        icon: 'ℹ️'
+      });
+    }
+
+    // Auditoria de divergências cadastrais
+    const diffs: string[] = [];
+    if (matchedSource.val.name.trim().toLowerCase() !== item.val.name.trim().toLowerCase()) {
+      diffs.push(`• Nome: "${matchedSource.val.name}" ➔ "${item.val.name}"`);
+    }
+    if ((matchedSource.val.birthdate || '') !== (item.val.birthdate || '')) {
+      diffs.push(`• Data Nasc: "${formatDate(matchedSource.val.birthdate)}" ➔ "${formatDate(item.val.birthdate)}"`);
+    }
+    if ((matchedSource.val.rm || '').trim() !== (item.val.rm || '').trim()) {
+      diffs.push(`• RM: "${matchedSource.val.rm || 'Não informado'}" ➔ "${item.val.rm || 'Não informado'}"`);
+    }
+
+    const diffsMsg = diffs.length > 0
+      ? `\n\n⚠️ Divergências Cadastrais Detectadas:\n${diffs.join('\n')}\n`
+      : '\n\n✅ Dados cadastrais idênticos entre a saída e o retorno.\n';
+
+    setModal({
+      isOpen: true,
+      type: 'confirm',
+      title: 'Aproveitamento de Estudos',
+      message: `Deseja transpor automaticamente as notas de todas as disciplinas cursadas no cadastro original (Nº ${matchedSource.val.number}) para este aluno (Nº ${item.val.number})?${diffsMsg}\n• O cadastro original (Nº ${matchedSource.val.number}) permanecerá 100% arquivado e inalterado.\n• As notas serão replicadas para composição da Média Anual no novo número.`,
+      icon: '✨',
+      onConfirm: async () => {
+        try {
+          setLoading(true);
+          const trans = await transporNotasParaReingresso(
+            matchedSource.id,
+            item.id,
+            item.classId,
+            currentYear
+          );
+
+          if (trans.count > 0) {
+            setModal({
+              isOpen: true,
+              type: 'alert',
+              title: 'Notas Transpostas com Sucesso',
+              message: `Foram migradas com sucesso ${trans.count} nota(s) do(s) ${trans.bimesters.map((b) => `${b}º`).join(', ')} Bimestre(s) para o aluno Nº ${item.val.number}!\n\nDisciplinas: ${trans.subjects.join(', ')}.\nO Boletim Anual agora possui o aproveitamento de estudos integrado!`,
+              icon: '✅'
+            });
+          } else {
+            setModal({
+              isOpen: true,
+              type: 'alert',
+              title: 'Nenhuma Nota Encontrada',
+              message: `O cadastro original (Nº ${matchedSource.val.number}) ainda não possui notas lançadas registradas nesta turma para o ano letivo ${currentYear}.`,
+              icon: 'ℹ️'
+            });
+          }
+        } catch (err: any) {
+          setModal({
+            isOpen: true,
+            type: 'alert',
+            title: 'Erro na Transposição',
+            message: formatFriendlyError(err, 'Não foi possível transpor as notas'),
+            icon: '❌'
+          });
+        } finally {
+          setLoading(false);
+        }
+      }
+    });
   };
 
   const handleDelete = async (classId: string, id: string, studentName?: string) => {
@@ -502,18 +853,59 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200/80 p-5 sm:p-6 shadow-xs mb-8">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-bold text-slate-800">
-            {editingId ? 'Editar Aluno' : 'Novo Aluno'}
-          </h3>
-          {editingId && (
-            <button
-              onClick={handleCancelEdit}
-              className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 px-2.5 py-1 rounded-md"
-            >
-              <X className="w-3 h-3" /> Cancelar Edição
-            </button>
-          )}
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="text-base font-bold text-slate-800">
+              {editingId ? 'Editar Aluno' : 'Novo Aluno'}
+            </h3>
+            {!editingId && studentClipboard && (
+              <div className="inline-flex items-center gap-1 bg-amber-50 border border-amber-300 px-2.5 py-1 rounded-xl shadow-2xs">
+                <button
+                  type="button"
+                  id="btn-paste-student-clipboard"
+                  onClick={handlePasteStudentFromMemory}
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-900 hover:text-amber-950 transition cursor-pointer"
+                  title={`Colar dados de ${studentClipboard.name} (Nº original: ${studentClipboard.originalNumber}) com nova numeração`}
+                >
+                  <ClipboardPaste className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Colar Dados Reingresso ({studentClipboard.name.split(' ')[0]})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearClipboard}
+                  className="p-0.5 text-slate-400 hover:text-slate-600 rounded-md text-xs cursor-pointer ml-1"
+                  title="Limpar aluno da memória"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {editingId && status === 'expedida' && !students.some(s => s.id !== editingId && s.classId === selectedClassId && s.val.ra === ra.trim() && s.val.status !== 'expedida') && (
+              <button
+                type="button"
+                id="btn-copy-form-student"
+                onClick={handleCopyCurrentFormToMemory}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-3 py-1.5 rounded-xl transition cursor-pointer shadow-2xs"
+                title="Gravar dados deste aluno com Transferência Expedida em memória para reingressar posteriormente com nova numeração"
+              >
+                <Copy className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Gravar em Memória (TR. EXP.)</span>
+              </button>
+            )}
+
+            {editingId && (
+              <button
+                type="button"
+                onClick={handleCancelEdit}
+                className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-xl transition cursor-pointer"
+              >
+                <X className="w-3 h-3" /> Cancelar Edição
+              </button>
+            )}
+          </div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -719,6 +1111,32 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
             )}
           </div>
 
+          {status === 'recebida' && (
+            <div className="p-3 bg-amber-50/80 border border-amber-200/90 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
+              <span className="text-base leading-none shrink-0 mt-0.5">💡</span>
+              <div className="flex-1">
+                <strong className="font-bold">Lembrete de Escrituração (Aproveitamento de Estudos & Média Anual):</strong>
+                <p className="mt-0.5 text-[11px] text-amber-800 leading-relaxed">
+                  Para alunos com Transferência Recebida ou Reingresso, acesse o menu <strong>Notas</strong> para lançar as notas dos bimestres anteriores (transpondo do cadastro anterior arquivado ou da guia de transferência). Isso garante o cálculo completo da <strong>Média Anual</strong> nos Boletins.
+                </p>
+                {editingId && students.some(s => s.id !== editingId && s.classId === selectedClassId && s.val.status === 'expedida' && s.val.ra === ra.trim()) && (
+                  <button
+                    type="button"
+                    id="btn-form-transpor-notas"
+                    onClick={() => {
+                      const cur = students.find(s => s.id === editingId);
+                      if (cur) handleTransporNotasManualmente(cur);
+                    }}
+                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition shadow-xs cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Puxar Notas do Cadastro Original (Automático)</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-end gap-2 pt-2">
             <button
               id="student-save-btn"
@@ -853,6 +1271,94 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5 sm:gap-2">
+                    {student.status === 'expedida' && (
+                      (() => {
+                        const hasActiveReingresso = students.some(
+                          (other) =>
+                            other.classId === item.classId &&
+                            other.id !== item.id &&
+                            other.val.ra === student.ra &&
+                            other.val.status !== 'expedida'
+                        );
+                        if (hasActiveReingresso) {
+                          return (
+                            <span
+                              className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200 inline-flex items-center gap-1"
+                              title="Este aluno já possui matrícula ativa de reingresso nesta turma"
+                            >
+                              <UserCheck className="w-3 h-3 text-emerald-600" />
+                              <span>Reingressado</span>
+                            </span>
+                          );
+                        }
+                        return (
+                          <>
+                            <button
+                              id={`student-reingresso-fast-${item.id}`}
+                              onClick={() => handleQuickReingresso(item)}
+                              className="p-1.5 text-emerald-700 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200/80 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-bold cursor-pointer"
+                              title="Reingressar este aluno: copia os dados cadastrais e preenche Novo Aluno com a próxima numeração da turma"
+                            >
+                              <UserCheck className="w-3.5 h-3.5 text-emerald-600" />
+                              <span className="hidden md:inline">Reingressar</span>
+                            </button>
+                            <button
+                              id={`student-copy-${item.id}`}
+                              onClick={() => handleCopyStudentToMemory(item)}
+                              className="p-1.5 text-amber-700 hover:text-amber-900 hover:bg-amber-50 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-semibold cursor-pointer"
+                              title="Gravar dados deste aluno em memória para reingresso com nova numeração"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                              <span className="hidden lg:inline">Gravar</span>
+                            </button>
+                          </>
+                        );
+                      })()
+                    )}
+                    {student.status === 'recebida' &&
+                      students.some(
+                        (other) =>
+                          other.classId === item.classId &&
+                          other.id !== item.id &&
+                          other.val.status === 'expedida' &&
+                          other.val.ra === student.ra
+                      ) && (
+                        <>
+                          <button
+                            id={`student-compare-reingresso-${item.id}`}
+                            onClick={() => handleOpenComparisonModal(item)}
+                            className="p-1.5 text-amber-700 hover:text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-bold cursor-pointer"
+                            title="Auditar e comparar dados cadastrais com o cadastro de saída original (TR. EXP)"
+                          >
+                            <ArrowRightLeft className="w-3.5 h-3.5 text-amber-600" />
+                            <span className="hidden lg:inline">Auditar / Comparar</span>
+                          </button>
+                          <button
+                            id={`student-transpor-notas-${item.id}`}
+                            onClick={() => handleTransporNotasManualmente(item)}
+                            className="p-1.5 text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/80 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-bold cursor-pointer"
+                            title="Puxar notas de todas as matérias cursadas no cadastro original deste aluno arquivado"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                            <span className="hidden md:inline">Puxar Notas</span>
+                          </button>
+                        </>
+                      )}
+                    <button
+                      id={`student-evolution-${item.id}`}
+                      onClick={() =>
+                        setEvolutionChartStudent({
+                          studentId: item.id,
+                          classId: item.classId,
+                          turma: classes.find((c) => c.id === item.classId)?.val || null
+                        })
+                      }
+                      className="p-1.5 text-indigo-700 hover:text-indigo-900 bg-indigo-50/70 hover:bg-indigo-100 border border-indigo-200/60 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-semibold cursor-pointer"
+                      title="Ver Gráfico de Evolução e Trajetória de Desempenho deste aluno"
+                    >
+                      <TrendingUp className="w-3.5 h-3.5 text-indigo-600" />
+                      <span className="hidden xl:inline">Trajetória</span>
+                    </button>
                     {isAdmin && (
                       <button
                         id={`student-transfer-${item.id}`}
@@ -860,28 +1366,28 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
                           setStudentToTransfer(item);
                           setIsTransferModalOpen(true);
                         }}
-                        className="p-1.5 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-semibold"
+                        className="p-1.5 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-semibold cursor-pointer"
                         title="Transferir este aluno para outra turma/escola"
                       >
-                        <ArrowRightLeft className="w-4 h-4" />
+                        <ArrowRightLeft className="w-3.5 h-3.5" />
                         <span className="hidden sm:inline">Transferir</span>
                       </button>
                     )}
                     <button
                       id={`student-edit-${item.id}`}
                       onClick={() => handleEdit(item)}
-                      className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                      className="p-1.5 text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
                       title="Editar"
                     >
-                      <Edit2 className="w-4 h-4" />
+                      <Edit2 className="w-3.5 h-3.5" />
                     </button>
                     <button
                       id={`student-delete-${item.id}`}
                       onClick={() => handleDelete(item.classId, item.id, item.val.name)}
-                      className="p-1.5 text-slate-600 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors"
+                      className="p-1.5 text-slate-600 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
                       title="Excluir"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
@@ -919,6 +1425,178 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
         }}
         setModal={setModal}
       />
+
+      {/* Modal de Auditoria e Comparativo de Reingresso (TR EXP vs TR REC) */}
+      {reingressoComparison && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2">
+                <ArrowRightLeft className="w-5 h-5 text-indigo-600" />
+                <h3 className="font-extrabold text-slate-800 text-base">
+                  Auditoria de Reingresso: Comparativo Cadastral
+                </h3>
+              </div>
+              <button
+                onClick={() => setReingressoComparison(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-xl transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-5 text-xs text-slate-700">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Cadastro Original de Saída */}
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="font-bold text-slate-800 text-sm">
+                      1. Cadastro Original (Saída)
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
+                      TR. EXPEDIDA
+                    </span>
+                  </div>
+                  <dl className="space-y-2">
+                    <div>
+                      <dt className="text-slate-400 font-medium">Nº de Chamada Antigo:</dt>
+                      <dd className="font-bold text-slate-900">Nº {reingressoComparison.sourceStudent.val.number}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Nome Completo:</dt>
+                      <dd className="font-bold text-slate-900">{reingressoComparison.sourceStudent.val.name}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">R.A.:</dt>
+                      <dd className="font-mono text-slate-800">{reingressoComparison.sourceStudent.val.ra}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">R.M.:</dt>
+                      <dd className="font-mono text-slate-800">{reingressoComparison.sourceStudent.val.rm || 'Não informado'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Data de Nascimento:</dt>
+                      <dd className="font-medium text-slate-800">{formatDate(reingressoComparison.sourceStudent.val.birthdate)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Data de Saída:</dt>
+                      <dd className="font-medium text-rose-700">
+                        {formatDate(reingressoComparison.sourceStudent.val.transferOutDate || reingressoComparison.sourceStudent.val.transferDate)}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+
+                {/* Cadastro Atual de Reingresso */}
+                <div className="p-4 rounded-xl bg-indigo-50/50 border border-indigo-200">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="font-bold text-indigo-950 text-sm">
+                      2. Cadastro Atual (Retorno)
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      TR. RECEBIDA
+                    </span>
+                  </div>
+                  <dl className="space-y-2">
+                    <div>
+                      <dt className="text-slate-400 font-medium">Nº de Chamada Atual:</dt>
+                      <dd className="font-bold text-indigo-700">Nº {reingressoComparison.targetStudent.val.number}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Nome Completo:</dt>
+                      <dd className="font-bold text-slate-900">{reingressoComparison.targetStudent.val.name}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">R.A.:</dt>
+                      <dd className="font-mono text-slate-800">{reingressoComparison.targetStudent.val.ra}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">R.M.:</dt>
+                      <dd className="font-mono text-slate-800">{reingressoComparison.targetStudent.val.rm || 'Não informado'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Data de Nascimento:</dt>
+                      <dd className="font-medium text-slate-800">{formatDate(reingressoComparison.targetStudent.val.birthdate)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Data de Retorno:</dt>
+                      <dd className="font-medium text-emerald-700">
+                        {formatDate(reingressoComparison.targetStudent.val.transferInDate || reingressoComparison.targetStudent.val.transferDate)}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+              </div>
+
+              {/* Status de Divergências */}
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
+                <h4 className="font-bold text-slate-800 mb-2">
+                  Divergências Cadastrais Detectadas:
+                </h4>
+                {reingressoComparison.divergences.length === 0 ? (
+                  <div className="flex items-center gap-2 text-emerald-700 font-medium text-xs">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>Nenhuma divergência encontrada! Todos os dados (Nome, RA, RM, Nascimento) conferem 100%.</span>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {reingressoComparison.divergences.map((div, dIdx) => (
+                      <div key={dIdx} className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-between">
+                        <span className="font-bold text-amber-900">{div.field}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="line-through text-slate-400">{div.origVal}</span>
+                          <ArrowRightLeft className="w-3.5 h-3.5 text-amber-600" />
+                          <span className="font-bold text-slate-800">{div.recVal}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Ações Rápidas */}
+              <div className="flex items-center justify-between p-3.5 rounded-xl bg-indigo-50 border border-indigo-200 gap-3">
+                <span className="text-[11px] text-indigo-900">
+                  Deseja transpor as notas cursadas pelo aluno no cadastro original para o número atual?
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const tgt = reingressoComparison.targetStudent;
+                    setReingressoComparison(null);
+                    handleTransporNotasManualmente(tgt);
+                  }}
+                  className="px-3.5 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg shadow-xs transition shrink-0 cursor-pointer"
+                >
+                  Puxar Notas Agora
+                </button>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setReingressoComparison(null)}
+                className="px-5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition shadow-xs cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* MODAL: GRÁFICO DE EVOLUÇÃO E TRAJETÓRIA */}
+      {evolutionChartStudent && (
+        <StudentEvolutionChartModal
+          isOpen={true}
+          onClose={() => setEvolutionChartStudent(null)}
+          classId={evolutionChartStudent.classId}
+          turma={evolutionChartStudent.turma}
+          initialStudentId={evolutionChartStudent.studentId}
+          currentYear={currentYear}
+          teacherName=""
+        />
+      )}
     </div>
   );
 };

@@ -1,6 +1,7 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import { get, ref, rtdb, dc, carregarMinhasTurmas } from './firebase';
 import { ClassRoom, DEFAULT_SUBJECTS } from '../types';
 import { isSkillApplicableToYear, formatSkillYearsLabel } from './bnccHelper';
@@ -70,6 +71,65 @@ export function isStudentTransferredOutBeforeBimester(student: any, bimester: st
   }
 
   return false;
+}
+
+export function isStudentTransferredInAfterBimester(student: any, bimester: string | number): boolean {
+  if (!student) return false;
+  const inDate = student.transferInDate || (student.status === 'recebida' ? student.transferDate : '');
+  if (!inDate) return false;
+  const bimNum = typeof bimester === 'number' ? bimester : parseInt(String(bimester), 10);
+  if (isNaN(bimNum)) return false;
+
+  const parts = inDate.split('T')[0].split('-');
+  if (parts.length < 3) return false;
+  const month = parseInt(parts[1], 10);
+  const day = parseInt(parts[2], 10);
+
+  // Cortes do calendário escolar padrão:
+  // 1º Bimestre: Fev a Abr. Se entrou após 30 de Abril:
+  if (bimNum === 1) {
+    return month > 4 || (month === 4 && day > 30);
+  }
+  // 2º Bimestre: Mai a Jul. Se entrou após 31 de Julho:
+  if (bimNum === 2) {
+    return month > 7 || (month === 7 && day > 31);
+  }
+  // 3º Bimestre: Ago a Set. Se entrou após 30 de Setembro:
+  if (bimNum === 3) {
+    return month > 9 || (month === 9 && day > 30);
+  }
+  return false;
+}
+
+export function isStudentEnrolledOnDate(student: any, date: string): { enrolled: boolean; reason?: string } {
+  if (!student || !date) return { enrolled: true };
+
+  // 1. Data de entrada (TR. REC.)
+  const inDate = student.transferInDate || (student.status === 'recebida' ? student.transferDate : '');
+  if (inDate && date < inDate) {
+    return {
+      enrolled: false,
+      reason: `Não Matriculado (Entrada em ${formatDate(inDate)})`
+    };
+  }
+
+  // 2. Data de saída (TR. EXP.)
+  const outDate = student.transferOutDate || (student.status === 'expedida' ? student.transferDate : '');
+  if (outDate && date > outDate) {
+    return {
+      enrolled: false,
+      reason: `Transferência Expedida em ${formatDate(outDate)}`
+    };
+  }
+
+  if (student.status === 'expedida' && !outDate) {
+    return {
+      enrolled: false,
+      reason: 'Transferência Expedida'
+    };
+  }
+
+  return { enrolled: true };
 }
 
 export function getSubjectName(subId?: string): string {
@@ -658,6 +718,31 @@ export async function generateAnnualReport(
           }
         });
 
+        if (bCnt === 0 && student.status === 'recebida' && student.ra) {
+          const origStudent = sortedStudents.find(
+            (o: any) => o.id !== student.id && o.status === 'expedida' && o.ra === student.ra
+          );
+          if (origStudent) {
+            Object.keys(notasVal).forEach((k) => {
+              const g = notasVal[k];
+              const gSub = g.subject || 'portugues';
+              if (
+                g.classId === classId &&
+                (!g.anoLetivo || g.anoLetivo === currentYear) &&
+                String(g.bimester) === String(b) &&
+                g.studentId === origStudent.id &&
+                (subject === 'todas' || gSub === subject)
+              ) {
+                const val = parseFloat(g.value);
+                if (!isNaN(val)) {
+                  bSum += val;
+                  bCnt++;
+                }
+              }
+            });
+          }
+        }
+
         if (bCnt > 0) {
           const bAvg = bSum / bCnt;
           nota = bAvg.toFixed(1);
@@ -780,6 +865,32 @@ export async function generateAnnualReportXLSX(
             }
           }
         });
+
+        if (bCnt === 0 && student.status === 'recebida' && student.ra) {
+          const origStudent = sortedStudents.find(
+            (o: any) => o.id !== student.id && o.status === 'expedida' && o.ra === student.ra
+          );
+          if (origStudent) {
+            Object.keys(notasVal).forEach((k) => {
+              const g = notasVal[k];
+              const gSub = g.subject || 'portugues';
+              if (
+                g.classId === classId &&
+                (!g.anoLetivo || g.anoLetivo === currentYear) &&
+                String(g.bimester) === String(b) &&
+                g.studentId === origStudent.id &&
+                (subject === 'todas' || gSub === subject)
+              ) {
+                const num = parseFloat(g.value);
+                if (!isNaN(num)) {
+                  bSum += num;
+                  bCnt++;
+                }
+              }
+            });
+          }
+        }
+
         if (bCnt > 0) {
           const avg = bSum / bCnt;
           notaVal = parseFloat(avg.toFixed(1));
@@ -1044,6 +1155,28 @@ export async function generateStudentEvolutionReport(
   targetStudents.sort((a, b) => (a.number || 0) - (b.number || 0));
 
   const tableData: any[] = [];
+  const studentGradesMap: Record<string, (number | null)[]> = {};
+
+  // Média da turma por bimestre para comparação
+  const classBimAverages: (number | null)[] = [null, null, null, null];
+  for (let b = 1; b <= 4; b++) {
+    let cSum = 0, cCnt = 0;
+    Object.keys(notasVal).forEach((k) => {
+      const g = notasVal[k];
+      if (
+        g.classId === classId &&
+        (!g.anoLetivo || g.anoLetivo === currentYear) &&
+        String(g.bimester) === String(b)
+      ) {
+        const val = parseFloat(g.value);
+        if (!isNaN(val)) {
+          cSum += val;
+          cCnt++;
+        }
+      }
+    });
+    if (cCnt > 0) classBimAverages[b - 1] = cSum / cCnt;
+  }
 
   targetStudents.forEach((student: any) => {
     const grades: (number | null)[] = [null, null, null, null];
@@ -1066,6 +1199,8 @@ export async function generateStudentEvolutionReport(
       });
       if (bCnt > 0) grades[b - 1] = bSum / bCnt;
     }
+
+    studentGradesMap[student.id] = grades;
 
     let evolucao = 'Sem dados suficientes';
     const validGrades = grades.filter((g) => g !== null) as number[];
@@ -1135,10 +1270,1407 @@ export async function generateStudentEvolutionReport(
     }
   });
 
+  // DESENHO DO GRÁFICO VETORIAL DE EVOLUÇÃO
+  const finalY = (doc as any).lastAutoTable?.finalY || startY + 40;
+
+  // Gráfico para Aluno Individual
+  if (targetStudents.length === 1) {
+    const student = targetStudents[0];
+    const sGrades = studentGradesMap[student.id] || [null, null, null, null];
+
+    let chartY = finalY + 10;
+    if (chartY + 75 > 280) {
+      doc.addPage();
+      chartY = 20;
+    }
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(30, 41, 59);
+    doc.text(`GRÁFICO DE TRAJETÓRIA E DESEMPENHO — Nº ${student.number} ${student.name}`, 14, chartY);
+
+    const boxX = 14;
+    const boxY = chartY + 3;
+    const boxW = 182;
+    const boxH = 62;
+
+    doc.setDrawColor(226, 232, 240);
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(boxX, boxY, boxW, boxH, 3, 3, 'FD');
+
+    const gX = boxX + 22;
+    const gY = boxY + 8;
+    const gW = boxW - 35;
+    const gH = boxH - 20;
+
+    // Linhas horizontais (0, 2.5, 5.0, 7.5, 10.0)
+    [0, 2.5, 5.0, 7.5, 10.0].forEach((v) => {
+      const lineY = gY + gH - (v / 10.0) * gH;
+      doc.setDrawColor(241, 245, 249);
+      doc.setLineWidth(0.3);
+      doc.line(gX, lineY, gX + gW, lineY);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(148, 163, 184);
+      doc.text(v.toFixed(1), gX - 3, lineY + 1.5, { align: 'right' });
+    });
+
+    // Linha de corte 5.0 destacada
+    const passY = gY + gH - (5.0 / 10.0) * gH;
+    doc.setDrawColor(245, 158, 11);
+    doc.setLineWidth(0.4);
+    doc.setLineDashPattern([2, 2], 0);
+    doc.line(gX, passY, gX + gW, passY);
+    doc.setLineDashPattern([], 0);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.5);
+    doc.setTextColor(217, 119, 6);
+    doc.text('Corte (5.0)', gX + gW, passY - 1.5, { align: 'right' });
+
+    // Coordenadas X dos bimestres
+    const bXs = [0, 1, 2, 3].map((i) => gX + (i * gW) / 3);
+
+    ['1º Bimestre', '2º Bimestre', '3º Bimestre', '4º Bimestre'].forEach((lbl, i) => {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.setTextColor(71, 85, 105);
+      doc.text(lbl, bXs[i], gY + gH + 5, { align: 'center' });
+    });
+
+    // Média da Turma (Linha tracejada)
+    const validClassPts = bXs
+      .map((x, i) => ({ x, y: classBimAverages[i] !== null ? gY + gH - (classBimAverages[i]! / 10.0) * gH : null }))
+      .filter((pt) => pt.y !== null) as { x: number; y: number }[];
+
+    if (validClassPts.length > 1) {
+      doc.setDrawColor(148, 163, 184);
+      doc.setLineWidth(0.6);
+      doc.setLineDashPattern([2, 2], 0);
+      for (let i = 0; i < validClassPts.length - 1; i++) {
+        doc.line(validClassPts[i].x, validClassPts[i].y, validClassPts[i + 1].x, validClassPts[i + 1].y);
+      }
+      doc.setLineDashPattern([], 0);
+    }
+    validClassPts.forEach((pt) => {
+      doc.setFillColor(148, 163, 184);
+      doc.circle(pt.x, pt.y, 1.2, 'F');
+    });
+
+    // Linha do Aluno
+    const validStudentPts = bXs
+      .map((x, i) => ({
+        x,
+        y: sGrades[i] !== null ? gY + gH - (sGrades[i]! / 10.0) * gH : null,
+        val: sGrades[i]
+      }))
+      .filter((pt) => pt.y !== null && pt.val !== null) as { x: number; y: number; val: number }[];
+
+    if (validStudentPts.length > 1) {
+      doc.setDrawColor(79, 70, 229);
+      doc.setLineWidth(1.2);
+      for (let i = 0; i < validStudentPts.length - 1; i++) {
+        doc.line(validStudentPts[i].x, validStudentPts[i].y, validStudentPts[i + 1].x, validStudentPts[i + 1].y);
+      }
+    }
+
+    // Pontos do Aluno com etiquetas de nota
+    validStudentPts.forEach((pt) => {
+      doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(79, 70, 229);
+      doc.setLineWidth(0.8);
+      doc.circle(pt.x, pt.y, 2.2, 'FD');
+
+      const ptColor = pt.val >= 6.0 ? [16, 185, 129] : pt.val >= 5.0 ? [245, 158, 11] : [239, 68, 68];
+      doc.setFillColor(ptColor[0], ptColor[1], ptColor[2]);
+      doc.circle(pt.x, pt.y, 1.2, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.setTextColor(30, 27, 75);
+      doc.text(pt.val.toFixed(1), pt.x, pt.y - 3.5, { align: 'center' });
+    });
+
+    // Legenda
+    const legY = boxY + boxH - 2;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(6.5);
+
+    doc.setDrawColor(79, 70, 229);
+    doc.setLineWidth(1.2);
+    doc.line(boxX + 18, legY, boxX + 24, legY);
+    doc.setTextColor(79, 70, 229);
+    doc.text('Aluno', boxX + 26, legY + 0.8);
+
+    doc.setDrawColor(148, 163, 184);
+    doc.setLineWidth(0.6);
+    doc.setLineDashPattern([2, 2], 0);
+    doc.line(boxX + 50, legY, boxX + 56, legY);
+    doc.setLineDashPattern([], 0);
+    doc.setTextColor(100, 116, 139);
+    doc.text('Média da Turma', boxX + 58, legY + 0.8);
+
+    doc.setDrawColor(245, 158, 11);
+    doc.setLineWidth(0.6);
+    doc.setLineDashPattern([2, 2], 0);
+    doc.line(boxX + 105, legY, boxX + 111, legY);
+    doc.setLineDashPattern([], 0);
+    doc.setTextColor(217, 119, 6);
+    doc.text('Corte Mínimo (5.0)', boxX + 113, legY + 0.8);
+  } else {
+    // Gráfico de Evolução Geral da Turma (sempre impresso, criando nova página caso necessário)
+    let chartY = finalY + 8;
+    if (chartY + 55 > 280) {
+      doc.addPage();
+      chartY = 20;
+    }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(30, 41, 59);
+    doc.text('PANORAMA DE EVOLUÇÃO MÉDIA DA TURMA', 14, chartY);
+
+    const boxX = 14;
+    const boxY = chartY + 3;
+    const boxW = 182;
+    const boxH = 48;
+
+    doc.setDrawColor(226, 232, 240);
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(boxX, boxY, boxW, boxH, 3, 3, 'FD');
+
+    const gX = boxX + 22;
+    const gY = boxY + 6;
+    const gW = boxW - 35;
+    const gH = boxH - 16;
+
+    [0, 2.5, 5.0, 7.5, 10.0].forEach((v) => {
+      const lineY = gY + gH - (v / 10.0) * gH;
+      doc.setDrawColor(241, 245, 249);
+      doc.setLineWidth(0.3);
+      doc.line(gX, lineY, gX + gW, lineY);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.setTextColor(148, 163, 184);
+      doc.text(v.toFixed(1), gX - 3, lineY + 1.5, { align: 'right' });
+    });
+
+    const bXs = [0, 1, 2, 3].map((i) => gX + (i * gW) / 3);
+    ['1º Bim', '2º Bim', '3º Bim', '4º Bim'].forEach((lbl, i) => {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(71, 85, 105);
+      doc.text(lbl, bXs[i], gY + gH + 4, { align: 'center' });
+    });
+
+    const validClassPts = bXs
+      .map((x, i) => ({
+        x,
+        y: classBimAverages[i] !== null ? gY + gH - (classBimAverages[i]! / 10.0) * gH : null,
+        val: classBimAverages[i]
+      }))
+      .filter((pt) => pt.y !== null && pt.val !== null) as { x: number; y: number; val: number }[];
+
+    if (validClassPts.length > 1) {
+      doc.setDrawColor(16, 185, 129);
+      doc.setLineWidth(1.2);
+      for (let i = 0; i < validClassPts.length - 1; i++) {
+        doc.line(validClassPts[i].x, validClassPts[i].y, validClassPts[i + 1].x, validClassPts[i + 1].y);
+      }
+    }
+    validClassPts.forEach((pt) => {
+      doc.setFillColor(16, 185, 129);
+      doc.circle(pt.x, pt.y, 1.8, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(16, 149, 106);
+      doc.text(pt.val.toFixed(1), pt.x, pt.y - 2.5, { align: 'center' });
+    });
+  }
+
   doc.save(`evolucao_alunos_${turma ? `${turma.year}_${turma.letter}` : ''}.pdf`);
 }
 
-// 1.4 Evolução Individual XLSX
+export interface TrajectoryReportStudentItem {
+  student: {
+    id?: string;
+    name: string;
+    number?: number;
+    ra?: string;
+    status?: string;
+    transferInDate?: string;
+    transferOutDate?: string;
+    transferDate?: string;
+  };
+  grades: (number | null)[];
+  annualAverage: number | null;
+  trend: 'Evolutivo' | 'Em Queda' | 'Estável' | 'Sem dados' | string;
+  diff: number;
+  attendanceRate?: number | null;
+  totalPresences?: number;
+  totalAbsences?: number;
+}
+
+export const STUDENT_CHART_COLORS = [
+  '#4f46e5', '#0284c7', '#059669', '#d97706', '#dc2626',
+  '#7c3aed', '#db2777', '#0d9488', '#ea580c', '#2563eb',
+  '#16a34a', '#9333ea', '#c026d3', '#0891b2', '#ca8a04',
+  '#e11d48', '#4338ca', '#0891b2', '#65a30d', '#b45309'
+];
+
+/**
+ * Renderiza o Gráfico Vetorial Completo da Turma diretamente em um HTML5 Canvas de alta resolução.
+ * 100% síncrono, independente do DOM e confiável para PNG, Excel e PDF.
+ */
+export function renderClassChartToCanvas({
+  turma,
+  teacherName,
+  currentYear,
+  selectedSubjectName,
+  studentsTrajectory,
+  classOverallAverage,
+  classBimAverages,
+  width = 1100,
+  height = 560
+}: {
+  turma?: ClassRoom | null;
+  teacherName?: string;
+  currentYear: string;
+  selectedSubjectName?: string;
+  studentsTrajectory: TrajectoryReportStudentItem[];
+  classOverallAverage?: number | null;
+  classBimAverages?: (number | null)[];
+  width?: number;
+  height?: number;
+}): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+
+  // 1. Fundo Branco
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+
+  // 2. Banner Superior Institucional
+  ctx.fillStyle = '#1e1b4b'; // indigo-950
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(14, 12, width - 28, 56, 10);
+  } else {
+    ctx.rect(14, 12, width - 28, 56);
+  }
+  ctx.fill();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('DIÁRIO DE CLASSE — EVOLUÇÃO E TRAJETÓRIA ESCOLAR DA TURMA', 28, 36);
+
+  const turmaStr = turma ? `${turma.year}º Ano ${turma.letter} (${turma.schoolName || 'Escola'})` : 'Turma';
+  const subStr = selectedSubjectName || 'Média Geral (Todas as Matérias)';
+  ctx.fillStyle = '#cbd5e1';
+  ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  ctx.fillText(`Turma: ${turmaStr}   |   Ano Letivo: ${currentYear}   |   Professor(a): ${teacherName || '-'}   |   ${subStr}`, 28, 55);
+
+  // 3. Área Gráfica Principal
+  const pLeft = 65;
+  const pRight = 210; // espaço lateral para painel de legenda e métricas
+  const pTop = 82;
+  const pBottom = 65;
+  const chartW = width - pLeft - pRight;
+  const chartH = height - pTop - pBottom;
+
+  // Fundo da área de plotagem
+  ctx.fillStyle = '#f8fafc';
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(pLeft, pTop, chartW, chartH, 8);
+  } else {
+    ctx.rect(pLeft, pTop, chartW, chartH);
+  }
+  ctx.fill();
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  const getY = (val: number) => pTop + chartH - (val / 10.0) * chartH;
+  const getX = (b: number) => pLeft + ((b - 1) * chartW) / 3;
+
+  // Grade horizontal (0, 2.5, 5.0, 7.5, 10.0)
+  [0, 2.5, 5.0, 7.5, 10.0].forEach((v) => {
+    const y = getY(v);
+    ctx.strokeStyle = '#f1f5f9';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(pLeft, y);
+    ctx.lineTo(pLeft + chartW, y);
+    ctx.stroke();
+
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(v.toFixed(1), pLeft - 8, y + 4);
+  });
+
+  // Linha de Corte 5.0 em destaque (Tracejada âmbar)
+  const yCorte = getY(5.0);
+  ctx.save();
+  ctx.strokeStyle = '#f59e0b';
+  ctx.lineWidth = 1.8;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  ctx.moveTo(pLeft, yCorte);
+  ctx.lineTo(pLeft + chartW, yCorte);
+  ctx.stroke();
+  ctx.restore();
+
+  // Etiqueta Corte 5.0
+  ctx.fillStyle = '#d97706';
+  ctx.font = 'bold 10.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillText('Corte (5.0)', pLeft + chartW - 6, yCorte - 5);
+
+  // Colunas dos Bimestres (1º, 2º, 3º, 4º)
+  [1, 2, 3, 4].forEach((b) => {
+    const x = getX(b);
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, pTop);
+    ctx.lineTo(x, pTop + chartH);
+    ctx.stroke();
+
+    ctx.fillStyle = '#334155';
+    ctx.font = 'bold 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${b}º Bimestre`, x, pTop + chartH + 22);
+  });
+
+  // 4. Linhas de Trajetória de TODOS os Alunos
+  studentsTrajectory.forEach((st, idx) => {
+    const validPts: { x: number; y: number; val: number; b: number }[] = [];
+    st.grades.forEach((g, bIdx) => {
+      if (g !== null) {
+        validPts.push({ x: getX(bIdx + 1), y: getY(g), val: g, b: bIdx + 1 });
+      }
+    });
+
+    if (validPts.length === 0) return;
+
+    const color = STUDENT_CHART_COLORS[idx % STUDENT_CHART_COLORS.length];
+
+    // Traçado da linha
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.globalAlpha = 0.75;
+    ctx.beginPath();
+    validPts.forEach((pt, pIdx) => {
+      if (pIdx === 0) ctx.moveTo(pt.x, pt.y);
+      else ctx.lineTo(pt.x, pt.y);
+    });
+    ctx.stroke();
+    ctx.restore();
+
+    // Círculos nos pontos
+    validPts.forEach((pt) => {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    });
+  });
+
+  // 5. Linha Dourada Proeminente da MÉDIA DA TURMA
+  const cBims = classBimAverages || [null, null, null, null];
+  const validClassPts: { x: number; y: number; val: number; b: number }[] = [];
+  cBims.forEach((g, bIdx) => {
+    if (g !== null) {
+      validClassPts.push({ x: getX(bIdx + 1), y: getY(g), val: g, b: bIdx + 1 });
+    }
+  });
+
+  if (validClassPts.length > 0) {
+    // Halo suave
+    ctx.save();
+    ctx.strokeStyle = 'rgba(254, 243, 199, 0.85)';
+    ctx.lineWidth = 9;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    validClassPts.forEach((pt, pIdx) => {
+      if (pIdx === 0) ctx.moveTo(pt.x, pt.y);
+      else ctx.lineTo(pt.x, pt.y);
+    });
+    ctx.stroke();
+    ctx.restore();
+
+    // Linha principal da média
+    ctx.strokeStyle = '#d97706';
+    ctx.lineWidth = 3.6;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    validClassPts.forEach((pt, pIdx) => {
+      if (pIdx === 0) ctx.moveTo(pt.x, pt.y);
+      else ctx.lineTo(pt.x, pt.y);
+    });
+    ctx.stroke();
+
+    // Marcadores em Diamante com notas da média
+    validClassPts.forEach((pt) => {
+      ctx.save();
+      ctx.translate(pt.x, pt.y);
+      ctx.rotate(Math.PI / 4);
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(-5, -5, 10, 10);
+      ctx.strokeStyle = '#78350f';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(-5, -5, 10, 10);
+      ctx.restore();
+
+      // Rótulo da média
+      ctx.fillStyle = '#78350f';
+      ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(pt.val.toFixed(1), pt.x, pt.y - 10);
+    });
+
+    // Texto ao lado do último ponto
+    const lastPt = validClassPts[validClassPts.length - 1];
+    ctx.fillStyle = '#b45309';
+    ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('Média Turma', lastPt.x + 12, lastPt.y + 4);
+  }
+
+  // 6. Painel Lateral de Legenda & Indicadores (Direita)
+  const legX = pLeft + chartW + 14;
+  const legY = pTop;
+  const legW = pRight - 28;
+  const legH = chartH;
+
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(legX, legY, legW, legH, 8);
+  } else {
+    ctx.rect(legX, legY, legW, legH);
+  }
+  ctx.fill();
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Cabeçalho Legenda
+  ctx.fillStyle = '#1e1b4b';
+  ctx.font = 'bold 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('INDICADORES DA TURMA', legX + 10, legY + 22);
+
+  const totalAlunos = studentsTrajectory.length;
+  const cOver = classOverallAverage !== undefined && classOverallAverage !== null ? classOverallAverage.toFixed(1) : '-';
+  const evolutivos = studentsTrajectory.filter((s) => s.trend === 'Evolutivo').length;
+  const queda = studentsTrajectory.filter((s) => s.trend === 'Em Queda').length;
+  const estaveis = studentsTrajectory.filter((s) => s.trend === 'Estável').length;
+  const abaixoCorte = studentsTrajectory.filter((s) => s.annualAverage !== null && s.annualAverage < 5.0).length;
+
+  const kpisList = [
+    { label: 'Total de Alunos:', val: `${totalAlunos}`, color: '#1e293b' },
+    { label: 'Média Geral:', val: `${cOver}`, color: '#4338ca', bold: true },
+    { label: '↗️ Evolutivos:', val: `${evolutivos} (${totalAlunos ? Math.round((evolutivos / totalAlunos) * 100) : 0}%)`, color: '#16a34a' },
+    { label: '➡️ Estáveis:', val: `${estaveis} (${totalAlunos ? Math.round((estaveis / totalAlunos) * 100) : 0}%)`, color: '#475569' },
+    { label: '↘️ Em Queda:', val: `${queda} (${totalAlunos ? Math.round((queda / totalAlunos) * 100) : 0}%)`, color: '#dc2626' },
+    { label: '⚠️ Abaixo 5.0:', val: `${abaixoCorte} aluno(s)`, color: '#d97706' }
+  ];
+
+  kpisList.forEach((kpi, kIdx) => {
+    const kY = legY + 44 + kIdx * 24;
+    ctx.fillStyle = '#64748b';
+    ctx.font = '10px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(kpi.label, legX + 10, kY);
+
+    ctx.fillStyle = kpi.color;
+    ctx.font = kpi.bold ? 'bold 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' : 'bold 10.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(kpi.val, legX + legW - 10, kY);
+  });
+
+  // Linha separadora na legenda
+  const sepY = legY + 44 + kpisList.length * 24 + 4;
+  ctx.strokeStyle = '#f1f5f9';
+  ctx.beginPath();
+  ctx.moveTo(legX + 10, sepY);
+  ctx.lineTo(legX + legW - 10, sepY);
+  ctx.stroke();
+
+  // Amostra de Alunos na Legenda
+  ctx.fillStyle = '#475569';
+  ctx.font = 'bold 9.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('ALUNOS (CURVAS):', legX + 10, sepY + 16);
+
+  const sampleStudents = studentsTrajectory.slice(0, 7);
+  sampleStudents.forEach((st, sIdx) => {
+    const sY = sepY + 30 + sIdx * 17;
+    const color = STUDENT_CHART_COLORS[sIdx % STUDENT_CHART_COLORS.length];
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(legX + 14, sY - 3, 4, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#334155';
+    ctx.font = '9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    let sName = st.student.name.split(' ').slice(0, 2).join(' ');
+    if (sName.length > 16) sName = sName.slice(0, 15) + '..';
+    ctx.fillText(`#${st.student.number || sIdx + 1} ${sName}`, legX + 24, sY);
+
+    ctx.fillStyle = '#64748b';
+    ctx.textAlign = 'right';
+    ctx.fillText(st.annualAverage !== null ? st.annualAverage.toFixed(1) : '-', legX + legW - 10, sY);
+    ctx.textAlign = 'left';
+  });
+
+  if (studentsTrajectory.length > 7) {
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = 'italic 8.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    ctx.fillText(`+ ${studentsTrajectory.length - 7} alunos plotados`, legX + 24, sepY + 30 + 7 * 17);
+  }
+
+  // 7. Rodapé do Gráfico
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '9.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'left';
+  const dataHoje = new Date().toLocaleDateString('pt-BR');
+  ctx.fillText(`Diário de Classe • Gráfico Oficial da Turma • Emitido em ${dataHoje}`, pLeft, height - 16);
+
+  return canvas;
+}
+
+/**
+ * Salva diretamente o Gráfico da Turma Completa em formato de imagem PNG em alta resolução.
+ */
+export function downloadClassChartPNG(options: Parameters<typeof renderClassChartToCanvas>[0]) {
+  const canvas = renderClassChartToCanvas(options);
+  const dataUrl = canvas.toDataURL('image/png');
+  const a = document.createElement('a');
+  const turmaName = options.turma ? `${options.turma.year}${options.turma.letter}` : 'turma';
+  a.download = `grafico_evolucao_turma_${turmaName}_${options.currentYear}.png`;
+  a.href = dataUrl;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+/**
+ * Imprime o Gráfico da Turma Completa via diálogo do navegador em página limpa e isolada,
+ * gerando e baixando concomitantemente o PDF oficial do gráfico em alta resolução como garantia.
+ */
+export function printClassChartDocument(options: Parameters<typeof renderClassChartToCanvas>[0]) {
+  const canvas = renderClassChartToCanvas(options);
+  const dataUrl = canvas.toDataURL('image/png');
+
+  // 1. Gera e salva o PDF individual de 1 página do Gráfico da Turma (garantia contra bloqueio de popups)
+  generateClassChartSinglePagePDF(options, dataUrl);
+
+  // 2. Dispara diálogo nativo de impressão em elemento isolado
+  try {
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      const turmaStr = options.turma ? `${options.turma.year}º Ano ${options.turma.letter} (${options.turma.schoolName || 'Escola'})` : 'Turma';
+      doc.open();
+      doc.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Gráfico da Turma - ${turmaStr}</title>
+          <style>
+            @page { size: landscape; margin: 10mm; }
+            body { font-family: system-ui, sans-serif; margin: 0; padding: 0; text-align: center; background: #ffffff; }
+            img { width: 100%; max-height: 94vh; object-fit: contain; }
+          </style>
+        </head>
+        <body>
+          <img src="${dataUrl}" alt="Gráfico da Turma" />
+        </body>
+        </html>
+      `);
+      doc.close();
+      setTimeout(() => {
+        try {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+        } catch (e) {
+          console.warn('Erro ao chamar iframe.print():', e);
+        }
+        setTimeout(() => {
+          if (iframe.parentNode) {
+            document.body.removeChild(iframe);
+          }
+        }, 3000);
+      }, 500);
+    }
+  } catch (e) {
+    console.warn('Impressão em iframe restrita pelo ambiente:', e);
+  }
+}
+
+/**
+ * Gera um PDF Paisagem (Landscape) de 1 página dedicado exclusivamente ao Gráfico da Turma Completa e suas métricas.
+ */
+export function generateClassChartSinglePagePDF(
+  options: Parameters<typeof renderClassChartToCanvas>[0],
+  existingDataUrl?: string
+) {
+  const dataUrl = existingDataUrl || renderClassChartToCanvas(options).toDataURL('image/png');
+  const doc = new jsPDF('l', 'mm', 'a4'); // Paisagem 297mm x 210mm
+  doc.addImage(dataUrl, 'PNG', 10, 10, 277, 142);
+
+  // Rodapé informativo
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
+  const dataStr = new Date().toLocaleDateString('pt-BR');
+  doc.text(`Diário de Classe • Gráfico Oficial de Rendimento da Turma • Emitido em ${dataStr}`, 14, 202);
+  doc.text(`Total de alunos plotados: ${options.studentsTrajectory.length}`, 283, 202, { align: 'right' });
+
+  const turmaName = options.turma ? `${options.turma.year}${options.turma.letter}` : 'turma';
+  doc.save(`grafico_turma_completa_${turmaName}_${options.currentYear}.pdf`);
+  return doc;
+}
+
+export function generateClassFullTrajectoriesReportPDF({
+  turma,
+  teacherName,
+  currentYear,
+  selectedSubjectName,
+  studentsTrajectory,
+  classOverallAverage,
+  classBimAverages
+}: {
+  turma?: ClassRoom | null;
+  teacherName?: string;
+  currentYear: string;
+  selectedSubjectName?: string;
+  studentsTrajectory: TrajectoryReportStudentItem[];
+  classOverallAverage?: number | null;
+  classBimAverages?: (number | null)[];
+}) {
+  const doc = new jsPDF('p', 'mm', 'a4');
+  const totalStudents = studentsTrajectory.length;
+  const cardsPerPage = 4;
+  const totalPages = Math.max(1, Math.ceil(totalStudents / cardsPerPage));
+
+  const cBimAvgs = classBimAverages || [null, null, null, null];
+  const cOverall = classOverallAverage ?? null;
+
+  const turmaStr = turma ? `${turma.year}º Ano ${turma.letter} (${turma.schoolName || 'Escola'})` : 'Turma';
+  const subStr = selectedSubjectName || 'Média Geral (Todas as Matérias)';
+
+  // =========================================================================
+  // RELATÓRIO OFICIAL: ALUNOS COM DADOS À ESQUERDA + LINHA DO GRÁFICO À FRENTE
+  // =========================================================================
+  for (let page = 0; page < totalPages; page++) {
+    if (page > 0) {
+      doc.addPage();
+    }
+
+    // Top Header com duas linhas bem definidas para nunca estourar a largura da página
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(203, 213, 225);
+    doc.roundedRect(12, 9, 186, 19, 2, 2, 'FD');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10.5);
+    doc.setTextColor(30, 27, 75); // indigo-950
+    doc.text('DIÁRIO DE CLASSE — EVOLUÇÃO E TRAJETÓRIA ESCOLAR DA TURMA', 16, 15);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`Turma: ${turmaStr}   •   Ano Letivo: ${currentYear}   •   Professor(a): ${teacherName || '-'}`, 16, 20);
+    doc.text(`Componente Curricular / Disciplina: ${subStr}`, 16, 24.5);
+
+    // Students slice for current page
+    const pageStudents = studentsTrajectory.slice(page * cardsPerPage, (page + 1) * cardsPerPage);
+
+    pageStudents.forEach((row, idx) => {
+      const cardX = 12;
+      const cardY = 30 + idx * 60; // 30, 90, 150, 210
+      const cardW = 186;
+      const cardH = 57;
+
+      // Card Container
+      doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(226, 232, 240);
+      doc.setLineWidth(0.3);
+      doc.roundedRect(cardX, cardY, cardW, cardH, 2, 2, 'FD');
+
+      // Left Column Background
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(cardX + 1, cardY + 1, 78, cardH - 2, 1.5, 1.5, 'F');
+
+      // Divider line between columns
+      doc.setDrawColor(226, 232, 240);
+      doc.setLineWidth(0.4);
+      doc.line(cardX + 80, cardY + 2, cardX + 80, cardY + cardH - 2);
+
+      // --- LEFT COLUMN: ALUNO COM SEUS DADOS ---
+      // Number badge
+      doc.setFillColor(79, 70, 229);
+      doc.roundedRect(cardX + 3, cardY + 3, 9, 8, 1.5, 1.5, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8);
+      doc.setTextColor(255, 255, 255);
+      doc.text(`#${row.student.number ?? idx + 1}`, cardX + 7.5, cardY + 8.5, { align: 'center' });
+
+      // Student name (truncated if long)
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.setTextColor(15, 23, 42);
+      let sName = row.student.name || 'Aluno';
+      if (sName.length > 34) sName = sName.substring(0, 32) + '...';
+      doc.text(sName, cardX + 14, cardY + 7.5);
+
+      // RA and Status
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.setTextColor(100, 116, 139);
+      const raText = row.student.ra ? `RA: ${row.student.ra}` : 'Matrícula ativa';
+      const statusText = row.student.status === 'recebida' ? ' • (TR. REC)' : row.student.status === 'expedida' ? ' • (TR. EXP)' : '';
+      doc.text(`${raText}${statusText}`, cardX + 14, cardY + 11);
+
+      // 4 Bimestres boxes
+      for (let b = 1; b <= 4; b++) {
+        const bX = cardX + 3 + (b - 1) * 19;
+        const bY = cardY + 14;
+        const bW = 18;
+        const bH = 15;
+
+        doc.setFillColor(255, 255, 255);
+        doc.setDrawColor(226, 232, 240);
+        doc.roundedRect(bX, bY, bW, bH, 1.5, 1.5, 'FD');
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(6);
+        doc.setTextColor(100, 116, 139);
+        doc.text(`${b}º Bim`, bX + bW / 2, bY + 4.5, { align: 'center' });
+
+        const val = row.grades[b - 1];
+        if (val !== null) {
+          const gColor = val >= 6.0 ? [16, 185, 129] : val >= 5.0 ? [245, 158, 11] : [239, 68, 68];
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(9);
+          doc.setTextColor(gColor[0], gColor[1], gColor[2]);
+          doc.text(val.toFixed(1), bX + bW / 2, bY + 11.5, { align: 'center' });
+        } else {
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(8);
+          doc.setTextColor(148, 163, 184);
+          doc.text('-', bX + bW / 2, bY + 11, { align: 'center' });
+        }
+      }
+
+      // Média Final Box
+      doc.setFillColor(255, 255, 255);
+      doc.setDrawColor(226, 232, 240);
+      doc.roundedRect(cardX + 3, cardY + 31, 36, 13, 1.5, 1.5, 'FD');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(5.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text('MÉDIA FINAL', cardX + 5, cardY + 35);
+
+      const mVal = row.annualAverage;
+      if (mVal !== null) {
+        const mColor = mVal >= 6.0 ? [16, 185, 129] : mVal >= 5.0 ? [245, 158, 11] : [239, 68, 68];
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.setTextColor(mColor[0], mColor[1], mColor[2]);
+        doc.text(mVal.toFixed(1), cardX + 5, cardY + 41.5);
+      } else {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(148, 163, 184);
+        doc.text('-', cardX + 5, cardY + 41.5);
+      }
+
+      // Tendência Box
+      const trendBg = row.trend === 'Evolutivo' ? [220, 252, 231] : row.trend === 'Em Queda' ? [254, 226, 226] : [238, 242, 255];
+      const trendFg = row.trend === 'Evolutivo' ? [22, 101, 52] : row.trend === 'Em Queda' ? [153, 27, 27] : [55, 48, 163];
+      doc.setFillColor(trendBg[0], trendBg[1], trendBg[2]);
+      doc.roundedRect(cardX + 41, cardY + 31, 38, 13, 1.5, 1.5, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(5.5);
+      doc.setTextColor(trendFg[0], trendFg[1], trendFg[2]);
+      doc.text('TENDÊNCIA ANUAL', cardX + 43, cardY + 35);
+
+      doc.setFontSize(7.5);
+      const diffLabel = row.diff !== 0 ? (row.diff > 0 ? ` (+${row.diff.toFixed(1)})` : ` (${row.diff.toFixed(1)})`) : '';
+      doc.text(`${row.trend}${diffLabel}`, cardX + 43, cardY + 41.5);
+
+      // Frequência text on bottom
+      if (row.attendanceRate !== null && row.attendanceRate !== undefined) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6);
+        doc.setTextColor(100, 116, 139);
+        doc.text(`Freq: ${row.attendanceRate.toFixed(0)}% (${row.totalAbsences || 0} faltas)`, cardX + 5, cardY + 50);
+      }
+
+      // --- RIGHT COLUMN: A LINHA DO GRÁFICO À FRENTE DO ALUNO ---
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(51, 65, 85);
+      doc.text('Curva de Rendimento Escolar', cardX + 83, cardY + 6);
+
+      // Mini legend
+      doc.setFontSize(5.5);
+      // Média Turma
+      doc.setDrawColor(148, 163, 184);
+      doc.setLineWidth(0.4);
+      doc.setLineDashPattern([1.5, 1.5], 0);
+      doc.line(cardX + 130, cardY + 5, cardX + 135, cardY + 5);
+      doc.setLineDashPattern([], 0);
+      doc.setTextColor(100, 116, 139);
+      doc.text(`Média Turma (${cOverall?.toFixed(1) || '-'})`, cardX + 137, cardY + 6);
+
+      // Corte 5.0
+      doc.setDrawColor(245, 158, 11);
+      doc.setLineWidth(0.4);
+      doc.setLineDashPattern([1, 1], 0);
+      doc.line(cardX + 162, cardY + 5, cardX + 167, cardY + 5);
+      doc.setLineDashPattern([], 0);
+      doc.setTextColor(217, 119, 6);
+      doc.text('Corte (5.0)', cardX + 169, cardY + 6);
+
+      // Chart plotting area
+      const gX = cardX + 89;
+      const gY = cardY + 11;
+      const gW = 92;
+      const gH = 34;
+
+      // Chart background
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(gX - 1, gY - 1, gW + 2, gH + 2, 1, 1, 'F');
+
+      // Grid lines
+      [0, 2.5, 5.0, 7.5, 10.0].forEach((v) => {
+        const yLine = gY + gH - (v / 10.0) * gH;
+        doc.setDrawColor(241, 245, 249);
+        doc.setLineWidth(0.2);
+        doc.line(gX, yLine, gX + gW, yLine);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(5);
+        doc.setTextColor(148, 163, 184);
+        doc.text(v.toFixed(1), gX - 1.5, yLine + 1, { align: 'right' });
+      });
+
+      // Cutoff 5.0 line
+      const passY = gY + gH - (5.0 / 10.0) * gH;
+      doc.setDrawColor(245, 158, 11);
+      doc.setLineWidth(0.3);
+      doc.setLineDashPattern([1.5, 1.5], 0);
+      doc.line(gX, passY, gX + gW, passY);
+      doc.setLineDashPattern([], 0);
+
+      // Bimester X coordinates: 1º to 4º
+      const bXs = [0, 1, 2, 3].map((i) => gX + (i * gW) / 3);
+
+      ['1º Bim', '2º Bim', '3º Bim', '4º Bim'].forEach((lbl, i) => {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(5.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text(lbl, bXs[i], gY + gH + 5, { align: 'center' });
+      });
+
+      // Class average trajectory dashed line
+      const classPts = bXs
+        .map((x, i) => {
+          const avg = cBimAvgs[i];
+          return avg !== null ? { x, y: gY + gH - (avg / 10.0) * gH, avg } : null;
+        })
+        .filter((pt): pt is { x: number; y: number; avg: number } => pt !== null);
+
+      if (classPts.length > 1) {
+        doc.setDrawColor(148, 163, 184);
+        doc.setLineWidth(0.4);
+        doc.setLineDashPattern([1.5, 1.5], 0);
+        for (let i = 0; i < classPts.length - 1; i++) {
+          doc.line(classPts[i].x, classPts[i].y, classPts[i + 1].x, classPts[i + 1].y);
+        }
+        doc.setLineDashPattern([], 0);
+      }
+
+      // Student trajectory line
+      const sPts = bXs
+        .map((x, i) => {
+          const g = row.grades[i];
+          return g !== null ? { x, y: gY + gH - (g / 10.0) * gH, val: g } : null;
+        })
+        .filter((pt): pt is { x: number; y: number; val: number } => pt !== null);
+
+      if (sPts.length > 1) {
+        const strokeColor =
+          row.trend === 'Evolutivo' ? [16, 185, 129] : row.trend === 'Em Queda' ? [239, 68, 68] : [99, 102, 241];
+        doc.setDrawColor(strokeColor[0], strokeColor[1], strokeColor[2]);
+        doc.setLineWidth(1.1);
+        for (let i = 0; i < sPts.length - 1; i++) {
+          doc.line(sPts[i].x, sPts[i].y, sPts[i + 1].x, sPts[i + 1].y);
+        }
+      }
+
+      // Student points and grade numbers
+      sPts.forEach((pt) => {
+        doc.setFillColor(255, 255, 255);
+        doc.setDrawColor(79, 70, 229);
+        doc.setLineWidth(0.6);
+        doc.circle(pt.x, pt.y, 1.8, 'FD');
+
+        const ptColor = pt.val >= 6.0 ? [16, 185, 129] : pt.val >= 5.0 ? [245, 158, 11] : [239, 68, 68];
+        doc.setFillColor(ptColor[0], ptColor[1], ptColor[2]);
+        doc.circle(pt.x, pt.y, 1.0, 'F');
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(6.5);
+        doc.setTextColor(30, 27, 75);
+        doc.text(pt.val.toFixed(1), pt.x, pt.y - 2.5, { align: 'center' });
+      });
+
+      if (sPts.length === 0) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(148, 163, 184);
+        doc.text('Sem avaliações lançadas para este componente no ano letivo', gX + gW / 2, gY + gH / 2, { align: 'center' });
+      }
+    });
+
+    // Page footer
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(6.5);
+    doc.setTextColor(148, 163, 184);
+    const dateStr = new Date().toLocaleDateString('pt-BR');
+    const timeStr = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+    doc.text(`Diário de Classe • Emitido em ${dateStr} às ${timeStr}`, 12, 290);
+    doc.text(`Página ${page + 1} de ${totalPages} • Total: ${totalStudents} aluno(s)`, 198, 290, { align: 'right' });
+  }
+
+  const fileName = `evolucao_turma_${turma ? `${turma.year}${turma.letter}` : ''}_todos_alunos_graficos.pdf`;
+  doc.save(fileName);
+  return doc;
+}
+
+export async function generateClassTrajectoryXLSX({
+  turma,
+  teacherName,
+  currentYear,
+  selectedSubjectName,
+  studentsTrajectory,
+  classOverallAverage,
+  classBimAverages,
+  chartPngBase64
+}: {
+  turma?: ClassRoom | null;
+  teacherName?: string;
+  currentYear: string;
+  selectedSubjectName?: string;
+  studentsTrajectory: TrajectoryReportStudentItem[];
+  classOverallAverage?: number | null;
+  classBimAverages?: (number | null)[];
+  chartPngBase64?: string;
+}) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Diário de Classe';
+  workbook.created = new Date();
+
+  // Auto-gera miniatura do gráfico em alta resolução se não fornecido
+  let effectiveChartPng = chartPngBase64;
+  if (!effectiveChartPng) {
+    try {
+      const cCanvas = renderClassChartToCanvas({
+        turma,
+        teacherName,
+        currentYear,
+        selectedSubjectName,
+        studentsTrajectory,
+        classOverallAverage,
+        classBimAverages,
+        width: 1100,
+        height: 560
+      });
+      effectiveChartPng = cCanvas.toDataURL('image/png').split(',')[1];
+    } catch (err) {
+      console.warn('Erro ao auto-gerar miniatura do gráfico para o Excel:', err);
+    }
+  }
+
+  // --- ABA 1: Trajetória Escolar com Fórmulas ---
+  const ws = workbook.addWorksheet('Trajetória & Fórmulas', {
+    views: [{ showGridLines: true }]
+  });
+
+  // Título Principal
+  ws.mergeCells(1, 1, 1, 14);
+  const tCell = ws.getCell(1, 1);
+  tCell.value = 'EVOLUÇÃO E TRAJETÓRIA DE APRENDIZAGEM - TURMA COMPLETA';
+  tCell.font = { name: 'Calibri', size: 14, bold: true, color: { argb: 'FFFFFFFF' } };
+  tCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E1B4B' } }; // Indigo-950
+  tCell.alignment = { vertical: 'middle', horizontal: 'center' };
+  ws.getRow(1).height = 30;
+
+  // Metadados
+  const escolaStr = `Escola: ${turma?.schoolName || 'Não informada'}`;
+  const turmaStr = `Turma: ${turma ? `${turma.year}º Ano ${turma.letter} - ${turma.shift || 'Manhã'}` : 'Turma'}`;
+  const profStr = `Professor(a): ${teacherName || 'Não informado'}   |   Ano Letivo: ${currentYear}   |   Disciplina: ${selectedSubjectName || 'Média Geral'}`;
+
+  [escolaStr, turmaStr, profStr].forEach((str, idx) => {
+    const rowNum = idx + 2;
+    ws.mergeCells(rowNum, 1, rowNum, 14);
+    const c = ws.getCell(rowNum, 1);
+    c.value = str;
+    c.font = { name: 'Calibri', size: 10, bold: idx === 2 };
+    c.alignment = { vertical: 'middle', horizontal: 'left' };
+    ws.getRow(rowNum).height = 18;
+  });
+
+  ws.getRow(5).height = 10;
+
+  // Cabeçalhos das Colunas (Linha 6) - 14 Colunas
+  const headers = [
+    'Nº',
+    'Aluno',
+    'RA',
+    '1º Bim',
+    '2º Bim',
+    '3º Bim',
+    '4º Bim',
+    'Média Final',
+    'Variação (Delta)',
+    'Tendência',
+    'Diagnóstico Pedagógico',
+    'Presenças',
+    'Faltas',
+    'Freq. (%)'
+  ];
+
+  const colWidths = [6, 36, 16, 11, 11, 11, 11, 14, 16, 18, 28, 12, 11, 13];
+
+  const hRow = ws.getRow(6);
+  hRow.height = 26;
+  headers.forEach((h, i) => {
+    const cell = hRow.getCell(i + 1);
+    cell.value = h;
+    cell.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D9488' } }; // Teal-600
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF0F766E' } },
+      bottom: { style: 'medium', color: { argb: 'FF0F766E' } },
+      left: { style: 'thin', color: { argb: 'FF0F766E' } },
+      right: { style: 'thin', color: { argb: 'FF0F766E' } }
+    };
+    ws.getColumn(i + 1).width = colWidths[i];
+  });
+
+  // Linhas de Dados com Fórmulas (Linha 7 em diante)
+  const startRow = 7;
+  studentsTrajectory.forEach((st, idx) => {
+    const r = startRow + idx;
+    const row = ws.getRow(r);
+    row.height = 22;
+
+    const b1 = st.grades[0];
+    const b2 = st.grades[1];
+    const b3 = st.grades[2];
+    const b4 = st.grades[3];
+
+    row.getCell(1).value = st.student.number ?? idx + 1;
+    row.getCell(2).value = st.student.name;
+    row.getCell(3).value = st.student.ra || '-';
+    row.getCell(4).value = b1 !== null ? b1 : '';
+    row.getCell(5).value = b2 !== null ? b2 : '';
+    row.getCell(6).value = b3 !== null ? b3 : '';
+    row.getCell(7).value = b4 !== null ? b4 : '';
+
+    // Média Final (Fórmula Real do Excel)
+    row.getCell(8).value = {
+      formula: `IF(COUNT(D${r}:G${r})>0, ROUND(AVERAGE(D${r}:G${r}), 1), "")`,
+      result: st.annualAverage ?? undefined
+    };
+
+    // Variação / Delta (Fórmula Real do Excel)
+    row.getCell(9).value = {
+      formula: `IF(COUNT(D${r}:G${r})<2, 0, ROUND(LOOKUP(999, D${r}:G${r}) - D${r}, 1))`,
+      result: st.diff
+    };
+
+    // Tendência Anual (Fórmula Real do Excel)
+    row.getCell(10).value = {
+      formula: `IF(COUNT(D${r}:G${r})<2, "Sem dados", IF(I${r}>0.5, "Evolutivo", IF(I${r}<-0.5, "Em Queda", "Estável")))`,
+      result: st.trend
+    };
+
+    // Diagnóstico Pedagógico (Fórmula Real do Excel)
+    row.getCell(11).value = {
+      formula: `IF(COUNT(D${r}:G${r})=0, "Sem avaliações", IF(H${r}>=6, "Rendimento Adequado", IF(H${r}>=5, "Alerta / No Corte", "Abaixo do Corte")))`,
+      result: (st.annualAverage ?? 0) >= 6 ? 'Rendimento Adequado' : (st.annualAverage ?? 0) >= 5 ? 'Alerta / No Corte' : 'Abaixo do Corte'
+    };
+
+    // Presenças e Faltas
+    const pres = st.totalPresences ?? (st.attendanceRate !== null && st.attendanceRate !== undefined ? Math.round((st.attendanceRate / 100) * 80) : 80);
+    const falt = st.totalAbsences ?? (st.attendanceRate !== null && st.attendanceRate !== undefined ? Math.round(((100 - st.attendanceRate) / 100) * 80) : 0);
+    row.getCell(12).value = pres;
+    row.getCell(13).value = falt;
+
+    // Frequência % com FÓRMULA REAL DO EXCEL vinculada às células de Presenças (L) e Faltas (M)
+    row.getCell(14).value = {
+      formula: `IF((L${r}+M${r})>0, ROUND(L${r}/(L${r}+M${r}), 3), 1)`,
+      result: (pres + falt) > 0 ? pres / (pres + falt) : 1
+    };
+    row.getCell(14).numFmt = '0.0%';
+
+    // Estilos das Células
+    const isEven = idx % 2 === 1;
+    const bgArgb = isEven ? 'FFF8FAFC' : 'FFFFFFFF';
+
+    for (let c = 1; c <= 14; c++) {
+      const cell = row.getCell(c);
+      cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF1E293B' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgArgb } };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
+      };
+
+      if (c === 1 || c === 3) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      } else if (c >= 4 && c <= 8) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        if (typeof cell.value === 'number' || (typeof cell.value === 'object' && cell.value !== null)) {
+          cell.numFmt = '0.0';
+        }
+      } else if (c === 9) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        cell.numFmt = '+0.0;-0.0;0.0';
+      } else if (c >= 10 && c <= 11) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      } else if (c === 12 || c === 13) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        cell.numFmt = '#,##0';
+      } else if (c === 14) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      } else {
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+      }
+    }
+  });
+
+  const lastDataRow = startRow + studentsTrajectory.length - 1;
+
+  // Linha MÉDIA GERAL DA TURMA com Fórmulas
+  const avgRowIdx = lastDataRow + 2;
+  const avgRow = ws.getRow(avgRowIdx);
+  avgRow.height = 24;
+  ws.mergeCells(avgRowIdx, 1, avgRowIdx, 3);
+  avgRow.getCell(1).value = 'MÉDIA GERAL DA TURMA:';
+  avgRow.getCell(1).font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF1E1B4B' } };
+  avgRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'right' };
+
+  for (let b = 1; b <= 4; b++) {
+    const colLetter = String.fromCharCode(67 + b); // D, E, F, G
+    const cell = avgRow.getCell(3 + b);
+    cell.value = {
+      formula: `ROUND(AVERAGE(${colLetter}${startRow}:${colLetter}${lastDataRow}), 1)`,
+      result: classBimAverages ? classBimAverages[b - 1] ?? undefined : undefined
+    };
+    cell.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF0F766E' } };
+    cell.numFmt = '0.0';
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+  }
+
+  // Média Geral da Turma (Coluna H)
+  const cellH = avgRow.getCell(8);
+  cellH.value = {
+    formula: `ROUND(AVERAGE(H${startRow}:H${lastDataRow}), 1)`,
+    result: classOverallAverage ?? undefined
+  };
+  cellH.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF4338CA' } };
+  cellH.numFmt = '0.0';
+  cellH.alignment = { vertical: 'middle', horizontal: 'center' };
+
+  // Média de Presenças (Coluna L)
+  const cellL = avgRow.getCell(12);
+  cellL.value = {
+    formula: `ROUND(AVERAGE(L${startRow}:L${lastDataRow}), 0)`,
+    result: undefined
+  };
+  cellL.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF1E293B' } };
+  cellL.numFmt = '#,##0';
+  cellL.alignment = { vertical: 'middle', horizontal: 'center' };
+
+  // Total de Faltas (Coluna M)
+  const cellM = avgRow.getCell(13);
+  cellM.value = {
+    formula: `SUM(M${startRow}:M${lastDataRow})`,
+    result: undefined
+  };
+  cellM.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFDC2626' } };
+  cellM.numFmt = '#,##0';
+  cellM.alignment = { vertical: 'middle', horizontal: 'center' };
+
+  // Média Geral de Frequência (Coluna N)
+  const cellN = avgRow.getCell(14);
+  cellN.value = {
+    formula: `AVERAGE(N${startRow}:N${lastDataRow})`,
+    result: undefined
+  };
+  cellN.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF0D9488' } };
+  cellN.numFmt = '0.0%';
+  cellN.alignment = { vertical: 'middle', horizontal: 'center' };
+
+  for (let c = 1; c <= 14; c++) {
+    const cell = avgRow.getCell(c);
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+    cell.border = {
+      top: { style: 'medium', color: { argb: 'FF94A3B8' } },
+      bottom: { style: 'medium', color: { argb: 'FF94A3B8' } },
+      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
+    };
+  }
+
+  // Bloco de Resumo Pedagógico com Fórmulas (KPIs)
+  const kpiStart = avgRowIdx + 2;
+  ws.mergeCells(kpiStart, 2, kpiStart, 7);
+  const kpiHeader = ws.getCell(kpiStart, 2);
+  kpiHeader.value = 'RESUMO PEDAGÓGICO E INDICADORES DA TURMA';
+  kpiHeader.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+  kpiHeader.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E1B4B' } };
+  kpiHeader.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(kpiStart).height = 24;
+
+  const kpis = [
+    { label: 'Total de Alunos Matriculados:', formula: `COUNTA(B${startRow}:B${lastDataRow})`, result: studentsTrajectory.length, numFmt: '#,##0' },
+    { label: 'Média Anual Geral da Turma:', formula: `ROUND(AVERAGE(H${startRow}:H${lastDataRow}), 1)`, result: classOverallAverage ?? 0, numFmt: '0.0' },
+    { label: 'Alunos com Trajetória Evolutiva (↗️):', formula: `COUNTIF(J${startRow}:J${lastDataRow}, "Evolutivo*")`, result: studentsTrajectory.filter(s => s.trend === 'Evolutivo').length, numFmt: '#,##0' },
+    { label: 'Alunos com Trajetória Estável (➡️):', formula: `COUNTIF(J${startRow}:J${lastDataRow}, "Estável*")`, result: studentsTrajectory.filter(s => s.trend === 'Estável').length, numFmt: '#,##0' },
+    { label: 'Alunos com Trajetória Em Queda (↘️):', formula: `COUNTIF(J${startRow}:J${lastDataRow}, "Em Queda*")`, result: studentsTrajectory.filter(s => s.trend === 'Em Queda').length, numFmt: '#,##0' },
+    { label: 'Alunos com Rendimento Adequado (≥ 6.0):', formula: `COUNTIF(H${startRow}:H${lastDataRow}, ">=6")`, result: studentsTrajectory.filter(s => (s.annualAverage || 0) >= 6.0).length, numFmt: '#,##0' },
+    { label: 'Alunos com Média Abaixo do Corte (< 5.0) (⚠️):', formula: `COUNTIF(H${startRow}:H${lastDataRow}, "<5")`, result: studentsTrajectory.filter(s => (s.annualAverage || 0) < 5.0 && s.annualAverage !== null).length, numFmt: '#,##0' },
+    { label: 'Taxa Média de Frequência Escolar (%):', formula: `AVERAGE(N${startRow}:N${lastDataRow})`, result: 0.95, numFmt: '0.0%' },
+    { label: 'Total de Faltas Registradas na Turma:', formula: `SUM(M${startRow}:M${lastDataRow})`, result: 0, numFmt: '#,##0' }
+  ];
+
+  kpis.forEach((kpi, kIdx) => {
+    const r = kpiStart + 1 + kIdx;
+    ws.mergeCells(r, 2, r, 5);
+    const lCell = ws.getCell(r, 2);
+    lCell.value = kpi.label;
+    lCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF334155' } };
+    lCell.alignment = { vertical: 'middle', horizontal: 'left' };
+    lCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kIdx % 2 === 0 ? 'FFF8FAFC' : 'FFFFFFFF' } };
+    lCell.border = {
+      top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+      bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+      left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+      right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
+    };
+
+    const vCell = ws.getCell(r, 6);
+    vCell.value = { formula: kpi.formula, result: kpi.result };
+    vCell.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF1E1B4B' } };
+    vCell.alignment = { vertical: 'middle', horizontal: 'center' };
+    vCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kIdx % 2 === 0 ? 'FFF8FAFC' : 'FFFFFFFF' } };
+    if (kpi.numFmt) vCell.numFmt = kpi.numFmt;
+    vCell.border = {
+      top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+      bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+      left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+      right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
+    };
+
+    ws.getRow(r).height = 20;
+  });
+
+  // --- GRÁFICO DA TURMA COMPLETA EMBUTIDO NO EXCEL ---
+  const chartSectionRow = kpiStart + kpis.length + 3;
+  ws.mergeCells(chartSectionRow, 2, chartSectionRow, 14);
+  const chartTitleCell = ws.getCell(chartSectionRow, 2);
+  chartTitleCell.value = 'GRÁFICO OFICIAL DE EVOLUÇÃO E TRAJETÓRIA ESCOLAR DA TURMA (1º AO 4º BIMESTRE)';
+  chartTitleCell.font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+  chartTitleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E1B4B' } };
+  chartTitleCell.alignment = { vertical: 'middle', horizontal: 'center' };
+  ws.getRow(chartSectionRow).height = 26;
+
+  if (effectiveChartPng) {
+    const imgId = workbook.addImage({
+      base64: effectiveChartPng,
+      extension: 'png'
+    });
+
+    // 1. Embutir logo abaixo do resumo na aba principal (Visível imediatamente sem rolar tabs)
+    ws.addImage(imgId, {
+      tl: { col: 1, row: chartSectionRow },
+      ext: { width: 920, height: 468 }
+    });
+
+    // 2. Aba dedicada: 📈 Gráfico da Turma (Formato paisagem completo)
+    const wsChart = workbook.addWorksheet('📈 Gráfico da Turma', {
+      views: [{ showGridLines: false }]
+    });
+
+    wsChart.mergeCells(1, 1, 1, 16);
+    const cTitle = wsChart.getCell(1, 1);
+    cTitle.value = `GRÁFICO DE EVOLUÇÃO E TRAJETÓRIA ESCOLAR - ${turma?.year || ''}º ${turma?.letter || ''} (${currentYear})`;
+    cTitle.font = { name: 'Calibri', size: 14, bold: true, color: { argb: 'FFFFFFFF' } };
+    cTitle.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E1B4B' } };
+    cTitle.alignment = { vertical: 'middle', horizontal: 'center' };
+    wsChart.getRow(1).height = 32;
+
+    wsChart.addImage(imgId, {
+      tl: { col: 1, row: 3 },
+      ext: { width: 980, height: 498 }
+    });
+  }
+
+  // Gravar buffer e acionar download direto
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const fileName = `trajetoria_evolucao_turma_${turma ? `${turma.year}${turma.letter}` : ''}_formulas_grafico.xlsx`;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// 1.4 Evolução Individual e da Turma XLSX (Com Fórmulas Dinâmicas e Gráficos)
 export async function generateStudentEvolutionReportXLSX(
   classId: string,
   studentId: string | null,
@@ -1148,28 +2680,18 @@ export async function generateStudentEvolutionReportXLSX(
 ) {
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
   const notasSnap = await get(ref(rtdb, dc('notas')));
-
-  const columns: ExcelColumnDef[] = [
-    { header: 'Nº', key: 'number', width: 8, align: 'center' },
-    { header: 'Aluno', key: 'name', width: 38 },
-    { header: 'RA', key: 'ra', width: 16, align: 'center' },
-    { header: '1º Bim', key: 'b1', width: 12, align: 'center', numFmt: '0.0' },
-    { header: '2º Bim', key: 'b2', width: 12, align: 'center', numFmt: '0.0' },
-    { header: '3º Bim', key: 'b3', width: 12, align: 'center', numFmt: '0.0' },
-    { header: '4º Bim', key: 'b4', width: 12, align: 'center', numFmt: '0.0' },
-    { header: 'Tendência Anual', key: 'evolucao', width: 24, align: 'center' }
-  ];
+  const chamadaSnap = await get(ref(rtdb, dc('chamada')));
 
   const studentsVal = snap.val() || {};
   const notasVal = notasSnap.val() || {};
+  const chamadaVal = chamadaSnap.val() || {};
 
   let targetStudents = Object.keys(studentsVal).map((k) => ({ id: k, ...studentsVal[k] }));
   if (studentId) targetStudents = targetStudents.filter((s) => s.id === studentId);
   targetStudents.sort((a, b) => (a.number || 0) - (b.number || 0));
 
-  const rows: any[] = [];
-
-  targetStudents.forEach((student: any) => {
+  // Mapeia todas as notas por aluno e bimestre
+  const trajectoryItems: TrajectoryReportStudentItem[] = targetStudents.map((student: any) => {
     const grades: (number | null)[] = [null, null, null, null];
     for (let b = 1; b <= 4; b++) {
       let bSum = 0, bCnt = 0;
@@ -1191,39 +2713,72 @@ export async function generateStudentEvolutionReportXLSX(
       if (bCnt > 0) grades[b - 1] = parseFloat((bSum / bCnt).toFixed(1));
     }
 
-    let evolucao = 'Sem dados';
     const validGrades = grades.filter((g) => g !== null) as number[];
-    if (validGrades.length >= 2) {
-      const first = validGrades[0];
-      const last = validGrades[validGrades.length - 1];
-      const diff = last - first;
-      if (diff > 0.5) evolucao = `Evolutivo (+${diff.toFixed(1)})`;
-      else if (diff < -0.5) evolucao = `Em Queda (${diff.toFixed(1)})`;
-      else evolucao = `Estável (${diff.toFixed(1)})`;
+    let diff = 0;
+    let trend = 'Sem dados';
+    let annualAverage: number | null = null;
+
+    if (validGrades.length > 0) {
+      annualAverage = parseFloat((validGrades.reduce((acc, v) => acc + v, 0) / validGrades.length).toFixed(1));
     }
 
-    rows.push({
-      number: student.number,
-      name: student.name,
-      ra: student.ra || '-',
-      b1: grades[0] !== null ? grades[0] : '-',
-      b2: grades[1] !== null ? grades[1] : '-',
-      b3: grades[2] !== null ? grades[2] : '-',
-      b4: grades[3] !== null ? grades[3] : '-',
-      evolucao
+    if (validGrades.length >= 2) {
+      diff = parseFloat((validGrades[validGrades.length - 1] - validGrades[0]).toFixed(1));
+      if (diff > 0.5) trend = 'Evolutivo';
+      else if (diff < -0.5) trend = 'Em Queda';
+      else trend = 'Estável';
+    }
+
+    // Frequência
+    let presences = 0;
+    let absences = 0;
+    Object.keys(chamadaVal).forEach((k) => {
+      const att = chamadaVal[k];
+      if (att.classId === classId && att.studentId === student.id && (!att.anoLetivo || att.anoLetivo === currentYear)) {
+        if (att.present) presences++;
+        else absences++;
+      }
     });
+    const totalAulas = presences + absences;
+    const attRate = totalAulas > 0 ? (presences / totalAulas) * 100 : null;
+
+    return {
+      student: {
+        id: student.id,
+        name: student.name,
+        number: student.number,
+        ra: student.ra,
+        status: student.status
+      },
+      grades,
+      annualAverage,
+      trend,
+      diff,
+      attendanceRate: attRate,
+      totalPresences: presences,
+      totalAbsences: absences
+    };
   });
 
-  await exportToExcelJS({
-    title: `EVOLUÇÃO E TRAJETÓRIA DE APRENDIZAGEM - ${currentYear}`,
+  // Médias da turma
+  const classBimAverages: (number | null)[] = [null, null, null, null];
+  for (let b = 1; b <= 4; b++) {
+    const validBim = trajectoryItems.map((st) => st.grades[b - 1]).filter((g): g is number => g !== null);
+    if (validBim.length > 0) {
+      classBimAverages[b - 1] = parseFloat((validBim.reduce((a, c) => a + c, 0) / validBim.length).toFixed(1));
+    }
+  }
+  const allAvgs = trajectoryItems.map((st) => st.annualAverage).filter((a): a is number => a !== null);
+  const classOverallAverage = allAvgs.length > 0 ? parseFloat((allAvgs.reduce((a, c) => a + c, 0) / allAvgs.length).toFixed(1)) : null;
+
+  await generateClassTrajectoryXLSX({
     turma,
-    teacher,
-    year: currentYear,
-    sheetName: 'Evolução',
-    columns,
-    rows,
-    emptyMessage: 'Nenhum dado de evolução registrado no período.',
-    filename: `evolucao_alunos_${turma ? `${turma.year}_${turma.letter}` : ''}.xlsx`
+    teacherName: teacher,
+    currentYear,
+    selectedSubjectName: 'Média Geral (Todas as Matérias)',
+    studentsTrajectory: trajectoryItems,
+    classOverallAverage,
+    classBimAverages
   });
 }
 
@@ -1405,6 +2960,11 @@ export async function generateAttendanceReport(
   const tableData: any[] = [];
 
   sortedStudents.forEach((student: any) => {
+    const inDate = student.transferInDate || (student.status === 'recebida' ? student.transferDate : '');
+    const outDate = student.transferOutDate || (student.status === 'expedida' ? student.transferDate : '');
+    const isTransferredInAfter = isStudentTransferredInAfterBimester(student, bimester);
+    const isTransferredOutBefore = isStudentTransferredOutBeforeBimester(student, bimester);
+
     let p = 0, f = 0;
     Object.keys(attVal).forEach((k) => {
       const a = attVal[k];
@@ -1414,23 +2974,48 @@ export async function generateAttendanceReport(
         a.studentId === student.id &&
         (!a.anoLetivo || a.anoLetivo === currentYear)
       ) {
+        // Se a data da chamada for anterior ao ingresso do aluno, ignora
+        if (inDate && a.date && a.date < inDate) return;
+        // Se a data da chamada for posterior à saída do aluno, ignora
+        if (outDate && a.date && a.date > outDate) return;
+
         if (a.status === 'P') p++;
         else if (a.status === 'F') f++;
       }
     });
 
-    const total = p + f;
-    const pct = total > 0 ? `${((p / total) * 100).toFixed(1)}%` : '-';
+    let total = p + f;
+    let pct = total > 0 ? `${((p / total) * 100).toFixed(1)}%` : '-';
     let situacao = 'Regular';
-    if (student.status === 'expedida') situacao = 'TR. EXP.';
-    else if (total > 0 && (p / total) < 0.75) situacao = 'Risco (<75%)';
+
+    if (isTransferredInAfter) {
+      situacao = inDate ? `Não Matriculado (Entrada: ${formatDate(inDate)})` : 'Não Matriculado';
+      pct = '-';
+      p = 0;
+      f = 0;
+      total = 0;
+    } else if (isTransferredOutBefore || student.status === 'expedida') {
+      situacao = 'TR. EXP.';
+    } else if (student.status === 'recebida') {
+      situacao = total > 0 && (p / total) < 0.75 ? 'Risco (<75%)' : 'Regular (TR. REC.)';
+    } else if (total > 0 && (p / total) < 0.75) {
+      situacao = 'Risco (<75%)';
+    }
 
     const studentName = student.name + formatStudentTransferTag(student, true);
-    const row: any[] = [student.number || '-', studentName];
+    const row: any[] = [
+      student.number || '-',
+      studentName
+    ];
     if (showRA) {
       row.push(student.ra || '-');
     }
-    row.push(p, f, total, pct);
+    row.push(
+      isTransferredInAfter ? '-' : p,
+      isTransferredInAfter ? '-' : f,
+      isTransferredInAfter ? '-' : total,
+      pct
+    );
     if (showAbsencePct) {
       const absPct = total > 0 ? `${((f / total) * 100).toFixed(1)}%` : '-';
       row.push(absPct);
@@ -1533,6 +3118,11 @@ export async function generateAttendanceReportXLSX(
   const rows: any[] = [];
 
   sortedStudents.forEach((student: any) => {
+    const inDate = student.transferInDate || (student.status === 'recebida' ? student.transferDate : '');
+    const outDate = student.transferOutDate || (student.status === 'expedida' ? student.transferDate : '');
+    const isTransferredInAfter = isStudentTransferredInAfterBimester(student, bimester);
+    const isTransferredOutBefore = isStudentTransferredOutBeforeBimester(student, bimester);
+
     let p = 0, f = 0;
     Object.keys(attVal).forEach((k) => {
       const a = attVal[k];
@@ -1542,22 +3132,41 @@ export async function generateAttendanceReportXLSX(
         a.studentId === student.id &&
         (!a.anoLetivo || a.anoLetivo === currentYear)
       ) {
+        // Se a data da chamada for anterior ao ingresso do aluno, ignora
+        if (inDate && a.date && a.date < inDate) return;
+        // Se a data da chamada for posterior à saída do aluno, ignora
+        if (outDate && a.date && a.date > outDate) return;
+
         if (a.status === 'P') p++;
         else if (a.status === 'F') f++;
       }
     });
 
-    const total = p + f;
-    const pct = total > 0 ? `${((p / total) * 100).toFixed(1)}%` : '-';
-    const sit = student.status === 'expedida' ? 'TR. EXP.' : (total > 0 && (p / total) < 0.75 ? 'Risco (<75%)' : 'Regular');
+    let total = p + f;
+    let pct: any = total > 0 ? `${((p / total) * 100).toFixed(1)}%` : '-';
+    let sit = 'Regular';
+
+    if (isTransferredInAfter) {
+      sit = inDate ? `Não Matriculado (Entrada: ${formatDate(inDate)})` : 'Não Matriculado';
+      pct = '-';
+      p = 0;
+      f = 0;
+      total = 0;
+    } else if (isTransferredOutBefore || student.status === 'expedida') {
+      sit = 'TR. EXP.';
+    } else if (student.status === 'recebida') {
+      sit = total > 0 && (p / total) < 0.75 ? 'Risco (<75%)' : 'Regular (TR. REC.)';
+    } else if (total > 0 && (p / total) < 0.75) {
+      sit = 'Risco (<75%)';
+    }
 
     const studentName = student.name + formatStudentTransferTag(student, false);
     const rowObj: any = {
       number: student.number || '-',
       name: studentName,
-      p,
-      f,
-      total,
+      p: isTransferredInAfter ? '-' : p,
+      f: isTransferredInAfter ? '-' : f,
+      total: isTransferredInAfter ? '-' : total,
       pct
     };
     if (showRA) {
@@ -1583,6 +3192,269 @@ export async function generateAttendanceReportXLSX(
     rows,
     emptyMessage: 'Nenhum aluno cadastrado na turma.',
     filename: `frequencia_${bimester}bim.xlsx`
+  });
+}
+
+/**
+ * Mapa de Frequência Diária (Grade Dia a Dia / Diário de Classe em PDF)
+ * Apresenta a chamada diária detalhada com colunas para cada dia em que houve aula.
+ */
+export async function generateDailyAttendanceReport(
+  classId: string,
+  bimester: string | number,
+  turma: ClassRoom,
+  teacher: string,
+  currentYear: string
+) {
+  const doc = new jsPDF({ orientation: 'landscape' });
+  const startY = addPDFHeader(doc, `MAPA DE FREQUÊNCIA DIA A DIA - ${bimester}º BIMESTRE`, turma, teacher, currentYear);
+
+  const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
+  const attSnap = await get(ref(rtdb, dc('chamada')));
+
+  const studentsVal = snap.val() || {};
+  const attVal = attSnap.val() || {};
+
+  const sortedStudents = Object.keys(studentsVal)
+    .map((k) => ({ id: k, ...studentsVal[k] }))
+    .filter((s) => !s.anoLetivo || s.anoLetivo === currentYear)
+    .sort((a, b) => (a.number || 0) - (b.number || 0));
+
+  // 1. Extrair todas as datas distintas deste bimestre
+  const datesSet = new Set<string>();
+  Object.keys(attVal).forEach((k) => {
+    const a = attVal[k];
+    if (
+      a.classId === classId &&
+      String(a.bimester) === String(bimester) &&
+      (!a.anoLetivo || a.anoLetivo === currentYear) &&
+      a.date
+    ) {
+      datesSet.add(a.date);
+    }
+  });
+
+  const sortedDates = Array.from(datesSet).sort();
+
+  if (sortedDates.length === 0) {
+    throw new Error(`Nenhuma chamada registrada no ${bimester}º bimestre para esta turma.`);
+  }
+
+  // 2. Montar cabeçalho
+  const headRow: string[] = ['Nº', 'Aluno'];
+  sortedDates.forEach((d) => {
+    const parts = d.split('-');
+    headRow.push(`${parts[2]}/${parts[1]}`);
+  });
+  headRow.push('P', 'F', '%');
+
+  // 3. Montar linhas dos alunos
+  const tableData: any[] = [];
+  const dailyPresencesCount: Record<string, number> = {};
+  sortedDates.forEach((d) => (dailyPresencesCount[d] = 0));
+
+  sortedStudents.forEach((student: any) => {
+    const row: any[] = [
+      student.number || '-',
+      student.name + formatStudentTransferTag(student, false)
+    ];
+
+    let p = 0;
+    let f = 0;
+
+    sortedDates.forEach((d) => {
+      const enrollment = isStudentEnrolledOnDate(student, d);
+      if (!enrollment.enrolled) {
+        row.push('-');
+        return;
+      }
+
+      let st: string = '-';
+      Object.keys(attVal).forEach((k) => {
+        const a = attVal[k];
+        if (
+          a.classId === classId &&
+          a.date === d &&
+          a.studentId === student.id &&
+          String(a.bimester) === String(bimester) &&
+          (!a.anoLetivo || a.anoLetivo === currentYear)
+        ) {
+          st = a.status || '-';
+        }
+      });
+
+      if (st === 'P') {
+        p++;
+        dailyPresencesCount[d] = (dailyPresencesCount[d] || 0) + 1;
+      } else if (st === 'F') {
+        f++;
+      }
+
+      row.push(st);
+    });
+
+    const total = p + f;
+    const pct = total > 0 ? `${((p / total) * 100).toFixed(0)}%` : '-';
+    row.push(p, f, pct);
+    tableData.push(row);
+  });
+
+  // Linha de total de presentes
+  const footerRow: any[] = ['-', 'Total Presentes'];
+  sortedDates.forEach((d) => {
+    footerRow.push(dailyPresencesCount[d] || 0);
+  });
+  footerRow.push('-', '-', '-');
+  tableData.push(footerRow);
+
+  autoTable(doc, {
+    startY,
+    head: [headRow],
+    body: tableData,
+    theme: 'grid',
+    styles: { fontSize: 7, cellPadding: 1, halign: 'center' },
+    headStyles: { fillColor: [79, 70, 229], textColor: 255, fontStyle: 'bold' },
+    columnStyles: {
+      0: { cellWidth: 8, halign: 'center' },
+      1: { cellWidth: 42, halign: 'left' }
+    },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    didParseCell: (data) => {
+      if (data.section === 'body' && data.column.index >= 2 && data.column.index < 2 + sortedDates.length) {
+        if (data.cell.raw === 'P') {
+          data.cell.styles.textColor = [16, 185, 129];
+          data.cell.styles.fontStyle = 'bold';
+        } else if (data.cell.raw === 'F') {
+          data.cell.styles.textColor = [239, 68, 68];
+          data.cell.styles.fontStyle = 'bold';
+        } else if (data.cell.raw === '-') {
+          data.cell.styles.textColor = [148, 163, 184];
+        }
+      }
+    }
+  });
+
+  doc.save(`mapa_frequencia_dia_a_dia_${turma.year}${turma.letter}_bim${bimester}_${currentYear}.pdf`);
+}
+
+/**
+ * Mapa de Frequência Diária (Grade Dia a Dia / Diário de Classe em Excel)
+ */
+export async function generateDailyAttendanceReportXLSX(
+  classId: string,
+  bimester: string | number,
+  turma: ClassRoom,
+  currentYear: string,
+  teacher: string
+) {
+  const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
+  const attSnap = await get(ref(rtdb, dc('chamada')));
+
+  const studentsVal = snap.val() || {};
+  const attVal = attSnap.val() || {};
+
+  const sortedStudents = Object.keys(studentsVal)
+    .map((k) => ({ id: k, ...studentsVal[k] }))
+    .filter((s) => !s.anoLetivo || s.anoLetivo === currentYear)
+    .sort((a, b) => (a.number || 0) - (b.number || 0));
+
+  const datesSet = new Set<string>();
+  Object.keys(attVal).forEach((k) => {
+    const a = attVal[k];
+    if (
+      a.classId === classId &&
+      String(a.bimester) === String(bimester) &&
+      (!a.anoLetivo || a.anoLetivo === currentYear) &&
+      a.date
+    ) {
+      datesSet.add(a.date);
+    }
+  });
+
+  const sortedDates = Array.from(datesSet).sort();
+
+  if (sortedDates.length === 0) {
+    throw new Error(`Nenhuma chamada registrada no ${bimester}º bimestre para esta turma.`);
+  }
+
+  const columns: ExcelColumnDef[] = [
+    { header: 'Nº', key: 'number', width: 6, align: 'center' },
+    { header: 'Aluno', key: 'name', width: 32, align: 'left' }
+  ];
+
+  sortedDates.forEach((d) => {
+    const parts = d.split('-');
+    columns.push({
+      header: `${parts[2]}/${parts[1]}`,
+      key: `date_${d}`,
+      width: 7,
+      align: 'center'
+    });
+  });
+
+  columns.push(
+    { header: 'Presenças', key: 'p', width: 10, align: 'center' },
+    { header: 'Faltas', key: 'f', width: 10, align: 'center' },
+    { header: '% Freq', key: 'pct', width: 10, align: 'center' }
+  );
+
+  const rows: any[] = [];
+
+  sortedStudents.forEach((student: any) => {
+    const rowObj: any = {
+      number: student.number || '-',
+      name: student.name + formatStudentTransferTag(student, false)
+    };
+
+    let p = 0;
+    let f = 0;
+
+    sortedDates.forEach((d) => {
+      const enrollment = isStudentEnrolledOnDate(student, d);
+      if (!enrollment.enrolled) {
+        rowObj[`date_${d}`] = '-';
+        return;
+      }
+
+      let st: string = '-';
+      Object.keys(attVal).forEach((k) => {
+        const a = attVal[k];
+        if (
+          a.classId === classId &&
+          a.date === d &&
+          a.studentId === student.id &&
+          String(a.bimester) === String(bimester) &&
+          (!a.anoLetivo || a.anoLetivo === currentYear)
+        ) {
+          st = a.status || '-';
+        }
+      });
+
+      if (st === 'P') p++;
+      else if (st === 'F') f++;
+
+      rowObj[`date_${d}`] = st;
+    });
+
+    const total = p + f;
+    const pct = total > 0 ? `${((p / total) * 100).toFixed(0)}%` : '-';
+    rowObj.p = p;
+    rowObj.f = f;
+    rowObj.pct = pct;
+
+    rows.push(rowObj);
+  });
+
+  await exportToExcelJS({
+    title: `MAPA DE FREQUÊNCIA DIA A DIA - ${bimester}º BIMESTRE`,
+    turma,
+    teacher,
+    year: currentYear,
+    sheetName: 'Frequência Diária',
+    columns,
+    rows,
+    emptyMessage: 'Nenhuma chamada registrada no bimestre.',
+    filename: `mapa_frequencia_dia_a_dia_${turma.year}${turma.letter}_bim${bimester}.xlsx`
   });
 }
 
@@ -1895,6 +3767,8 @@ export async function generateIndividualStudentReport(
     Object.keys(chamadaVal).forEach((k) => {
       const att = chamadaVal[k];
       if (att.classId === classId && att.studentId === student.id && (!att.anoLetivo || att.anoLetivo === currentYear)) {
+        if (!isStudentEnrolledOnDate(student, att.date).enrolled) return;
+        if (isStudentTransferredInAfterBimester(student, att.bimester)) return;
         if (att.status === 'P') p++;
         else if (att.status === 'F') f++;
       }
@@ -1948,6 +3822,8 @@ export async function generateIndividualStudentReportXLSX(
     Object.keys(chamadaVal).forEach((k) => {
       const att = chamadaVal[k];
       if (att.classId === classId && att.studentId === student.id && (!att.anoLetivo || att.anoLetivo === currentYear)) {
+        if (!isStudentEnrolledOnDate(student, att.date).enrolled) return;
+        if (isStudentTransferredInAfterBimester(student, att.bimester)) return;
         if (att.status === 'P') p++;
         else if (att.status === 'F') f++;
       }
@@ -2034,6 +3910,8 @@ export async function generateAtRiskStudentsReport(classId: string, turma: Class
     Object.keys(chamadaVal).forEach((k) => {
       const att = chamadaVal[k];
       if (att.classId === classId && att.studentId === sid && (!att.anoLetivo || att.anoLetivo === currentYear)) {
+        if (!isStudentEnrolledOnDate(student, att.date).enrolled) return;
+        if (isStudentTransferredInAfterBimester(student, att.bimester)) return;
         if (att.status === 'P') p++;
         else if (att.status === 'F') f++;
       }
@@ -2110,6 +3988,8 @@ export async function generateAtRiskStudentsReportXLSX(
     Object.keys(chamadaVal).forEach((k) => {
       const att = chamadaVal[k];
       if (att.classId === classId && att.studentId === sid && (!att.anoLetivo || att.anoLetivo === currentYear)) {
+        if (!isStudentEnrolledOnDate(student, att.date).enrolled) return;
+        if (isStudentTransferredInAfterBimester(student, att.bimester)) return;
         if (att.status === 'P') p++;
         else if (att.status === 'F') f++;
       }
@@ -3149,6 +5029,8 @@ export async function generateConsolidatedReport(classId: string, turma: ClassRo
     Object.keys(chamadaVal).forEach((k) => {
       const att = chamadaVal[k];
       if (att.classId === classId && att.studentId === student.id && (!att.anoLetivo || att.anoLetivo === currentYear)) {
+        if (!isStudentEnrolledOnDate(student, att.date).enrolled) return;
+        if (isStudentTransferredInAfterBimester(student, att.bimester)) return;
         if (att.status === 'P') p++;
         else if (att.status === 'F') f++;
       }
@@ -3240,6 +5122,8 @@ export async function generateConsolidatedReportXLSX(
     Object.keys(chamadaVal).forEach((k) => {
       const att = chamadaVal[k];
       if (att.classId === classId && att.studentId === student.id && (!att.anoLetivo || att.anoLetivo === currentYear)) {
+        if (!isStudentEnrolledOnDate(student, att.date).enrolled) return;
+        if (isStudentTransferredInAfterBimester(student, att.bimester)) return;
         if (att.status === 'P') p++;
         else if (att.status === 'F') f++;
       }

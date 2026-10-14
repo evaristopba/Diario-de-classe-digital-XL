@@ -16,7 +16,10 @@ Este documento fornece o guia operacional e técnico completo de todas as funcio
    - [3.1 Consolidação dos 4 Bimestres](#31-consolidação-dos-4-bimestres)
    - [3.2 Cálculo Automático de Médias Anuais](#32-cálculo-automático-de-médias-anuais)
    - [3.3 Gestão de Transferências (TR. REC / TR. EXP)](#33-gestão-de-transferências-tr-rec--tr-exp)
-   - [3.4 Exportações Gerenciais em PDF e Excel](#34-exportações-gerenciais-em-pdf-e-excel)
+   - [3.4 Fluxo Oficial de Reingresso (Retorno de Aluno TR. EXP.)](#34-fluxo-oficial-de-reingresso-retorno-de-aluno-tr-exp)
+   - [3.5 Frequência Escolar Normativa para Alunos TR. REC & Auditoria de Presenças](#35-frequência-escolar-normativa-para-alunos-tr-rec--auditoria-de-presenças)
+   - [3.6 Como Encontrar e Consultar as Chamadas Dia a Dia no Sistema](#36-como-encontrar-e-consultar-as-chamadas-dia-a-dia-no-sistema)
+   - [3.7 Exportações Gerenciais em PDF e Excel](#37-exportações-gerenciais-em-pdf-e-excel)
 4. [Ficha Individual do Aluno & Histórico de Evolução](#4-ficha-individual-do-aluno--histórico-de-evolução)
 5. [Regras de Negócio e Fórmulas de Avaliação](#5-regras-de-negócio-e-fórmulas-de-avaliação)
 6. [Segurança e Regras de Acesso (Firebase Realtime Database)](#6-segurança-e-regras-de-acesso-firebase-realtime-database)
@@ -116,7 +119,51 @@ O sistema mantém total integridade sobre a vida escolar do estudante:
     - Recebe o indicativo `(TR. REC. em DD/MM/AAAA)`.
     - Os bimestres anteriores à matrícula na escola são tratados de acordo com a documentação transferida anexada ao sistema.
 
-### 3.4 Exportações Gerenciais em PDF e Excel
+### 3.4 Fluxo Oficial de Reingresso (Retorno de Aluno TR. EXP.)
+Conforme a escrituração escolar normativa, quando um estudante que teve sua transferência expedida retorna à escola no decorrer do ano letivo:
+1. **Preservação da Matrícula 1 (Histórico Arquivado):**
+   - O cadastro original do estudante na turma permanece com o número antigo e status `TR. EXP. (DD/MM/AAAA)`.
+   - Comprova a frequência e as notas originais do período inicial na ata da escola.
+2. **Abertura da Matrícula 2 (Reingresso):**
+   - O aluno é reincluído no final da chamada com novo número e status `TR. REC. (DD/MM/AAAA)`.
+3. **Mecanismo de Reingresso Assistido no Sistema:**
+   - **Exclusividade para `TR. EXP.`:** Os botões de cópia e reingresso só são exibidos quando o aluno possui efetivamente o status de Transferência Expedida.
+   - **Trava de Segurança Anti-Duplicação por R.A.:** Se o aluno arquivado com `TR. EXP.` já possuir outra matrícula ativa de reingresso na mesma turma com o mesmo R.A. (ex: Nº 3 e Nº 23), os botões `Reingressar` e `Gravar em Memória` são **automaticamente bloqueados**, exibindo no lugar o selo `[✓ Reingressado]`. Isso impede que o aluno seja reingressado múltiplas vezes por engano.
+   - **Botão "Gravar em Memória (TR. EXP.)":** Salva instantaneamente os dados cadastrais (Nome, RA, RM, Data de Nascimento e Data de Saída) na memória da sessão.
+   - **Botão "Colar Dados Reingresso":** Na seção *Novo Aluno*, preenche todos os campos cadastrais, calcula e sugere automaticamente o próximo número de chamada no final da fila da turma, define status como `TR. REC.` e preenche a data de retorno.
+   - **Atalho Direto "Reingressar" (1 Clique):** Na linha do aluno com `TR. EXP.` na tabela, copia os dados e abre o formulário de novo cadastro com a numeração atualizada pronta para salvar.
+4. **Auditoria Ativa de Divergências Cadastrais (TR. EXP ➔ TR. REC):**
+   - **Fim do Silêncio Cadastral:** O sistema nunca atua de forma oculta. Caso detecte divergências entre o cadastro de saída (TR. EXP) e o reingresso (TR. REC) — como divergência de grafia de nome, data de nascimento ou RM — um **Alerta de Auditoria** amarelo/âmbar é exibido com destaque.
+   - **Painel Comparativo Lado a Lado:** Disponível tanto no menu **Alunos** quanto no menu **Notas** através do botão `🔍 Auditar / Comparar`, permitindo conferir campo a campo as informações originais versus as atuais e o status das notas aproveitadas.
+5. **Aproveitamento Automático de Notas & Fechamento Anual (Zero Corrupção):**
+   - **Migração Segura e Instantânea:** Ao salvar o novo cadastro de reingresso, o sistema busca todas as disciplinas cursadas pelo aluno no cadastro original e replica automaticamente as notas dos bimestres anteriores cursados na própria escola para o novo número.
+   - **Integridade Absoluta:** O cadastro original arquivado (`Nº 3`) **não sofre nenhuma alteração ou mutação** (zero risco de corrupção). O sistema cria novos registros dedicados para a nova matrícula (`Nº 23`).
+   - **Botão "Puxar Notas" (Para cadastros já criados):** Para alunos que foram reingressados manualmente antes da automação, a linha do aluno na tabela e o formulário exibem o botão `✨ Puxar Notas`, permitindo migrar as notas anteriores em apenas 1 clique.
+   - **Média Anual Consolidada:** O **Boletim Anual** da nova matrícula fecha os 4 bimestres com a **Média Anual completa (100% calculada)**, necessitando apenas que o professor digite as notas do período intermediário caso a família tenha trazido histórico da escola externa.
+
+### 3.5 Frequência Escolar Normativa para Alunos TR. REC & Auditoria de Presenças
+Conforme a legislação educacional, um estudante transferido ou reingressado **não pode ter presenças nem faltas registradas em datas ou bimestres anteriores à sua data de entrada oficial**:
+1. **Bloqueio no Lançamento da Chamada Online:**
+   - Na tela de Chamada, se a data selecionada for anterior à data de entrada do aluno (`selectedDate < transferInDate`) ou se o bimestre for anterior ao ingresso, o sistema bloqueia automaticamente a marcação com o aviso `⛔ Não Matriculado nesta data` e desabilita o interruptor de presença.
+   - Botões globais como *Todos Presentes (P)* e *Todos Ausentes (A)* ignoram automaticamente alunos que não estavam matriculados naquele dia.
+2. **Prevenção e Purga ao Salvar:**
+   - Ao salvar a chamada de uma data anterior, o sistema não grava registros para o aluno e purga eventuais registros preexistentes indevidos daquela data no banco de dados.
+3. **Ferramenta de Auditoria & Limpeza de Presenças Indevidas:**
+   - Na tela de Chamada Online, o sistema analisa o histórico da turma. Se encontrar presenças gravadas antes da data oficial de retorno, exibe o botão destacado `🧹 Regularizar Presenças TR. REC (X indevidas)`.
+   - Com 1 clique, a secretaria ou o professor remove todos os registros indevidos, regularizando a frequência oficial em todos os boletins e atas.
+
+### 3.6 Como Encontrar e Consultar as Chamadas Dia a Dia no Sistema
+O sistema disponibiliza duas formas integradas e complementares para localizar e consultar o histórico diário de chamadas:
+1. **Navegador Dia a Dia na tela de Chamada Online (`Chamada Online`):**
+   - No topo da tela de chamada, há uma barra de histórico com a contagem total de aulas dadas no bimestre selecionado (ex: `36 chamadas realizadas no 1º Bimestre`).
+   - Apresenta **pílulas interativas de todas as datas** em que houve chamada (ex: `[02/02 28P/2F]`, `[03/02 30P]`).
+   - Clicar em qualquer data carrega imediatamente o diário daquele dia na tela para conferência ou edição rápida.
+2. **Mapa de Frequência Diária / Diário de Classe Consolidado (`Menu Relatórios ➔ Aba Frequência`):**
+   - Gera a matriz oficial com todos os dias do bimestre em colunas e todos os alunos nas linhas.
+   - Mostra exatamente quem estava Presente (`P`), Ausente (`F`) ou Não Matriculado (`-`), além dos totais diários de presentes no rodapé.
+   - Pode ser emitido diretamente da tela de chamada ou de relatórios em **PDF Paisagem** ou **Planilha Excel (.xlsx)**.
+
+### 3.7 Exportações Gerenciais em PDF e Excel
 - **PDF Consolidado**: Documento diagramado para conselhos de classe, arquivo passivo da secretaria e pastas individuais dos estudantes.
 - **Planilha Excel (.xlsx)**: Permite ordenações personalizadas (por ordem de melhor média, por número de chamada ou por situação final).
 

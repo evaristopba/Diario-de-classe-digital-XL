@@ -7,7 +7,8 @@ import {
   rtdb,
   dc,
   carregarMinhasTurmas,
-  verificarIsAdmin
+  verificarIsAdmin,
+  transporNotasParaReingresso
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
 import { formatDate, isStudentTransferredOutBeforeBimester } from '../lib/reports';
@@ -16,6 +17,9 @@ import {
   Save,
   Trash2,
   AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  ArrowRightLeft,
   Sparkles,
   Search,
   CheckSquare,
@@ -32,6 +36,15 @@ interface GradesScreenProps {
   currentTeacher: string;
   currentYear: string;
   setModal: (config: ModalConfig) => void;
+}
+
+export interface ReingressoAuditNotice {
+  recStudent: { id: string; val: Student };
+  origStudent: { id: string; val: Student };
+  transCount: number;
+  bimesters: string[];
+  subjects: string[];
+  divergences: { field: string; orig: string; rec: string }[];
 }
 
 interface AuditItem {
@@ -82,6 +95,10 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
   });
   // Mapa de notas de bimestres anteriores: [studentId][bimesterNumber] = string
   const [previousBimesterGrades, setPreviousBimesterGrades] = useState<Record<string, Record<number, string>>>({});
+
+  // Auditoria e Alertas de Reingresso (TR EXP ➔ TR REC)
+  const [reingressoNotices, setReingressoNotices] = useState<ReingressoAuditNotice[]>([]);
+  const [reingressoModalNotice, setReingressoModalNotice] = useState<ReingressoAuditNotice | null>(null);
 
   const [loading, setLoading] = useState(false);
 
@@ -164,8 +181,67 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
       list.sort((a, b) => (a.val.number || 0) - (b.val.number || 0));
       setStudents(list);
 
-      const notasSnap = await get(ref(rtdb, dc('notas')));
-      const notasVal = notasSnap.val() || {};
+      let notasSnap = await get(ref(rtdb, dc('notas')));
+      let notasVal = notasSnap.val() || {};
+
+      // Sincronização e Auditoria de Notas para Alunos de Reingresso (TR. EXP ➔ TR. REC):
+      // Identifica alunos com status 'recebida' que possuam cadastro original 'expedida' com mesmo RA nesta turma
+      const receivedStudents = list.filter((s) => s.val.status === 'recebida');
+      let didAutoSync = false;
+      const detectedNotices: ReingressoAuditNotice[] = [];
+
+      for (const rec of receivedStudents) {
+        const orig = list.find(
+          (o) => o.id !== rec.id && o.val.status === 'expedida' && o.val.ra && o.val.ra === rec.val.ra
+        );
+        if (orig) {
+          const trans = await transporNotasParaReingresso(orig.id, rec.id, selectedClassId, currentYear);
+          if (trans.count > 0) {
+            didAutoSync = true;
+          }
+
+          // Checagem ativa de divergências cadastrais entre o cadastro de saída e o de reingresso
+          const divergences: { field: string; orig: string; rec: string }[] = [];
+          if (orig.val.name.trim().toLowerCase() !== rec.val.name.trim().toLowerCase()) {
+            divergences.push({
+              field: 'Nome Completo',
+              orig: orig.val.name,
+              rec: rec.val.name
+            });
+          }
+          if ((orig.val.birthdate || '') !== (rec.val.birthdate || '')) {
+            divergences.push({
+              field: 'Data de Nascimento',
+              orig: formatDate(orig.val.birthdate),
+              rec: formatDate(rec.val.birthdate)
+            });
+          }
+          if ((orig.val.rm || '').trim() !== (rec.val.rm || '').trim()) {
+            divergences.push({
+              field: 'RM',
+              orig: orig.val.rm || 'Não informado',
+              rec: rec.val.rm || 'Não informado'
+            });
+          }
+
+          detectedNotices.push({
+            recStudent: rec,
+            origStudent: orig,
+            transCount: trans.count,
+            bimesters: trans.bimesters,
+            subjects: trans.subjects,
+            divergences
+          });
+        }
+      }
+
+      setReingressoNotices(detectedNotices);
+
+      if (didAutoSync) {
+        notasSnap = await get(ref(rtdb, dc('notas')));
+        notasVal = notasSnap.val() || {};
+      }
+
       const newGrades: Record<string, string> = {};
       const newGradeKeysMap: Record<string, string[]> = {};
       
@@ -851,6 +927,87 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
         </div>
       </div>
 
+      {/* Alertas de Auditoria de Reingresso (TR EXP ➔ TR REC) */}
+      {reingressoNotices.length > 0 && (
+        <div className="space-y-3">
+          {reingressoNotices.map((notice, idx) => {
+            const hasDivergences = notice.divergences.length > 0;
+            return (
+              <div
+                key={`reingresso-notice-${idx}`}
+                className={`p-4 sm:p-5 rounded-2xl border shadow-xs transition flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                  hasDivergences
+                    ? 'bg-amber-50/95 border-amber-300 text-amber-900'
+                    : 'bg-emerald-50/95 border-emerald-200 text-emerald-900'
+                }`}
+              >
+                <div className="flex items-start gap-3.5">
+                  <div className="mt-0.5 shrink-0">
+                    {hasDivergences ? (
+                      <AlertTriangle className="w-5 h-5 text-amber-600" />
+                    ) : (
+                      <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                    )}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-sm">
+                        {hasDivergences
+                          ? 'Auditoria de Reingresso: Divergências Detectadas'
+                          : 'Aproveitamento de Estudos Sincronizado'}
+                      </span>
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-white/90 border border-current shadow-2xs">
+                        Nº {notice.origStudent.val.number} (TR EXP) ➔ Nº {notice.recStudent.val.number} (TR REC)
+                      </span>
+                    </div>
+
+                    <div className="text-xs mt-1.5 leading-relaxed opacity-90">
+                      {hasDivergences ? (
+                        <div>
+                          Foram identificadas <strong>{notice.divergences.length} divergência(s) cadastral(is)</strong> entre a saída e o reingresso de <strong>{notice.recStudent.val.name}</strong> (RA: {notice.recStudent.val.ra}):
+                          <div className="mt-1.5 flex flex-wrap gap-2">
+                            {notice.divergences.map((d, dIdx) => (
+                              <span
+                                key={dIdx}
+                                className="inline-flex items-center gap-1.5 font-medium text-[11px] bg-white px-2.5 py-1 rounded-lg border border-amber-200 shadow-2xs"
+                              >
+                                <strong className="text-amber-800">{d.field}:</strong>
+                                <span className="line-through text-slate-400">{d.orig}</span>
+                                <ArrowRightLeft className="w-3 h-3 text-amber-600" />
+                                <span className="font-bold text-amber-900">{d.rec}</span>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <p>
+                          Foram migradas com sucesso <strong>{notice.transCount} nota(s)</strong> do cadastro original arquivado para o novo número de chamada do aluno <strong>{notice.recStudent.val.name}</strong>. Dados cadastrais idênticos e 100% consistentes.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="shrink-0 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setReingressoModalNotice(notice)}
+                    className={`px-3.5 py-2 text-xs font-bold rounded-xl border shadow-2xs transition inline-flex items-center gap-1.5 cursor-pointer ${
+                      hasDivergences
+                        ? 'bg-amber-600 hover:bg-amber-700 text-white border-amber-700'
+                        : 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+                    }`}
+                  >
+                    <ArrowRightLeft className="w-3.5 h-3.5" />
+                    <span>Ver Comparativo TR. EXP vs TR. REC</span>
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* Controles Principais */}
       <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1475,6 +1632,164 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                   <span>Excluir {selectedAuditKeys.size} Selecionados</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Comparativo Detalhado de Reingresso (TR EXP vs TR REC) */}
+      {reingressoModalNotice && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2">
+                <ArrowRightLeft className="w-5 h-5 text-indigo-600" />
+                <h3 className="font-extrabold text-slate-800 text-base">
+                  Auditoria de Reingresso: Comparativo Cadastral
+                </h3>
+              </div>
+              <button
+                onClick={() => setReingressoModalNotice(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-xl transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-5 text-xs text-slate-700">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Cadastro Original de Saída */}
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="font-bold text-slate-800 text-sm">
+                      1. Cadastro Original (Saída)
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
+                      TR. EXPEDIDA
+                    </span>
+                  </div>
+                  <dl className="space-y-2">
+                    <div>
+                      <dt className="text-slate-400 font-medium">Nº de Chamada Antigo:</dt>
+                      <dd className="font-bold text-slate-900">Nº {reingressoModalNotice.origStudent.val.number}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Nome Completo:</dt>
+                      <dd className="font-bold text-slate-900">{reingressoModalNotice.origStudent.val.name}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">R.A.:</dt>
+                      <dd className="font-mono text-slate-800">{reingressoModalNotice.origStudent.val.ra}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">R.M.:</dt>
+                      <dd className="font-mono text-slate-800">{reingressoModalNotice.origStudent.val.rm || 'Não informado'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Data de Nascimento:</dt>
+                      <dd className="font-medium text-slate-800">{formatDate(reingressoModalNotice.origStudent.val.birthdate)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Data de Saída:</dt>
+                      <dd className="font-medium text-rose-700">
+                        {formatDate(reingressoModalNotice.origStudent.val.transferOutDate || reingressoModalNotice.origStudent.val.transferDate)}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+
+                {/* Cadastro Atual de Reingresso */}
+                <div className="p-4 rounded-xl bg-indigo-50/50 border border-indigo-200">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="font-bold text-indigo-950 text-sm">
+                      2. Cadastro Atual (Retorno)
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      TR. RECEBIDA
+                    </span>
+                  </div>
+                  <dl className="space-y-2">
+                    <div>
+                      <dt className="text-slate-400 font-medium">Nº de Chamada Atual:</dt>
+                      <dd className="font-bold text-indigo-700">Nº {reingressoModalNotice.recStudent.val.number}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Nome Completo:</dt>
+                      <dd className="font-bold text-slate-900">{reingressoModalNotice.recStudent.val.name}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">R.A.:</dt>
+                      <dd className="font-mono text-slate-800">{reingressoModalNotice.recStudent.val.ra}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">R.M.:</dt>
+                      <dd className="font-mono text-slate-800">{reingressoModalNotice.recStudent.val.rm || 'Não informado'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Data de Nascimento:</dt>
+                      <dd className="font-medium text-slate-800">{formatDate(reingressoModalNotice.recStudent.val.birthdate)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-slate-400 font-medium">Data de Retorno:</dt>
+                      <dd className="font-medium text-emerald-700">
+                        {formatDate(reingressoModalNotice.recStudent.val.transferInDate || reingressoModalNotice.recStudent.val.transferDate)}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+              </div>
+
+              {/* Tabela de Divergências Encontradas */}
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200">
+                <h4 className="font-bold text-slate-800 mb-2">
+                  Status de Divergências Cadastrais:
+                </h4>
+                {reingressoModalNotice.divergences.length === 0 ? (
+                  <div className="flex items-center gap-2 text-emerald-700 font-medium text-xs">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>Nenhuma divergência cadastral detectada! Todos os dados (Nome, RA, RM, Nascimento) são idênticos.</span>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {reingressoModalNotice.divergences.map((div, dIdx) => (
+                      <div key={dIdx} className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-between">
+                        <span className="font-bold text-amber-900">{div.field}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="line-through text-slate-400">{div.orig}</span>
+                          <ArrowRightLeft className="w-3.5 h-3.5 text-amber-600" />
+                          <span className="font-bold text-slate-800">{div.rec}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Status das Notas Migradas */}
+              <div className="p-4 rounded-xl bg-indigo-50 border border-indigo-200">
+                <h4 className="font-bold text-indigo-900 mb-1 flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-indigo-600" />
+                  Aproveitamento de Estudos & Notas:
+                </h4>
+                <p className="text-indigo-800 text-[11px] leading-relaxed">
+                  Foram migradas <strong>{reingressoModalNotice.transCount} notas</strong> cursadas nos bimestres anteriores. O cadastro original (Nº {reingressoModalNotice.origStudent.val.number}) continua devidamente arquivado e preservado para fins de escrituração normativa.
+                </p>
+                {reingressoModalNotice.bimesters.length > 0 && (
+                  <p className="text-[11px] text-indigo-700 mt-1">
+                    Bimestres com notas migradas: <strong>{reingressoModalNotice.bimesters.map(b => `${b}º`).join(', ')} Bimestre(s)</strong>
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setReingressoModalNotice(null)}
+                className="px-5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition shadow-xs cursor-pointer"
+              >
+                Entendido / Fechar
+              </button>
             </div>
           </div>
         </div>

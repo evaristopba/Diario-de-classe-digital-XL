@@ -15,6 +15,8 @@ import {
   generateClassesComparisonReportXLSX,
   generateAttendanceReport,
   generateAttendanceReportXLSX,
+  generateDailyAttendanceReport,
+  generateDailyAttendanceReportXLSX,
   generateAbsenceReport,
   generateAbsenceReportXLSX,
   generateIndividualStudentReport,
@@ -54,8 +56,10 @@ import {
   Award,
   CalendarDays,
   Flame,
-  AlertCircle
+  AlertCircle,
+  Users
 } from 'lucide-react';
+import { StudentEvolutionChartModal } from './StudentEvolutionChartModal';
 
 interface ReportsScreenProps {
   currentTeacher: string;
@@ -77,7 +81,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
   setModal
 }) => {
   const [classes, setClasses] = useState<{ id: string; val: ClassRoom }[]>([]);
-  const [availableSubjects, setAvailableSubjects] = useState<SubjectItem[]>(DEFAULT_SUBJECTS);
+  const [availableSubjects, setAvailableSubjects] = useState<SubjectItem[]>([]);
   const [selectedClassId, setSelectedClassId] = useState('');
   const [selectedBimester, setSelectedBimester] = useState('1');
   const [selectedSubject, setSelectedSubject] = useState('todas');
@@ -96,20 +100,33 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
   const [includeTransfersRanking, setIncludeTransfersRanking] = useState(false);
   const [activeTab, setActiveTab] = useState<ReportTab>('desempenho');
   const [generating, setGenerating] = useState(false);
+  const [isEvolutionChartOpen, setIsEvolutionChartOpen] = useState(false);
+  const [evolutionChartInitialTab, setEvolutionChartInitialTab] = useState<'coletivo' | 'panorama'>('coletivo');
 
   const loadSubjectsList = async () => {
     try {
       const snap = await get(ref(rtdb, 'diario-classe/disciplinas'));
       if (snap.exists()) {
         const val = snap.val() || {};
-        const list: SubjectItem[] = Object.keys(val).map((k) => val[k]);
+        const list: SubjectItem[] = Object.keys(val).map((k) => {
+          const item = val[k];
+          return typeof item === 'object' && item !== null
+            ? {
+                id: item.id || k,
+                name: item.name || k,
+                shortName: item.shortName || item.name || k,
+                category: item.category === 'diversificada' ? 'diversificada' : 'regente'
+              }
+            : { id: k, name: String(item), shortName: String(item), category: 'regente' };
+        });
         list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-        if (list.length > 0) {
-          setAvailableSubjects(list);
-        }
+        setAvailableSubjects(list);
+      } else {
+        setAvailableSubjects([]);
       }
     } catch (e) {
-      console.log('Usando disciplinas padrão:', e);
+      console.warn('Erro ao carregar disciplinas cadastradas:', e);
+      setAvailableSubjects([]);
     }
   };
 
@@ -132,18 +149,42 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
     if (!classId) return setStudents([]);
     try {
       const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-      const val = snap.val() || {};
+      const val = snap.exists() ? snap.val() || {} : {};
       const list: { id: string; val: Student }[] = [];
       Object.keys(val).forEach((k) => {
         const s = val[k];
-        if (!s.anoLetivo || s.anoLetivo === currentYear) {
+        if (!s.anoLetivo || !currentYear || String(s.anoLetivo).trim() === String(currentYear).trim()) {
           list.push({ id: k, val: s });
         }
       });
+      // Fallback para os alunos do objeto da turma em classes
+      if (list.length === 0) {
+        const t = classes.find((c) => c.id === classId)?.val;
+        if (t && t.alunos) {
+          Object.keys(t.alunos).forEach((k) => {
+            const s = t.alunos![k];
+            if (!s.anoLetivo || !currentYear || String(s.anoLetivo).trim() === String(currentYear).trim()) {
+              list.push({ id: k, val: s });
+            }
+          });
+        }
+      }
       list.sort((a, b) => (a.val.number || 0) - (b.val.number || 0));
       setStudents(list);
     } catch (err) {
-      console.error(err);
+      console.error('Erro ao carregar alunos:', err);
+      const t = classes.find((c) => c.id === classId)?.val;
+      if (t && t.alunos) {
+        const list: { id: string; val: Student }[] = [];
+        Object.keys(t.alunos).forEach((k) => {
+          const s = t.alunos![k];
+          if (!s.anoLetivo || !currentYear || String(s.anoLetivo).trim() === String(currentYear).trim()) {
+            list.push({ id: k, val: s });
+          }
+        });
+        list.sort((a, b) => (a.val.number || 0) - (b.val.number || 0));
+        setStudents(list);
+      }
     }
   };
 
@@ -559,31 +600,111 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                 Trajetória e tendência de notas e evolução de aprendizagem anual
               </p>
             </div>
-            <div className="flex items-center gap-2 mt-4 pt-3 border-t border-slate-100">
+            <div className="mt-4 pt-3 border-t border-slate-100 flex flex-col gap-2">
               <button
-                disabled={generating}
-                onClick={() =>
-                  runReport(() =>
-                    generateStudentEvolutionReport(selectedClassId, selectedStudentId || null, selectedTurma!, currentTeacher, currentYear)
-                  )
-                }
-                className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
+                type="button"
+                onClick={() => {
+                  if (!selectedClassId) {
+                    setModal({
+                      isOpen: true,
+                      type: 'alert',
+                      title: 'Atenção',
+                      message: 'Por favor, selecione uma turma primeiro no topo da página de relatórios.',
+                      icon: '⚠️'
+                    });
+                    return;
+                  }
+                  setEvolutionChartInitialTab('coletivo');
+                  setIsEvolutionChartOpen(true);
+                }}
+                className="w-full inline-flex items-center justify-center gap-2 py-2 px-3 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer"
+                title="Abrir gráfico já montado com todos os alunos da turma sobrepostos"
               >
-                <FileText className="w-3.5 h-3.5" />
-                <span>PDF</span>
+                <TrendingUp className="w-4 h-4 text-indigo-200" />
+                <span>Gráfico de Todos os Alunos (Turma Completa)</span>
               </button>
               <button
-                disabled={generating}
-                onClick={() =>
-                  runReport(() =>
-                    generateStudentEvolutionReportXLSX(selectedClassId, selectedStudentId || null, selectedTurma!, currentYear, currentTeacher)
-                  )
-                }
-                className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
+                type="button"
+                onClick={() => {
+                  if (!selectedClassId) {
+                    setModal({
+                      isOpen: true,
+                      type: 'alert',
+                      title: 'Atenção',
+                      message: 'Por favor, selecione uma turma primeiro no topo da página de relatórios.',
+                      icon: '⚠️'
+                    });
+                    return;
+                  }
+                  setEvolutionChartInitialTab('panorama');
+                  setIsEvolutionChartOpen(true);
+                }}
+                className="w-full inline-flex items-center justify-center gap-2 py-1.5 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                title="Abrir listagem da turma com trajetória escolar e gráfico individual"
               >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>XLSX</span>
+                <Users className="w-3.5 h-3.5 text-slate-500" />
+                <span>Listagem com Gráfico Individual</span>
               </button>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-2">
+                  <button
+                    disabled={generating}
+                    onClick={() =>
+                      runReport(() =>
+                        generateStudentEvolutionReport(selectedClassId, null, selectedTurma!, currentTeacher, currentYear)
+                      )
+                    }
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
+                    title="Gerar relatório completo da turma com todos os alunos e gráficos em PDF"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>PDF (Turma Toda)</span>
+                  </button>
+                  <button
+                    disabled={generating}
+                    onClick={() =>
+                      runReport(() =>
+                        generateStudentEvolutionReportXLSX(selectedClassId, null, selectedTurma!, currentYear, currentTeacher)
+                      )
+                    }
+                    className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
+                    title="Baixar planilha Excel com fórmulas dinâmicas e gráfico da turma embutido"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5" />
+                    <span>Exportar XLSX</span>
+                  </button>
+                </div>
+                {selectedStudentId && (
+                  <div className="flex items-center gap-2 pt-0.5">
+                    <button
+                      disabled={generating}
+                      onClick={() =>
+                        runReport(() =>
+                          generateStudentEvolutionReport(selectedClassId, selectedStudentId, selectedTurma!, currentTeacher, currentYear)
+                        )
+                      }
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 py-1 px-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-semibold transition-colors"
+                      title="Gerar relatório de evolução individual do aluno filtrado"
+                    >
+                      <FileText className="w-3 h-3 text-slate-500" />
+                      <span>PDF (Aluno Filtrado)</span>
+                    </button>
+                    <button
+                      disabled={generating}
+                      onClick={() =>
+                        runReport(() =>
+                          generateStudentEvolutionReportXLSX(selectedClassId, selectedStudentId, selectedTurma!, currentYear, currentTeacher)
+                        )
+                      }
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 py-1 px-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-semibold transition-colors"
+                      title="Gerar planilha de evolução individual do aluno filtrado"
+                    >
+                      <FileSpreadsheet className="w-3 h-3 text-slate-500" />
+                      <span>XLSX (Aluno Filtrado)</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -817,6 +938,60 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
               >
                 <FileSpreadsheet className="w-3.5 h-3.5" />
                 <span>XLSX</span>
+              </button>
+            </div>
+          </div>
+
+          {/* 3. Mapa de Frequência Diária (Grade Dia a Dia / Diário de Classe) */}
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-xs flex flex-col justify-between md:col-span-2">
+            <div>
+              <div className="flex items-center gap-2 text-indigo-600 mb-2">
+                <CalendarDays className="w-5 h-5" />
+                <h4 className="font-bold text-slate-800 text-sm">Mapa de Frequência Diária (Grade Dia a Dia / Diário de Classe)</h4>
+              </div>
+              <p className="text-xs text-slate-500 leading-relaxed mb-1">
+                Visualização detalhada de todas as chamadas realizadas dia a dia no {selectedBimester}º bimestre. Apresenta uma coluna para cada data com a indicação de presença (P), falta (F) ou ausência de matrícula (-) de cada estudante.
+              </p>
+              <p className="text-[11px] text-indigo-700 bg-indigo-50 border border-indigo-100 rounded-lg p-2 mt-2">
+                💡 <strong>Ideal para Encontrar Chamadas e Auditoria:</strong> Permite consultar o histórico diário exato de presenças e faltas da turma inteira, com totais por dia e por estudante em formato paisagem (PDF) ou planilha (Excel).
+              </p>
+            </div>
+            <div className="flex items-center gap-2 mt-4 pt-3 border-t border-slate-100 flex-wrap sm:flex-nowrap">
+              <button
+                disabled={generating}
+                onClick={() =>
+                  runReport(() =>
+                    generateDailyAttendanceReport(
+                      selectedClassId,
+                      selectedBimester,
+                      selectedTurma!,
+                      currentTeacher,
+                      currentYear
+                    )
+                  )
+                }
+                className="flex-1 inline-flex items-center justify-center gap-1.5 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer"
+              >
+                <FileText className="w-4 h-4" />
+                <span>Exportar Mapa Dia a Dia (PDF Paisagem)</span>
+              </button>
+              <button
+                disabled={generating}
+                onClick={() =>
+                  runReport(() =>
+                    generateDailyAttendanceReportXLSX(
+                      selectedClassId,
+                      selectedBimester,
+                      selectedTurma!,
+                      currentYear,
+                      currentTeacher
+                    )
+                  )
+                }
+                className="flex-1 inline-flex items-center justify-center gap-1.5 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Exportar Mapa Dia a Dia (Planilha Excel)</span>
               </button>
             </div>
           </div>
@@ -1266,6 +1441,20 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
           </div>
         </div>
       )}
+      {/* MODAL: GRÁFICO DE EVOLUÇÃO E TRAJETÓRIA */}
+      <StudentEvolutionChartModal
+        isOpen={isEvolutionChartOpen}
+        onClose={() => setIsEvolutionChartOpen(false)}
+        classId={selectedClassId}
+        turma={selectedTurma || null}
+        initialStudentId={selectedStudentId || null}
+        initialTab={evolutionChartInitialTab}
+        initialSubject={selectedSubject}
+        currentYear={currentYear}
+        teacherName={currentTeacher}
+        studentsList={students.map((s) => ({ id: s.id, ...s.val }))}
+        subjectsList={availableSubjects}
+      />
     </div>
   );
 };

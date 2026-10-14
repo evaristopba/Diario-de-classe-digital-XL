@@ -10,10 +10,34 @@ import {
   carregarMinhasTurmas
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
-import { formatDate } from '../lib/reports';
+import {
+  formatDate,
+  isStudentEnrolledOnDate,
+  isStudentTransferredInAfterBimester,
+  generateDailyAttendanceReport,
+  generateDailyAttendanceReportXLSX
+} from '../lib/reports';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { CheckSquare, Save, Trash2, Search, Download, Upload, Cake, Sparkles } from 'lucide-react';
+import {
+  CheckSquare,
+  Save,
+  Trash2,
+  Search,
+  Download,
+  Upload,
+  Cake,
+  Sparkles,
+  CalendarDays,
+  FileText,
+  FileSpreadsheet,
+  AlertTriangle,
+  History,
+  Info,
+  CheckCircle2,
+  Calendar
+} from 'lucide-react';
+import { ImproperAttendanceModal, ImproperAttendanceRecord } from './ImproperAttendanceModal';
 
 interface AttendanceScreenProps {
   currentTeacher: string;
@@ -36,6 +60,12 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
   const [students, setStudents] = useState<{ id: string; val: Student }[]>([]);
   const [attendanceState, setAttendanceState] = useState<Record<string, 'P' | 'F'>>({});
   const [loading, setLoading] = useState(false);
+  const [recordedDates, setRecordedDates] = useState<
+    { date: string; presentCount: number; absentCount: number; totalCount: number }[]
+  >([]);
+  const [improperRecords, setImproperRecords] = useState<ImproperAttendanceRecord[]>([]);
+  const [showImproperModal, setShowImproperModal] = useState(false);
+  const [generatingReport, setGeneratingReport] = useState(false);
 
   const loadClasses = async () => {
     try {
@@ -172,9 +202,82 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
       list.sort((a, b) => (a.val.number || 0) - (b.val.number || 0));
       setStudents(list);
 
-      const compositeKey = `${selectedClassId}_${selectedBimester}_${selectedDate}`;
       const attSnap = await get(ref(rtdb, dc('chamada')));
       const attVal = attSnap.val() || {};
+
+      // 1. Mapear todas as datas com chamada realizada neste bimestre e turma
+      const compositeDatesMap: Record<string, { presentCount: number; absentCount: number }> = {};
+      const detectedImproper: ImproperAttendanceRecord[] = [];
+
+      Object.keys(attVal).forEach((k) => {
+        const rec = attVal[k];
+        if (
+          rec.classId === selectedClassId &&
+          (!rec.anoLetivo || rec.anoLetivo === currentYear)
+        ) {
+          if (String(rec.bimester) === String(selectedBimester) && rec.date) {
+            if (!compositeDatesMap[rec.date]) {
+              compositeDatesMap[rec.date] = { presentCount: 0, absentCount: 0 };
+            }
+            if (rec.status === 'P') compositeDatesMap[rec.date].presentCount++;
+            else if (rec.status === 'F') compositeDatesMap[rec.date].absentCount++;
+          }
+
+          // Checar se o aluno possui presença/falta fora do período oficial de matrícula
+          const stu = list.find((s) => s.id === rec.studentId);
+          if (stu) {
+            const enrollCheck = isStudentEnrolledOnDate(stu.val, rec.date);
+            const afterBim = isStudentTransferredInAfterBimester(stu.val, rec.bimester);
+            if (!enrollCheck.enrolled || afterBim) {
+              const inDate = stu.val.transferInDate || (stu.val.status === 'recebida' ? stu.val.transferDate : '');
+              const outDate = stu.val.transferOutDate || (stu.val.status === 'expedida' ? stu.val.transferDate : '');
+
+              let reasonText = '';
+              if (!enrollCheck.enrolled) {
+                reasonText = enrollCheck.reason || 'Fora do período de matrícula';
+              } else if (afterBim) {
+                reasonText = `Ingresso em ${formatDate(inDate)} (posterior ao encerramento do ${rec.bimester}º Bimestre)`;
+              }
+
+              detectedImproper.push({
+                key: k,
+                studentId: stu.id,
+                studentName: stu.val.name,
+                studentNumber: stu.val.number || 0,
+                date: rec.date,
+                bimester: String(rec.bimester),
+                status: rec.status || 'P',
+                reason: reasonText,
+                enrollmentDate: inDate,
+                transferOutDate: outDate,
+                studentStatus: stu.val.status
+              });
+            }
+          } else if (rec.studentId) {
+            detectedImproper.push({
+              key: k,
+              studentId: rec.studentId,
+              studentName: rec.studentName || `Estudante ID: ${rec.studentId}`,
+              studentNumber: 0,
+              date: rec.date || 'Data não informada',
+              bimester: String(rec.bimester || selectedBimester),
+              status: rec.status || 'P',
+              reason: 'Aluno não encontrado no cadastro desta turma'
+            });
+          }
+        }
+      });
+
+      const datesList = Object.keys(compositeDatesMap)
+        .sort()
+        .map((d) => ({
+          date: d,
+          presentCount: compositeDatesMap[d].presentCount,
+          absentCount: compositeDatesMap[d].absentCount,
+          totalCount: compositeDatesMap[d].presentCount + compositeDatesMap[d].absentCount
+        }));
+      setRecordedDates(datesList);
+      setImproperRecords(detectedImproper);
 
       const newStates: Record<string, 'P' | 'F'> = {};
       Object.keys(attVal).forEach((k) => {
@@ -189,9 +292,16 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
         }
       });
 
-      // Default to Present for active/received students if no record exists
+      // Padrão Presente (P) SOMENTE para alunos efetivamente matriculados nesta data e bimestre!
+      // Alunos com TR REC cuja entrada seja posterior à data selecionada NÃO recebem presença!
       list.forEach((s) => {
-        if (!newStates[s.id]) {
+        const enrollCheck = isStudentEnrolledOnDate(s.val, selectedDate);
+        const afterBim = isStudentTransferredInAfterBimester(s.val, selectedBimester);
+        const isNotEnrolled = !enrollCheck.enrolled || afterBim || s.val.status === 'expedida';
+
+        if (isNotEnrolled) {
+          delete newStates[s.id];
+        } else if (!newStates[s.id]) {
           newStates[s.id] = 'P';
         }
       });
@@ -235,8 +345,19 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
 
       students.forEach((s) => {
         if (s.val.status === 'expedida') return;
-        const status = attendanceState[s.id] || 'P';
+
+        const enrollCheck = isStudentEnrolledOnDate(s.val, selectedDate);
+        const afterBim = isStudentTransferredInAfterBimester(s.val, selectedBimester);
         const key = `${selectedClassId}_${selectedBimester}_${selectedDate}_${s.id}`;
+
+        // Aluno que NÃO estava matriculado nesta data não pode ter presença nem falta salva!
+        if (!enrollCheck.enrolled || afterBim) {
+          // Se havia algum registro gravado indevidamente no banco, remove-o
+          updates[dc(`chamada/${key}`)] = null;
+          return;
+        }
+
+        const status = attendanceState[s.id] || 'P';
         updates[dc(`chamada/${key}`)] = {
           classId: selectedClassId,
           bimester: selectedBimester,
@@ -259,6 +380,7 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
         message: `Chamada salva com sucesso! (${count} registros)`,
         icon: '✅'
       });
+      loadAttendance();
     } catch (err: any) {
       setModal({
         isOpen: true,
@@ -328,6 +450,68 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
         }
       }
     });
+  };
+
+  const handleCleanImproperRecords = () => {
+    if (improperRecords.length === 0) {
+      return setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Frequência Regularizada',
+        message: 'Nenhum registro indevido encontrado! Todos os alunos com TR. REC / TR. EXP possuem chamadas perfeitamente compatíveis com suas datas oficiais.',
+        icon: '✅'
+      });
+    }
+
+    setShowImproperModal(true);
+  };
+
+  const handleExportDailyPDF = async () => {
+    if (!selectedClassId || !selectedTurma) return;
+    try {
+      setGeneratingReport(true);
+      await generateDailyAttendanceReport(
+        selectedClassId,
+        selectedBimester,
+        selectedTurma,
+        currentTeacher,
+        currentYear
+      );
+    } catch (err: any) {
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Erro ao Gerar Relatório',
+        message: formatFriendlyError(err, 'Não foi possível exportar o Mapa Dia a Dia'),
+        icon: '❌'
+      });
+    } finally {
+      setGeneratingReport(false);
+    }
+  };
+
+  const handleExportDailyExcel = async () => {
+    if (!selectedClassId || !selectedTurma) return;
+    try {
+      setGeneratingReport(true);
+      await generateDailyAttendanceReportXLSX(
+        selectedClassId,
+        selectedBimester,
+        selectedTurma,
+        currentYear,
+        currentTeacher
+      );
+    } catch (err: any) {
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Erro ao Gerar Planilha',
+        message: formatFriendlyError(err, 'Não foi possível exportar a planilha'),
+        icon: '❌'
+      });
+    } finally {
+      setGeneratingReport(false);
+    }
   };
 
   const handleCheckOrphans = async () => {
@@ -528,6 +712,109 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
         )}
       </div>
 
+      {/* Barra de Localização e Histórico de Chamadas Dia a Dia */}
+      {selectedClassId && (
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-4 sm:p-5 shadow-xs mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 flex-wrap">
+            <div className="flex items-center gap-2">
+              <CalendarDays className="w-5 h-5 text-indigo-600" />
+              <div>
+                <h3 className="text-sm font-bold text-slate-800">
+                  Chamadas Realizadas no {selectedBimester}º Bimestre ({recordedDates.length} {recordedDates.length === 1 ? 'dia' : 'dias'} com chamada)
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Clique em qualquer data para abrir e consultar o diário daquele dia, ou exporte o mapa consolidado
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {improperRecords.length > 0 && (
+                <button
+                  type="button"
+                  id="attendance-clean-improper-btn"
+                  onClick={handleCleanImproperRecords}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-xl border border-rose-300 transition-colors shadow-2xs animate-pulse cursor-pointer"
+                  title="Detectados registros de presença gravados para alunos antes da sua data de matrícula/reingresso ou após saída. Clique para ver a lista detalhada e excluir."
+                >
+                  <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                  <span>Regularizar Presenças TR. REC ({improperRecords.length})</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                id="attendance-export-daily-pdf-btn"
+                disabled={generatingReport || recordedDates.length === 0}
+                onClick={handleExportDailyPDF}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl border border-indigo-200 transition-colors disabled:opacity-50"
+                title="Exportar mapa de frequência diária com todas as colunas de datas em formato paisagem"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Mapa Dia a Dia (PDF)</span>
+              </button>
+
+              <button
+                type="button"
+                id="attendance-export-daily-excel-btn"
+                disabled={generatingReport || recordedDates.length === 0}
+                onClick={handleExportDailyExcel}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-xl border border-emerald-200 transition-colors disabled:opacity-50"
+                title="Exportar planilha Excel com grade diária completa do bimestre"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>Planilha Excel</span>
+              </button>
+            </div>
+          </div>
+
+          {recordedDates.length === 0 ? (
+            <div className="py-4 text-center text-xs text-slate-400">
+              Nenhuma chamada registrada no {selectedBimester}º bimestre para esta turma até o momento.
+            </div>
+          ) : (
+            <div className="pt-3">
+              <span className="text-[11px] font-semibold text-slate-600 block mb-2">
+                Navegar pelas datas registradas (clique para carregar):
+              </span>
+              <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                {recordedDates.map((item) => {
+                  const isSelected = item.date === selectedDate;
+                  const parts = item.date.split('-');
+                  const displayDate = `${parts[2]}/${parts[1]}`;
+
+                  return (
+                    <button
+                      key={item.date}
+                      type="button"
+                      onClick={() => setSelectedDate(item.date)}
+                      className={`shrink-0 px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-all inline-flex items-center gap-1.5 ${
+                        isSelected
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs ring-2 ring-indigo-300'
+                          : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-indigo-50 hover:border-indigo-300'
+                      }`}
+                      title={`${formatDate(item.date)}: ${item.presentCount} presentes, ${item.absentCount} ausentes`}
+                    >
+                      <Calendar className="w-3 h-3" />
+                      <span>{displayDate}</span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                          isSelected
+                            ? 'bg-indigo-700 text-indigo-100'
+                            : 'bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        {item.presentCount}P / {item.absentCount}F
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs overflow-hidden mb-6">
         <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center gap-3 flex-wrap">
@@ -542,14 +829,16 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
                   onClick={() => {
                     const nextState: Record<string, 'P' | 'F'> = {};
                     students.forEach((s) => {
-                      if (s.val.status !== 'expedida') {
+                      const enrollCheck = isStudentEnrolledOnDate(s.val, selectedDate);
+                      const afterBim = isStudentTransferredInAfterBimester(s.val, selectedBimester);
+                      if (s.val.status !== 'expedida' && enrollCheck.enrolled && !afterBim) {
                         nextState[s.id] = 'P';
                       }
                     });
                     setAttendanceState(nextState);
                   }}
                   className="px-2.5 py-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-colors"
-                  title="Marcar todos como Presentes"
+                  title="Marcar todos os alunos matriculados como Presentes"
                 >
                   Todos Presentes (P)
                 </button>
@@ -559,14 +848,16 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
                   onClick={() => {
                     const nextState: Record<string, 'P' | 'F'> = {};
                     students.forEach((s) => {
-                      if (s.val.status !== 'expedida') {
+                      const enrollCheck = isStudentEnrolledOnDate(s.val, selectedDate);
+                      const afterBim = isStudentTransferredInAfterBimester(s.val, selectedBimester);
+                      if (s.val.status !== 'expedida' && enrollCheck.enrolled && !afterBim) {
                         nextState[s.id] = 'F';
                       }
                     });
                     setAttendanceState(nextState);
                   }}
                   className="px-2.5 py-1 text-[11px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 transition-colors"
-                  title="Marcar todos como Ausentes"
+                  title="Marcar todos os alunos matriculados como Ausentes"
                 >
                   Todos Ausentes (A)
                 </button>
@@ -604,13 +895,16 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
             {students.map((item) => {
               const student = item.val;
               const isExpedido = student.status === 'expedida';
+              const enrollCheck = isStudentEnrolledOnDate(student, selectedDate);
+              const afterBim = isStudentTransferredInAfterBimester(student, selectedBimester);
+              const isNotEnrolledOnDate = !enrollCheck.enrolled || afterBim;
               const isPresent = attendanceState[item.id] === 'P';
 
               return (
                 <div
                   key={item.id}
                   className={`flex items-center justify-between px-4 sm:px-6 py-3.5 transition-colors ${
-                    isExpedido ? 'bg-slate-50/50 opacity-60' : 'hover:bg-slate-50/70'
+                    isExpedido || isNotEnrolledOnDate ? 'bg-slate-50/60 opacity-75' : 'hover:bg-slate-50/70'
                   }`}
                 >
                   <div className="flex items-center gap-3 min-w-0 pr-4">
@@ -626,11 +920,13 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
                           <span className="text-[10px] uppercase font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-100 inline-block">
                             Transferência Expedida {student.transferOutDate || student.transferDate ? `(${formatDate(student.transferOutDate || student.transferDate)})` : ''}
                           </span>
-                          {student.transferInDate && (
-                            <span className="text-[10px] uppercase font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-100 inline-block">
-                              Entrada: {formatDate(student.transferInDate)}
-                            </span>
-                          )}
+                        </div>
+                      ) : isNotEnrolledOnDate ? (
+                        <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                          <span className="text-[10px] uppercase font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-md border border-rose-200 inline-flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3 text-rose-600 shrink-0" />
+                            Não Matriculado nesta data ({enrollCheck.reason || `Entrada no ${student.transferInDate ? formatDate(student.transferInDate) : 'bimestre posterior'}`})
+                          </span>
                         </div>
                       ) : student.status === 'recebida' ? (
                         <span className="text-[10px] uppercase font-bold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-100 inline-block mt-0.5">
@@ -646,7 +942,11 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
 
                   <div className="shrink-0 flex items-center">
                     {isExpedido ? (
-                      <span className="text-xs text-slate-400 italic">Não aplicável</span>
+                      <span className="text-xs text-slate-400 italic">Não aplicável (TR. EXP)</span>
+                    ) : isNotEnrolledOnDate ? (
+                      <span className="text-[11px] font-semibold text-slate-400 bg-slate-100 px-3 py-1 rounded-full border border-slate-200 inline-flex items-center gap-1">
+                        Sem Frequência (Fora do Período)
+                      </span>
                     ) : (
                       <button
                         id={`attendance-toggle-${item.id}`}
@@ -692,6 +992,24 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
           </div>
         )}
       </div>
+
+      <ImproperAttendanceModal
+        isOpen={showImproperModal}
+        onClose={() => setShowImproperModal(false)}
+        records={improperRecords}
+        className={
+          selectedTurma
+            ? `${selectedTurma.year}º ANO ${selectedTurma.letter.toUpperCase()} (${selectedTurma.shift})`
+            : 'Turma'
+        }
+        currentYear={currentYear}
+        onRefresh={loadAttendance}
+        onNavigateToDate={(date, bimester) => {
+          if (bimester) setSelectedBimester(bimester);
+          if (date) setSelectedDate(date);
+        }}
+        setModal={setModal}
+      />
     </div>
   );
 };
