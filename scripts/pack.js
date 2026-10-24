@@ -18,7 +18,7 @@ try {
   execSync(`python3 -c "
 import os, zipfile
 
-ignore_dirs = {'node_modules', 'dist', 'dist-singlefile', '.git', '.cache'}
+ignore_dirs = {'node_modules', 'dist', 'dist-singlefile', '.git', '.cache', '.aistudio', 'aistudio'}
 ignore_files = {'diario-de-classe.zip', 'diario-classe.zip', 'diario-de-classe-projeto.zip', 'projeto-diario-classe.tar.gz', 'app-unico.html', 'diario-de-classe.html'}
 
 def make_zip(out_path):

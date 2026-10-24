@@ -44,10 +44,14 @@ import { SubjectsScreen } from './components/SubjectsScreen';
 import { LibraryScreen } from './components/LibraryScreen';
 import { BackupScreen } from './components/BackupScreen';
 import { PresentationScreen } from './components/PresentationScreen';
+import { PendingApprovalScreen } from './components/PendingApprovalScreen';
+import { checkUserAccessStatus } from './lib/firebase';
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [accessChecking, setAccessChecking] = useState(false);
+  const [isAccessAuthorized, setIsAccessAuthorized] = useState<boolean | null>(null);
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('dashboard');
   const [currentYear, setCurrentYear] = useState<string>(
     () => localStorage.getItem('dc_current_year') || new Date().getFullYear().toString()
@@ -65,6 +69,18 @@ export function App() {
     message: ''
   });
 
+  const verifyUserAccess = async (uid: string) => {
+    setAccessChecking(true);
+    try {
+      const status = await checkUserAccessStatus(uid);
+      setIsAccessAuthorized(status.isAuthorized);
+    } catch {
+      setIsAccessAuthorized(false);
+    } finally {
+      setAccessChecking(false);
+    }
+  };
+
   React.useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
@@ -72,7 +88,12 @@ export function App() {
       if (currentUser?.displayName && !teacherName) {
         setTeacherName(currentUser.displayName);
       }
-      setAuthLoading(false);
+      if (currentUser?.uid) {
+        verifyUserAccess(currentUser.uid).finally(() => setAuthLoading(false));
+      } else {
+        setIsAccessAuthorized(null);
+        setAuthLoading(false);
+      }
     });
 
     return () => unsubscribe();
@@ -93,6 +114,7 @@ export function App() {
       await signOut(auth);
       setUser(null);
       setCurrentAuthUid(null);
+      setIsAccessAuthorized(null);
       setCurrentScreen('dashboard');
     } catch (err: any) {
       setModal({
@@ -112,12 +134,12 @@ export function App() {
     return 'Professor(a)';
   };
 
-  if (authLoading) {
+  if (authLoading || (user && accessChecking && isAccessAuthorized === null)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-900 text-white font-medium">
         <div className="text-center space-y-3">
           <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-          <p className="text-sm text-slate-400">Carregando Diário de Classe...</p>
+          <p className="text-sm text-slate-400">Verificando permissões e dados do Diário...</p>
         </div>
       </div>
     );
@@ -139,6 +161,21 @@ export function App() {
   }
 
   const effectiveTeacher = getEffectiveTeacherName();
+
+  // Se o usuário está autenticado mas não possui permissão de admin, bibliotecário ou turmas atribuídas
+  if (isAccessAuthorized === false) {
+    return (
+      <>
+        <PendingApprovalScreen
+          userEmail={user.email}
+          teacherName={effectiveTeacher}
+          onRefresh={() => verifyUserAccess(user.uid)}
+          onLogout={handleLogout}
+        />
+        <Modal config={modal} onClose={() => setModal((prev) => ({ ...prev, isOpen: false }))} />
+      </>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-100/70 text-slate-800 antialiased font-sans">
@@ -217,6 +254,7 @@ export function App() {
             currentTeacher={effectiveTeacher}
             currentYear={currentYear}
             setModal={setModal}
+            onNavigate={setCurrentScreen}
           />
         )}
 

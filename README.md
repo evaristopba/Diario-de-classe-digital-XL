@@ -28,7 +28,13 @@ Sistema completo para professores, bibliotecários e administradores escolares g
   - **Remanejamento de Obras**: transferência documentada de exemplares entre bibliotecas de diferentes escolas da rede com histórico e motivo.
   - **Histórico & Auditoria**: rastreabilidade completa de leituras concluídas e movimentações físicas entre unidades.
   - **Exportações Gerenciais**: inventários e relatórios em Excel (.xlsx) e comprovantes de empréstimo formatados para impressão em PDF.
-- **Ocorrências e Eventos**: Registro pedagógico e comportamental com tipificação personalizável e histórico por estudante.
+- **Ocorrências e Eventos Pedagógicos (Individual e em Lote)**:
+  - **Documentação Detalhada**: Consulte o guia completo em [`MANUAL_OCORRENCIAS.md`](./MANUAL_OCORRENCIAS.md).
+  - **Lançamento Ágil em Lote**: seleção rápida de múltiplos estudantes com botões de ação imediata (`Todos`, `Nenhum` e `Inverter`), busca instantânea por nome ou número com marcação de filtrados e chips visuais com remoção rápida (`×`).
+  - **Aplicação Pedagógica Coletiva**: ideal tanto para ocorrências positivas (ex.: *alunos que terminaram a atividade*, selecionando todos e desmarcando as exceções) quanto negativas/específicas (ex.: *alunos sem material*).
+  - **Integração Estrita com a Chamada (Controle de Frequência)**: bloqueio pedagógico de ocorrências caso a chamada da data ainda não tenha sido realizada; o botão `Todos Presentes` seleciona exclusivamente quem estava em sala, evitando apontamentos acidentais em massa, mas permitindo inclusão pontual e consciente de estudantes ausentes mediante confirmação (ex.: falta em prova, atestado ou recado da família), com carimbo visual `⚠️ Ausente na data` no histórico.
+  - **Filtro por Período & Exclusão em Lote no Histórico**: filtro avançado por intervalo de datas (`De` / `Até`) com atalho `Hoje` e ferramenta para selecionar todas as ocorrências filtradas e excluí-las em massa de forma atômica no banco de dados (ideal para correção ágil de lançamentos incorretos ou anomalias).
+  - **Proteção a Transferidos**: bloqueio automático de lançamentos para alunos com transferência expedida (`TR. EXP.`), preservando histórico.
 - **Gestão de Escolas, Turmas, Professores & Alunos (com Reingresso Automatizado & Auditoria)**:
   - Controle de acesso segregado entre Administrador, Professor e Bibliotecário, com integridade referencial estrita.
   - Cadastro de estudantes com histórico de transferências (`TR. EXP.` e `TR. REC.`).

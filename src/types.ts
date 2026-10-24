@@ -141,6 +141,8 @@ export interface EventOccurrence {
   description: string;
   teacher: string;
   anoLetivo: string;
+  absentOnDate?: boolean;
+  studentAttendanceStatus?: string;
   createdAt?: number;
   updatedAt?: number;
 }

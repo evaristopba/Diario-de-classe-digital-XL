@@ -7,7 +7,8 @@ import {
   remove,
   rtdb,
   dc,
-  carregarMinhasTurmas
+  carregarMinhasTurmas,
+  getTodayDateString
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
 import {
@@ -53,9 +54,7 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
   const [classes, setClasses] = useState<{ id: string; val: ClassRoom }[]>([]);
   const [selectedClassId, setSelectedClassId] = useState('');
   const [selectedBimester, setSelectedBimester] = useState('1');
-  const [selectedDate, setSelectedDate] = useState(
-    new Date().toISOString().split('T')[0]
-  );
+  const [selectedDate, setSelectedDate] = useState<string>(() => getTodayDateString());
 
   const [students, setStudents] = useState<{ id: string; val: Student }[]>([]);
   const [attendanceState, setAttendanceState] = useState<Record<string, 'P' | 'F'>>({});
@@ -308,7 +307,7 @@ export const AttendanceScreen: React.FC<AttendanceScreenProps> = ({
 
       setAttendanceState(newStates);
 
-      const isToday = selectedDate === new Date().toISOString().split('T')[0];
+      const isToday = selectedDate === getTodayDateString();
       if (isToday) {
         checkBirthdays(selectedClassId, list);
       }

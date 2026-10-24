@@ -12,7 +12,8 @@ import {
   equalTo,
   limitToLast,
   DatabaseReference,
-  DataSnapshot
+  DataSnapshot,
+  onValue
 } from 'firebase/database';
 import {
   getAuth,
@@ -42,6 +43,49 @@ export const auth = getAuth(app);
 export const rtdb = getDatabase(app);
 
 let currentAuthUid: string | null = null;
+
+// Sincronização de data/hora oficial do servidor Firebase Realtime Database
+let serverTimeOffsetMs = 0;
+try {
+  const offsetRef = ref(rtdb, '.info/serverTimeOffset');
+  onValue(offsetRef, (snap) => {
+    const val = snap.val();
+    if (typeof val === 'number') {
+      serverTimeOffsetMs = val;
+    }
+  });
+} catch {
+  serverTimeOffsetMs = 0;
+}
+
+/**
+ * Retorna o timestamp em milissegundos ajustado pelo offset oficial do servidor Firebase.
+ */
+export function getServerTimestamp(): number {
+  return Date.now() + serverTimeOffsetMs;
+}
+
+/**
+ * Retorna o objeto Date sincronizado com o relógio do servidor Firebase.
+ */
+export function getServerDate(): Date {
+  return new Date(getServerTimestamp());
+}
+
+/**
+ * Retorna a data atual no formato YYYY-MM-DD garantindo o alinhamento com a data
+ * do dispositivo sincronizada ao servidor Firebase, prevenindo o salto involuntário
+ * de dia ocasionado pela conversão UTC pura (ex.: noites após 21h no fuso de Brasília).
+ */
+export function getTodayDateString(customDate?: Date | number): string {
+  const d = customDate
+    ? (typeof customDate === 'number' ? new Date(customDate) : customDate)
+    : getServerDate();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
 
 /**
  * Remove recursivamente todas as propriedades com valor `undefined` de um objeto,
@@ -196,6 +240,134 @@ export function getDbRef(path: string): DatabaseReference {
   return ref(rtdb, resolvedPath);
 }
 
+export interface UserAccessStatus {
+  isAuthorized: boolean;
+  isAdmin: boolean;
+  isLibrarian: boolean;
+  hasAssignments: boolean;
+  reason?: 'no_assignments' | 'ok';
+}
+
+/**
+ * Verifica o status de autorização do usuário imediatamente após o login.
+ * Lê apenas os nós permitidos pelas regras de segurança:
+ * 1. admins/{uid} e admins (para bootstrap)
+ * 2. bibliotecarios/{uid}
+ * 3. atribuicoes/{uid}
+ * Se não tiver papel de admin, bibliotecário ou turmas atribuídas, o app entra no estado gracioso de espera.
+ */
+export async function checkUserAccessStatus(uid: string): Promise<UserAccessStatus> {
+  if (!uid) {
+    return { isAuthorized: false, isAdmin: false, isLibrarian: false, hasAssignments: false, reason: 'no_assignments' };
+  }
+
+  // 1. Verificar se é Administrador
+  try {
+    const adminSnap = await get(ref(rtdb, `diario-classe/admins/${uid}`));
+    if (adminSnap.val() === true) {
+      return { isAuthorized: true, isAdmin: true, isLibrarian: false, hasAssignments: true, reason: 'ok' };
+    }
+  } catch {
+    // ignore
+  }
+
+  // 1.1 Se a base não possuir nenhum admin configurado (bootstrap inicial)
+  try {
+    const allAdminsSnap = await get(ref(rtdb, 'diario-classe/admins'));
+    if (!allAdminsSnap.exists() || allAdminsSnap.val() === null) {
+      return { isAuthorized: true, isAdmin: true, isLibrarian: false, hasAssignments: true, reason: 'ok' };
+    }
+  } catch {
+    // ignore
+  }
+
+  // 2. Verificar se é Bibliotecário
+  try {
+    const bibSnap = await get(ref(rtdb, `diario-classe/bibliotecarios/${uid}`));
+    if (bibSnap.val() === true) {
+      return { isAuthorized: true, isAdmin: false, isLibrarian: true, hasAssignments: true, reason: 'ok' };
+    }
+    const profSnap = await get(ref(rtdb, `diario-classe/professores/${uid}`));
+    if (profSnap.val()?.canManageLibrary === true) {
+      return { isAuthorized: true, isAdmin: false, isLibrarian: true, hasAssignments: true, reason: 'ok' };
+    }
+  } catch {
+    // ignore
+  }
+
+  // 3. Ler atribuicoes/{uid} (permitido a qualquer autenticado)
+  try {
+    const atribSnap = await get(ref(rtdb, `diario-classe/atribuicoes/${uid}`));
+    if (atribSnap.exists()) {
+      const val = atribSnap.val() || {};
+      const hasTrue = Object.values(val).some((v) => v === true);
+      if (hasTrue) {
+        return { isAuthorized: true, isAdmin: false, isLibrarian: false, hasAssignments: true, reason: 'ok' };
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 4. Checar se o professor possui registro no corpo docente com atribuição sob alias
+  try {
+    const profsSnap = await get(ref(rtdb, 'diario-classe/professores'));
+    if (profsSnap.exists()) {
+      const profsVal = profsSnap.val() || {};
+      const currentUser = auth.currentUser;
+      const currentEmail = (currentUser?.email || '').toLowerCase().trim();
+      const currentName = (currentUser?.displayName || localStorage.getItem('dc_teacher_name') || '').toLowerCase().trim();
+
+      for (const key of Object.keys(profsVal)) {
+        const p = profsVal[key] || {};
+        const pEmail = (p.email || '').toLowerCase().trim();
+        const pName = (p.name || '').toLowerCase().trim();
+        const pAuthUid = p.authUid;
+
+        if (
+          key === uid ||
+          pAuthUid === uid ||
+          (currentEmail && pEmail && pEmail === currentEmail) ||
+          (currentName && pName && pName === currentName)
+        ) {
+          if (p.canManageLibrary === true) {
+            return { isAuthorized: true, isAdmin: false, isLibrarian: true, hasAssignments: true, reason: 'ok' };
+          }
+          if (key !== uid) {
+            try {
+              const aliasAtribSnap = await get(ref(rtdb, `diario-classe/atribuicoes/${key}`));
+              if (aliasAtribSnap.exists()) {
+                const val = aliasAtribSnap.val() || {};
+                const hasTrue = Object.values(val).some((v) => v === true);
+                if (hasTrue) {
+                  // Sincroniza silenciosamente a atribuição para o auth.uid
+                  try {
+                    const syncUpdates: Record<string, any> = {};
+                    Object.keys(val).forEach((cid) => {
+                      if (val[cid]) syncUpdates[`diario-classe/atribuicoes/${uid}/${cid}`] = true;
+                    });
+                    if (!p.authUid) syncUpdates[`diario-classe/professores/${key}/authUid`] = uid;
+                    await update(ref(rtdb), syncUpdates);
+                  } catch {
+                    // ignore
+                  }
+                  return { isAuthorized: true, isAdmin: false, isLibrarian: false, hasAssignments: true, reason: 'ok' };
+                }
+              }
+            } catch {
+              // ignore
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return { isAuthorized: false, isAdmin: false, isLibrarian: false, hasAssignments: false, reason: 'no_assignments' };
+}
+
 // Helpers for Classes & Students
 export async function carregarMinhasTurmas(): Promise<{ id: string; val: ClassRoom }[]> {
   const uid = getCurrentAuthUid();
@@ -205,19 +377,16 @@ export async function carregarMinhasTurmas(): Promise<{ id: string; val: ClassRo
   const currentEmail = currentUser?.email?.toLowerCase().trim();
   const currentDisplayName = (currentUser?.displayName || localStorage.getItem('dc_teacher_name') || '').toLowerCase().trim();
 
-  // 1. Carrega todas as turmas cadastradas na base compartilhada
-  const allTurmasSnap = await get(ref(rtdb, 'diario-classe/turmas'));
-  if (!allTurmasSnap.exists()) {
-    // Fallback para base pessoal antiga caso exista
-    try {
-      const personalSnap = await get(ref(rtdb, dc('turmas')));
-      if (personalSnap.exists()) {
-        const val = personalSnap.val();
-        return Object.keys(val).map((id) => ({ id, val: val[id] as ClassRoom }));
-      }
-    } catch {
-      // ignore
-    }
+  // 1. Carrega todas as turmas cadastradas na base compartilhada de forma resiliente
+  let allTurmasSnap;
+  try {
+    allTurmasSnap = await get(ref(rtdb, 'diario-classe/turmas'));
+  } catch (err: any) {
+    // Se não tiver permissão de leitura, trata como sem turmas disponíveis graciosamente
+    return [];
+  }
+
+  if (!allTurmasSnap || !allTurmasSnap.exists()) {
     return [];
   }
 
@@ -225,17 +394,32 @@ export async function carregarMinhasTurmas(): Promise<{ id: string; val: ClassRo
   const allTurmasList = Object.keys(allTurmasVal).map((id) => ({ id, val: allTurmasVal[id] }));
 
   // 2. Se for admin, carrega todas as turmas
-  const adminSnap = await get(ref(rtdb, `diario-classe/admins/${uid}`));
-  const allAdminsSnap = await get(ref(rtdb, 'diario-classe/admins'));
-  const hasAdminsConfigured = allAdminsSnap.exists() && Object.keys(allAdminsSnap.val() || {}).length > 0;
+  try {
+    const adminSnap = await get(ref(rtdb, `diario-classe/admins/${uid}`));
+    if (adminSnap.val() === true) {
+      return allTurmasList;
+    }
+  } catch {
+    // ignore
+  }
 
-  if (adminSnap.val() === true) {
-    return allTurmasList;
+  let hasAdminsConfigured = true;
+  try {
+    const allAdminsSnap = await get(ref(rtdb, 'diario-classe/admins'));
+    hasAdminsConfigured = allAdminsSnap.exists() && Object.keys(allAdminsSnap.val() || {}).length > 0;
+  } catch {
+    // ignore
   }
 
   // 3. Mapear todas as chaves associadas a este usuário/docente
-  const profsSnap = await get(ref(rtdb, 'diario-classe/professores'));
-  const profsVal = profsSnap.val() || {};
+  let profsVal: Record<string, any> = {};
+  try {
+    const profsSnap = await get(ref(rtdb, 'diario-classe/professores'));
+    profsVal = profsSnap.val() || {};
+  } catch {
+    // ignore
+  }
+
   const relevantTeacherKeys = new Set<string>([uid]);
   let matchedTeacherRecordKey: string | null = null;
 
@@ -258,8 +442,21 @@ export async function carregarMinhasTurmas(): Promise<{ id: string; val: ClassRo
   });
 
   // 4. Carregar mapa de atribuições
-  const atribsSnap = await get(ref(rtdb, 'diario-classe/atribuicoes'));
-  const atribsVal = (atribsSnap.val() || {}) as Record<string, Record<string, boolean>>;
+  let atribsVal: Record<string, Record<string, boolean>> = {};
+  try {
+    const atribsSnap = await get(ref(rtdb, 'diario-classe/atribuicoes'));
+    atribsVal = (atribsSnap.val() || {}) as Record<string, Record<string, boolean>>;
+  } catch {
+    // Se a leitura ampla não for permitida, tenta a própria chave atribuicoes/{uid}
+    try {
+      const selfAtribSnap = await get(ref(rtdb, `diario-classe/atribuicoes/${uid}`));
+      if (selfAtribSnap.exists()) {
+        atribsVal[uid] = selfAtribSnap.val() || {};
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   const assignedClassIds = new Set<string>();
 
@@ -285,7 +482,6 @@ export async function carregarMinhasTurmas(): Promise<{ id: string; val: ClassRo
 
   // Se encontrou turmas atribuídas, retorna filtrado
   if (assignedClassIds.size > 0) {
-    // Sincroniza silenciosamente a atribuição no Firebase para o uid direto caso necessário
     if (!atribsVal[uid] || Object.keys(atribsVal[uid]).length === 0) {
       try {
         const syncUpdates: Record<string, any> = {};
@@ -1212,15 +1408,19 @@ export async function excluirEmprestimo(loanId: string): Promise<void> {
  * Carrega a lista de escolas cadastradas.
  */
 export async function carregarEscolas(): Promise<School[]> {
-  const snap = await get(ref(rtdb, 'diario-classe/escolas'));
-  if (!snap.exists()) return [];
-  const val = snap.val() || {};
-  const list: School[] = [];
-  Object.keys(val).forEach((k) => {
-    list.push({ id: k, ...val[k] });
-  });
-  list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  return list;
+  try {
+    const snap = await get(ref(rtdb, 'diario-classe/escolas'));
+    if (!snap || !snap.exists()) return [];
+    const val = snap.val() || {};
+    const list: School[] = [];
+    Object.keys(val).forEach((k) => {
+      list.push({ id: k, ...val[k] });
+    });
+    list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    return list;
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -2009,13 +2209,15 @@ export async function transporNotasParaReingresso(
     const subjectsSet = new Set<string>();
     const updates: Record<string, any> = {};
 
-    // 1. Busca todas as notas nos nós dos usuários (professores/admins)
-    const usersSnap = await get(ref(rtdb, 'diario-classe/dados'));
-    if (usersSnap.exists()) {
-      const allUsers = usersSnap.val() || {};
-      Object.keys(allUsers).forEach((uId) => {
-        const uData = allUsers[uId] || {};
-        const notas = uData.notas || {};
+    // 1. Se for administrador, busca todas as notas nos nós dos usuários (professores/admins)
+    if (isAdmin) {
+      try {
+        const usersSnap = await get(ref(rtdb, 'diario-classe/dados'));
+        if (usersSnap.exists()) {
+          const allUsers = usersSnap.val() || {};
+          Object.keys(allUsers).forEach((uId) => {
+            const uData = allUsers[uId] || {};
+            const notas = uData.notas || {};
         Object.keys(notas).forEach((k) => {
           const g = notas[k];
           if (
@@ -2064,6 +2266,10 @@ export async function transporNotasParaReingresso(
         });
       });
     }
+  } catch (e) {
+    console.warn('Busca global de notas ignorada (sem permissão de admin):', e);
+  }
+}
 
     // 2. Se o usuário atual possui notas em seu próprio nó dc('notas')
     const myNotasSnap = await get(ref(rtdb, dc('notas')));

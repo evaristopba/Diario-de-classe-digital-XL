@@ -8,7 +8,8 @@ import {
   remove,
   rtdb,
   dc,
-  carregarMinhasTurmas
+  carregarMinhasTurmas,
+  getTodayDateString
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
 import { formatDate } from '../lib/reports';
@@ -45,9 +46,7 @@ export const LessonPlanScreen: React.FC<LessonPlanScreenProps> = ({
 
   const [selectedClassId, setSelectedClassId] = useState('');
   const [selectedBimester, setSelectedBimester] = useState('1');
-  const [selectedDate, setSelectedDate] = useState(
-    new Date().toISOString().split('T')[0]
-  );
+  const [selectedDate, setSelectedDate] = useState<string>(() => getTodayDateString());
   const [categoryId, setCategoryId] = useState('');
   const [selectedBnccIds, setSelectedBnccIds] = useState<string[]>([]);
   const [planned, setPlanned] = useState('');
