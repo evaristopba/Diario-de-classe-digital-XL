@@ -484,9 +484,9 @@ export const BNCCScreen: React.FC<BNCCScreenProps> = ({ setModal }) => {
     setModal({
       isOpen: true,
       type: 'confirm',
-      title: 'Popular Habilidades BNCC na Base',
+      title: 'Sincronizar Catálogo Oficial da BNCC',
       message:
-        'Deseja carregar o catálogo normativo oficial da BNCC (incluindo as habilidades em bloco EF15, EF12, EF35 e habilidades fundamentais de todas as disciplinas) diretamente no banco de dados Firebase? Habilidades já existentes serão enriquecidas sem apagar nenhum registro.',
+        'Deseja sincronizar o catálogo oficial da BNCC (incluindo EF15, EF12, EF35 e as habilidades oficiais de todas as disciplinas) com o banco de dados Firebase?\n\n🛡️ Segurança de Produção:\n• As chaves identificadoras (IDs) existentes são 100% mantidas, preservando todos os Planos de Aula vinculados.\n• Nenhuma habilidade é excluída.\n• Textos divergentes serão atualizados para a redação oficial exata do MEC.',
       icon: '🌱',
       onConfirm: async () => {
         try {
@@ -495,8 +495,8 @@ export const BNCCScreen: React.FC<BNCCScreenProps> = ({ setModal }) => {
           setModal({
             isOpen: true,
             type: 'alert',
-            title: 'Base BNCC Populada!',
-            message: `Operação concluída com sucesso no Firebase!\n• Inseridas: ${result.inserted}\n• Atualizadas com blocos: ${result.updated}\n• Já sincronizadas: ${result.unchanged}`,
+            title: 'Base BNCC Sincronizada com Sucesso!',
+            message: `Sincronização oficial concluída no Firebase sem perda de dados!\n• Novas inseridas: ${result.inserted}\n• Atualizadas (blocos e redação oficial): ${result.updated}\n• Já sincronizadas: ${result.unchanged}`,
             icon: '✅'
           });
           loadBNCC();

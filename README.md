@@ -13,11 +13,12 @@ Sistema completo para professores, bibliotecários e administradores escolares g
 - **Notas, Avaliações e Boletins Escolares (Bimestral e Anual Consolidado)**:
   - **Documentação Detalhada**: Consulte o guia completo em [`MANUAL_BOLETIM.md`](./MANUAL_BOLETIM.md) (inclui seção sobre Atas de Frequência e Ranking de Faltas).
   - **Boletim por Bimestre**: Emissão de notas individuais por estudante no 1º, 2º, 3º ou 4º bimestre em visão geral multi-disciplinar (formato paisagem) ou por componente específico (formato retrato).
+  - **Ordem Curricular Personalizável (1, 2, 3...)**: Definição da ordem numérica exata de apresentação das matérias nos boletins do Ensino Fundamental I com atalho para a sequência padrão da BNCC (1º Língua Portuguesa a 10º Computação).
   - **Customizações Oficiais**: Opções de exibição de R.A. do aluno e anexo detalhado das habilidades e conteúdos da BNCC trabalhados no ciclo.
   - **Boletim Anual Consolidado**: Compilação automática dos 4 bimestres, cálculo da média anual e tratamento de estudantes transferidos (`TR. EXP.` / `TR. REC.`).
   - **Ficha Individual do Aluno**: Visão 360º com notas, faltas, ocorrências e leituras da biblioteca em documento único.
   - **Formatos Duplos**: Exportação com 1 clique para PDF diagramado para impressão/assinatura ou planilhas Excel (.xlsx) prontas para análise da secretaria escolar.
-- **Planos de Aula & BNCC**: Criação e acompanhamento de planos de aula integrados com habilidades da Base Nacional Comum Curricular (BNCC).
+- **Planos de Aula & BNCC**: Criação e acompanhamento de planos de aula integrados com as 616 habilidades da Base Nacional Comum Curricular (BNCC e BNCC Computação), com sincronização atômica no Firebase que preserva as chaves existentes (IDs) e todos os planos de aula históricos.
 - **Biblioteca Escolar & Cantinho da Leitura (Acervo Integrado & Descentralizado)**:
   - **Documentação Detalhada**: Consulte o guia completo em [`MANUAL_BIBLIOTECA.md`](./MANUAL_BIBLIOTECA.md).
   - **Cadastro Rápido com Leitura Visual (IA Gemini Vision)**: fotografe a capa frontal e a contracapa da obra e a IA extrai automaticamente título, autor(a), ilustrador, editora, ano, gênero, sinopse e código ISBN, com limpeza automática de dados residuais entre leituras. O ISBN é validado pelo dígito verificador, cruzado com o código de barras lido no aparelho e conferido na CBL/Google Books; qualquer dúvida aparece como aviso na tela.

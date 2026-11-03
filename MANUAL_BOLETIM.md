@@ -51,21 +51,25 @@ O **Boletim por Bimestre** apresenta a radiografia detalhada do rendimento dos a
 ### 2.1 Visão Geral Multi-Disciplinar
 Quando o seletor de componente curricular estiver configurado para **"Todas as Disciplinas"**:
 - **Orientação do Documento**: O relatório PDF é configurado automaticamente em formato **Paisagem (Landscape)** para garantir espaçamento ideal entre colunas.
+- **Ordem Curricular Customizável (1, 2, 3...)**:
+  - As disciplinas exibidas nas colunas do boletim seguem estritamente a **ordem numérica cadastrada** em **Disciplinas & Matérias** (`1º`, `2º`, `3º`...).
+  - O sistema disponibiliza o atalho **"Ordem BNCC (Fund. I)"** para reordenar com 1 clique a sequência oficial da Base Nacional Comum Curricular (1º Língua Portuguesa, 2º Arte, 3º Educação Física, 4º Língua Inglesa, 5º Matemática, 6º Ciências, 7º Geografia, 8º História, 9º Ensino Religioso, 10º Computação).
 - **Colunas Oficiais**:
   1. **Nº**: Número de chamada do estudante na turma.
   2. **Aluno**: Nome completo do estudante (com indicativo de transferência, se houver).
   3. **RA** *(opcional)*: Registro do Aluno.
-  4. **Disciplinas da Grade**:
-     - `LP` (Língua Portuguesa)
-     - `MAT` (Matemática)
-     - `CIE` (Ciências)
-     - `HIST` (História)
-     - `GEO` (Geografia)
-     - `ART` (Arte)
-     - `EF` (Educação Física)
-     - `ING` (Inglês)
-     - `ER` (Ensino Religioso)
-     - *(e demais disciplinas ativas da matriz curricular)*
+  4. **Disciplinas da Grade (na ordem numérica cadastrada)**:
+     - `LP` (Língua Portuguesa - 1º)
+     - `ART` (Arte - 2º)
+     - `EF` (Educação Física - 3º)
+     - `ING` (Inglês - 4º)
+     - `MAT` (Matemática - 5º)
+     - `CIE` (Ciências - 6º)
+     - `GEO` (Geografia - 7º)
+     - `HIST` (História - 8º)
+     - `ER` (Ensino Religioso - 9º)
+     - `COMP` (Computação - 10º)
+     - *(e demais disciplinas ativas da matriz curricular na posição definida)*
   5. **Média**: Média aritmética ponderada do aluno no bimestre em relação às disciplinas avaliadas.
 
 ### 2.2 Visão Específica por Componente Curricular

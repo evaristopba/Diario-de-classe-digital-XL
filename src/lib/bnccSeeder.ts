@@ -63,23 +63,23 @@ async function seedBNCCList(
       const existing = existingByCode[cleanCode];
 
       if (existing) {
-        // Habilidade já existe na base: verificar se precisa enriquecer os blocos/anos
+        // Habilidade já existe na base: verificar se precisa enriquecer os blocos/anos ou corrigir descrição divergente
         const existingYears = getSkillApplicableYears(existing.val);
         const needsYearsUpdate =
           seedItem.years.some((y) => !existingYears.includes(y)) ||
           !existing.val.years ||
           !Array.isArray(existing.val.years);
 
-        const needsDescUpdate =
-          (!existing.val.desc && !existing.val.description) ||
-          (existing.val.desc && existing.val.desc.length < 10);
+        const currentDesc = String(existing.val.desc || existing.val.description || '').trim();
+        const officialDesc = seedItem.desc.trim();
+        const needsDescUpdate = currentDesc !== officialDesc;
 
         if (needsYearsUpdate || needsDescUpdate) {
           const mergedYears = Array.from(new Set([...existingYears, ...seedItem.years])).sort();
           updates[`diario-classe/bncc/${existing.id}/years`] = mergedYears;
           updates[`diario-classe/bncc/${existing.id}/year`] = seedItem.year;
           if (needsDescUpdate) {
-            updates[`diario-classe/bncc/${existing.id}/desc`] = seedItem.desc;
+            updates[`diario-classe/bncc/${existing.id}/desc`] = officialDesc;
           }
           result.updated++;
         } else {

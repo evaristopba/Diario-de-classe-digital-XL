@@ -5,11 +5,15 @@ import {
   salvarProfessor,
   excluirProfessor,
   cadastrarContaProfessorAuth,
+  sincronizarOuCriarContaAuth,
+  enviarRedefinicaoSenha,
   verificarIsAdmin,
+  verificarPodeGerenciarBiblioteca,
   salvarConfigExibirApresentacaoAdmin,
   get,
   ref,
-  rtdb
+  rtdb,
+  auth
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
 import { checkTeacherDeleteIntegrity } from '../lib/referentialIntegrity';
@@ -62,6 +66,23 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
   const [isAdmin, setIsAdmin] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // Informações do Usuário e Privilégio em tempo real
+  const [currentUserInfo, setCurrentUserInfo] = useState<{
+    uid: string;
+    email: string;
+    displayName: string;
+    isAdmin: boolean;
+    isLibrarian: boolean;
+    roleLabel: string;
+  }>({
+    uid: '',
+    email: '',
+    displayName: '',
+    isAdmin: false,
+    isLibrarian: false,
+    roleLabel: 'Identificando...'
+  });
+
   const loadSubjectsList = async () => {
     try {
       const snap = await get(ref(rtdb, 'diario-classe/disciplinas'));
@@ -101,7 +122,32 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
   useEffect(() => {
     loadData();
     loadSubjectsList();
-    verificarIsAdmin().then((admin) => setIsAdmin(admin)).catch(() => setIsAdmin(false));
+
+    const fetchSession = async () => {
+      const u = auth.currentUser;
+      const uid = u?.uid || '';
+      const email = u?.email || localStorage.getItem('dc_teacher_email') || 'Não identificado';
+      const displayName = u?.displayName || localStorage.getItem('dc_teacher_name') || (u?.email ? u.email.split('@')[0] : 'Usuário');
+
+      const admin = await verificarIsAdmin(uid);
+      const librarian = await verificarPodeGerenciarBiblioteca(uid);
+
+      setIsAdmin(admin);
+      setCurrentUserInfo({
+        uid,
+        email,
+        displayName,
+        isAdmin: admin,
+        isLibrarian: librarian,
+        roleLabel: admin
+          ? 'Administrador Master'
+          : librarian
+          ? 'Bibliotecário(a)'
+          : 'Professor(a) / Docente'
+      });
+    };
+
+    fetchSession();
   }, []);
 
   const handleOpenForm = (t?: { id: string; val: Teacher }) => {
@@ -109,7 +155,8 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
       setEditingId(t.id);
       setName(t.val.name || '');
       setEmail(t.val.email || '');
-      setPassword('');
+      const rawVal = t.val as any;
+      setPassword(rawVal.password || rawVal.tempPassword || rawVal.senha || '');
       setRegistration(t.val.registration || '');
       setPhone(t.val.phone || '');
       setSubject(t.val.subject || '');
@@ -129,6 +176,28 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
       setExibirApresentacaoAdmin(false);
     }
     setIsFormOpen(true);
+  };
+
+  const handleSendResetEmail = async (teacherEmail: string, teacherName: string) => {
+    if (!teacherEmail) return;
+    try {
+      await enviarRedefinicaoSenha(teacherEmail);
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'E-mail de Redefinição Enviado',
+        message: `Um link seguro para redefinição de senha foi enviado para "${teacherEmail}" (${teacherName}). O usuário poderá definir ou sincronizar sua senha de acesso no Firebase Auth através do link recebido.`,
+        icon: '📧'
+      });
+    } catch (err: any) {
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Erro ao enviar e-mail',
+        message: formatFriendlyError(err),
+        icon: '❌'
+      });
+    }
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -168,20 +237,42 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
 
     setSaving(true);
     try {
-      // 1. Se informou senha, cria ou atualiza conta no Firebase Auth
+      // 1. Se informou senha, cria ou sincroniza conta no Firebase Auth
       let authUid: string | undefined = undefined;
+      let authEmail: string | undefined = undefined;
+      let authSyncSuccess = false;
+      let hadAuthAttempt = false;
+
+      const existingTeacher = editingId ? teachers.find((t) => t.id === editingId) : null;
+      const currentStoredPass = (existingTeacher?.val as any)?.password || (existingTeacher?.val as any)?.tempPassword;
+      const existingAuthEmail = (existingTeacher?.val as any)?.authEmail;
+
       if (password) {
+        hadAuthAttempt = true;
         try {
-          const authResult = await cadastrarContaProfessorAuth(email.trim(), password, name.trim());
-          authUid = authResult.uid;
+          const authResult = await sincronizarOuCriarContaAuth(
+            email.trim(),
+            password,
+            name.trim(),
+            currentStoredPass,
+            existingAuthEmail
+          );
+          if (authResult.uid) {
+            authUid = authResult.uid;
+          }
+          if (authResult.authEmail) {
+            authEmail = authResult.authEmail;
+          }
+          authSyncSuccess = !!authResult.authUpdated;
         } catch (authErr: any) {
           console.warn('Aviso no Firebase Auth:', authErr);
         }
       }
 
-      // 2. Salva os dados do docente no Realtime Database
-      const existingTeacher = editingId ? teachers.find((t) => t.id === editingId) : null;
+      // 2. Salva os dados do docente no Realtime Database garantindo persistência da senha para auto-preenchimento
       const preservedAuthUid = authUid || existingTeacher?.val?.authUid || (editingId?.length === 28 ? editingId : undefined);
+      const effectivePassword = password || currentStoredPass || '';
+      const effectiveAuthEmail = authEmail || existingAuthEmail;
 
       const teacherData: any = {
         name: name.trim(),
@@ -194,7 +285,9 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
         status,
         canManageLibrary: !!canManageLibrary,
         exibirApresentacaoAdmin: !!exibirApresentacaoAdmin,
-        ...(preservedAuthUid ? { authUid: preservedAuthUid } : {})
+        ...(preservedAuthUid ? { authUid: preservedAuthUid } : {}),
+        ...(effectiveAuthEmail ? { authEmail: effectiveAuthEmail } : {}),
+        ...(effectivePassword ? { password: effectivePassword, tempPassword: effectivePassword } : {})
       };
 
       const finalId = editingId || authUid || undefined;
@@ -208,15 +301,20 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
       const isLibrarian = !!canManageLibrary;
       const roleTitle = isLibrarian ? 'Bibliotecário(a)' : 'Professor(a)';
 
+      let successMessage = '';
+      if (!hadAuthAttempt) {
+        successMessage = editingId
+          ? `Dados do(a) ${roleTitle.toLowerCase()} atualizados com sucesso!`
+          : `${roleTitle} cadastrado(a) com sucesso!`;
+      } else {
+        successMessage = `Dados e senha do(a) ${roleTitle.toLowerCase()} salvos com sucesso!\n\n🔑 A nova senha foi gravada e sincronizada para acesso imediato no login.\n\nAgora o(a) ${roleTitle.toLowerCase()} pode fazer login tanto selecionando seu nome pelo preenchimento automático quanto digitando seu e-mail e a nova senha.`;
+      }
+
       setModal({
         isOpen: true,
         type: 'alert',
         title: 'Sucesso',
-        message: editingId
-          ? `Dados do(a) ${roleTitle.toLowerCase()} atualizados com sucesso!`
-          : password
-          ? `${roleTitle} cadastrado(a) com sucesso! Acesso habilitado com a senha definida.`
-          : `${roleTitle} cadastrado(a) com sucesso!`,
+        message: successMessage,
         icon: '✅'
       });
 
@@ -319,6 +417,62 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
         </button>
       </div>
 
+      {/* Banner de Identificação do Operador e Privilégio em Tempo Real */}
+      <div className="mb-6 p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white shadow-lg border border-indigo-900/40">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className={`p-2.5 rounded-xl shrink-0 ${
+              currentUserInfo.isAdmin 
+                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' 
+                : 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'
+            }`}>
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs uppercase tracking-wider font-semibold text-slate-300">
+                  Operador Ativo no Momento:
+                </span>
+                <span className="text-sm font-bold text-white">
+                  {currentUserInfo.displayName}
+                </span>
+                <span className="text-xs text-indigo-300">
+                  ({currentUserInfo.email})
+                </span>
+              </div>
+              <div className="flex items-center gap-2 mt-1 text-xs text-slate-300 flex-wrap">
+                <span>Privilégio de Acesso:</span>
+                <span className={`inline-flex items-center gap-1 font-bold px-2.5 py-0.5 rounded-full text-[11px] ${
+                  currentUserInfo.isAdmin 
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' 
+                    : currentUserInfo.isLibrarian 
+                    ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40' 
+                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                }`}>
+                  {currentUserInfo.isAdmin ? '🛡️' : currentUserInfo.isLibrarian ? '📚' : '👨‍🏫'}
+                  {currentUserInfo.roleLabel}
+                </span>
+                {currentUserInfo.uid && (
+                  <span className="text-[10px] text-slate-400 font-mono" title="Identificador único no Firebase Authentication">
+                    UID: {currentUserInfo.uid}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center bg-slate-800/60 px-3 py-1.5 rounded-xl border border-slate-700/50">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+            </span>
+            <span className="text-xs text-emerald-300 font-medium">
+              Sessão Ativa
+            </span>
+          </div>
+        </div>
+      </div>
+
       {/* Barra de Busca e Estatísticas */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
         <div className="sm:col-span-2 relative">
@@ -400,6 +554,11 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
                         🎬 Pitch Ativo
                       </span>
                     )}
+                    {((t.val as any).password || (t.val as any).tempPassword) && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200" title="Possui senha gravada para auto-preenchimento na tela de login">
+                        🔑 Auto-login
+                      </span>
+                    )}
                     <span
                       className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full ${
                         t.val.status === 'inactive'
@@ -448,6 +607,13 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
 
                 <div className="flex items-center gap-1 ml-auto">
                   <button
+                    onClick={() => handleSendResetEmail(t.val.email, t.val.name)}
+                    className="p-1.5 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition"
+                    title={`Enviar e-mail para redefinir senha no Firebase Auth (${t.val.email})`}
+                  >
+                    <KeyRound className="w-4 h-4" />
+                  </button>
+                  <button
                     onClick={() => handleOpenForm(t)}
                     className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
                     title={t.val.canManageLibrary ? 'Editar bibliotecário(a)' : 'Editar professor'}
@@ -488,6 +654,25 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
               >
                 ✕
               </button>
+            </div>
+
+            {/* Identificação do Operador e Privilégio Ativo no Momento da Manutenção */}
+            <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className={`w-4 h-4 shrink-0 ${currentUserInfo.isAdmin ? 'text-amber-600' : 'text-indigo-600'}`} />
+                <span className="text-slate-600">
+                  Manutenção por: <strong className="text-slate-800">{currentUserInfo.displayName}</strong> <span className="text-slate-500">({currentUserInfo.email})</span>
+                </span>
+              </div>
+              <span className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] shrink-0 self-start sm:self-auto ${
+                currentUserInfo.isAdmin 
+                  ? 'bg-amber-100 text-amber-900 border border-amber-200' 
+                  : currentUserInfo.isLibrarian 
+                  ? 'bg-indigo-100 text-indigo-900 border border-indigo-200' 
+                  : 'bg-emerald-100 text-emerald-900 border border-emerald-200'
+              }`}>
+                {currentUserInfo.isAdmin ? '🛡️ ' : currentUserInfo.isLibrarian ? '📚 ' : '👨‍🏫 '}{currentUserInfo.roleLabel}
+              </span>
             </div>
 
             <form onSubmit={handleSave} className="space-y-4">

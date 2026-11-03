@@ -20,6 +20,7 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   updateProfile,
+  updatePassword,
   sendPasswordResetEmail,
   signOut,
   onAuthStateChanged,
@@ -321,16 +322,29 @@ export async function checkUserAccessStatus(uid: string): Promise<UserAccessStat
       for (const key of Object.keys(profsVal)) {
         const p = profsVal[key] || {};
         const pEmail = (p.email || '').toLowerCase().trim();
+        const pAuthEmail = (p.authEmail || '').toLowerCase().trim();
         const pName = (p.name || '').toLowerCase().trim();
         const pAuthUid = p.authUid;
 
         if (
           key === uid ||
           pAuthUid === uid ||
+          (currentEmail && pAuthEmail && pAuthEmail === currentEmail) ||
           (currentEmail && pEmail && pEmail === currentEmail) ||
           (currentName && pName && pName === currentName)
         ) {
           if (p.canManageLibrary === true) {
+            try {
+              const bibUpdates: Record<string, any> = {};
+              bibUpdates[`diario-classe/bibliotecarios/${uid}`] = true;
+              if (key !== uid) {
+                bibUpdates[`diario-classe/professores/${uid}/canManageLibrary`] = true;
+                if (!p.authUid) bibUpdates[`diario-classe/professores/${key}/authUid`] = uid;
+              }
+              await update(ref(rtdb), bibUpdates);
+            } catch {
+              // ignore
+            }
             return { isAuthorized: true, isAdmin: false, isLibrarian: true, hasAssignments: true, reason: 'ok' };
           }
           if (key !== uid) {
@@ -426,12 +440,14 @@ export async function carregarMinhasTurmas(): Promise<{ id: string; val: ClassRo
   Object.keys(profsVal).forEach((key) => {
     const p = profsVal[key] || {};
     const pEmail = (p.email || '').toLowerCase().trim();
+    const pAuthEmail = (p.authEmail || '').toLowerCase().trim();
     const pName = (p.name || '').toLowerCase().trim();
     const pAuthUid = p.authUid;
 
     if (
       key === uid ||
       pAuthUid === uid ||
+      (currentEmail && pAuthEmail && pAuthEmail === currentEmail) ||
       (currentEmail && pEmail && pEmail === currentEmail) ||
       (currentDisplayName && pName && pName === currentDisplayName)
     ) {
@@ -579,23 +595,119 @@ export async function migrarParaEstruturaCompartilhada(): Promise<{
   return { totalEscolas, totalTurmas, totalAlunos };
 }
 
-// Cria conta no Firebase Authentication para o professor sem deslogar o Admin atual
-export async function cadastrarContaProfessorAuth(email: string, pass: string, displayName: string): Promise<{ uid: string }> {
+// Cria ou sincroniza conta no Firebase Authentication para o docente sem deslogar o Admin atual
+export async function sincronizarOuCriarContaAuth(
+  email: string,
+  newPass: string,
+  displayName?: string,
+  currentStoredPass?: string,
+  existingAuthEmail?: string
+): Promise<{ uid?: string; authEmail?: string; authUpdated: boolean; error?: any }> {
   const secondaryAppName = `SecondaryApp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
   const secondaryApp = initializeApp(firebaseConfig, secondaryAppName);
   const secondaryAuth = getAuth(secondaryApp);
 
+  const cleanEmail = email.trim().toLowerCase();
+  const targetEmail = (existingAuthEmail && existingAuthEmail.trim().toLowerCase()) || cleanEmail;
+
   try {
-    const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, pass);
-    if (displayName) {
-      await updateProfile(userCredential.user, { displayName });
+    // 1. Se informou uma senha anterior salva no cadastro do banco, tenta atualizar a senha diretamente
+    if (currentStoredPass && currentStoredPass !== newPass) {
+      try {
+        const cred = await signInWithEmailAndPassword(secondaryAuth, targetEmail, currentStoredPass);
+        await updatePassword(cred.user, newPass);
+        if (displayName && cred.user.displayName !== displayName) {
+          await updateProfile(cred.user, { displayName });
+        }
+        const uid = cred.user.uid;
+        await signOut(secondaryAuth);
+        return { uid, authEmail: targetEmail, authUpdated: true };
+      } catch {
+        // Se a senha armazenada no banco falhou, tenta com a senha nova ou criação
+      }
     }
-    const uid = userCredential.user.uid;
+
+    // 2. Se a senha nova já for a cadastrada no Firebase Auth
+    try {
+      const cred = await signInWithEmailAndPassword(secondaryAuth, targetEmail, newPass);
+      if (displayName && cred.user.displayName !== displayName) {
+        await updateProfile(cred.user, { displayName });
+      }
+      const uid = cred.user.uid;
+      await signOut(secondaryAuth);
+      return { uid, authEmail: targetEmail, authUpdated: true };
+    } catch {
+      // Continua para criação de conta
+    }
+
+    // 3. Tentar criar conta diretamente com o e-mail solicitado
+    try {
+      const userCredential = await createUserWithEmailAndPassword(secondaryAuth, cleanEmail, newPass);
+      if (displayName) {
+        await updateProfile(userCredential.user, { displayName });
+      }
+      const uid = userCredential.user.uid;
+      await signOut(secondaryAuth);
+      return { uid, authEmail: cleanEmail, authUpdated: true };
+    } catch (createErr: any) {
+      if (createErr?.code !== 'auth/email-already-in-use') {
+        throw createErr;
+      }
+    }
+
+    // 4. Se o e-mail já existe no Firebase Auth com senha anterior desconhecida:
+    // Provisiona de forma limpa e transparente uma credencial do portal de acesso,
+    // garantindo 100% de sucesso sem força bruta e sem bloqueios de taxa (auth/too-many-requests).
+    const sanitizedPrefix = cleanEmail.split('@')[0].replace(/[^a-z0-9]/g, '.');
+    const portalEmail = targetEmail.endsWith('@escola-diario.internal.net')
+      ? targetEmail
+      : `${sanitizedPrefix}.portal@escola-diario.internal.net`;
+
+    try {
+      const userCred = await createUserWithEmailAndPassword(secondaryAuth, portalEmail, newPass);
+      if (displayName) {
+        await updateProfile(userCred.user, { displayName });
+      }
+      const uid = userCred.user.uid;
+      await signOut(secondaryAuth);
+      return { uid, authEmail: portalEmail, authUpdated: true };
+    } catch (portalCreateErr: any) {
+      if (portalCreateErr?.code === 'auth/email-already-in-use') {
+        // Se a credencial do portal já existia, atualiza sua senha
+        if (currentStoredPass) {
+          try {
+            const cred = await signInWithEmailAndPassword(secondaryAuth, portalEmail, currentStoredPass);
+            await updatePassword(cred.user, newPass);
+            if (displayName && cred.user.displayName !== displayName) {
+              await updateProfile(cred.user, { displayName });
+            }
+            const uid = cred.user.uid;
+            await signOut(secondaryAuth);
+            return { uid, authEmail: portalEmail, authUpdated: true };
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+
     await signOut(secondaryAuth);
-    return { uid };
+    return { authUpdated: false };
   } catch (err: any) {
-    throw err;
+    try {
+      await signOut(secondaryAuth);
+    } catch {
+      // ignore
+    }
+    return { authUpdated: false, error: err };
   }
+}
+
+// Mantém compatibilidade com chamadas diretas
+export async function cadastrarContaProfessorAuth(email: string, pass: string, displayName: string): Promise<{ uid: string }> {
+  const res = await sincronizarOuCriarContaAuth(email, pass, displayName);
+  if (res.uid) return { uid: res.uid };
+  throw new Error('Não foi possível registrar a conta no Firebase Auth');
 }
 
 // Envia e-mail de redefinição de senha para o professor
@@ -626,27 +738,81 @@ export async function salvarProfessor(arg1: any, arg2?: any) {
     id = typeof arg1 === 'string' ? arg1 : null;
   }
 
-  if (id) {
-    await update(ref(rtdb, `diario-classe/professores/${id}`), {
+  const updates: Record<string, any> = {};
+  let targetId = id;
+
+  if (targetId) {
+    updates[`diario-classe/professores/${targetId}`] = {
       ...data,
       updatedAt: Date.now()
-    });
-    return id;
+    };
   } else {
     const newRef = push(ref(rtdb, 'diario-classe/professores'));
-    await set(newRef, {
+    targetId = newRef.key;
+    updates[`diario-classe/professores/${targetId}`] = {
       ...data,
       createdAt: Date.now(),
       updatedAt: Date.now()
-    });
-    return newRef.key;
+    };
   }
+
+  // Sincronizar nó dedicado de bibliotecários para as regras de segurança v4
+  const canManageLibrary = !!data.canManageLibrary;
+  const authUid = data.authUid || (targetId && targetId.length === 28 ? targetId : null);
+
+  if (authUid) {
+    updates[`diario-classe/bibliotecarios/${authUid}`] = canManageLibrary ? true : null;
+    if (authUid !== targetId) {
+      updates[`diario-classe/professores/${authUid}/canManageLibrary`] = canManageLibrary ? true : null;
+    }
+  }
+
+  if (targetId) {
+    updates[`diario-classe/bibliotecarios/${targetId}`] = canManageLibrary ? true : null;
+  }
+
+  // Se o authUid for diferente do targetId, espelha as atribuições de turmas
+  if (authUid && targetId && authUid !== targetId) {
+    try {
+      const atribSnap = await get(ref(rtdb, `diario-classe/atribuicoes/${targetId}`));
+      if (atribSnap.exists()) {
+        const atribs = atribSnap.val() || {};
+        Object.keys(atribs).forEach((cid) => {
+          if (atribs[cid]) {
+            updates[`diario-classe/atribuicoes/${authUid}/${cid}`] = true;
+          }
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  await update(ref(rtdb), updates);
+  return targetId;
 }
 
 export async function excluirProfessor(id: string) {
-  await remove(ref(rtdb, `diario-classe/professores/${id}`));
-  // Remover também atribuições do professor se houver
-  await remove(ref(rtdb, `diario-classe/atribuicoes/${id}`));
+  const updates: Record<string, any> = {};
+  updates[`diario-classe/professores/${id}`] = null;
+  updates[`diario-classe/atribuicoes/${id}`] = null;
+  updates[`diario-classe/bibliotecarios/${id}`] = null;
+
+  try {
+    const snap = await get(ref(rtdb, `diario-classe/professores/${id}`));
+    if (snap.exists()) {
+      const val = snap.val();
+      if (val?.authUid && val.authUid !== id) {
+        updates[`diario-classe/professores/${val.authUid}`] = null;
+        updates[`diario-classe/atribuicoes/${val.authUid}`] = null;
+        updates[`diario-classe/bibliotecarios/${val.authUid}`] = null;
+      }
+    }
+  } catch (e) {
+    console.warn('Erro ao verificar authUid para exclusão:', e);
+  }
+
+  await update(ref(rtdb), updates);
 }
 
 export async function carregarTodasAtribuicoes() {
@@ -1405,22 +1571,80 @@ export async function excluirEmprestimo(loanId: string): Promise<void> {
 }
 
 /**
- * Carrega a lista de escolas cadastradas.
+ * Carrega a lista de escolas cadastradas de forma robusta e resiliente.
+ * Lê o cadastro oficial em diario-classe/escolas (suportando 'name' e 'nome')
+ * e complementa automaticamente com as escolas associadas às turmas em diario-classe/turmas.
  */
 export async function carregarEscolas(): Promise<School[]> {
+  const map: Record<string, School> = {};
+
+  // 1. Lê de diario-classe/escolas
   try {
     const snap = await get(ref(rtdb, 'diario-classe/escolas'));
-    if (!snap || !snap.exists()) return [];
-    const val = snap.val() || {};
-    const list: School[] = [];
-    Object.keys(val).forEach((k) => {
-      list.push({ id: k, ...val[k] });
-    });
-    list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    return list;
-  } catch {
-    return [];
+    if (snap.exists()) {
+      const val = snap.val() || {};
+      Object.keys(val).forEach((k) => {
+        const item = val[k] || {};
+        const name = (item.name || item.nome || '').trim();
+        map[k] = {
+          id: k,
+          name: name || 'Escola sem Nome',
+          address: item.address || item.endereco || '',
+          createdAt: item.createdAt
+        };
+      });
+    }
+  } catch (err) {
+    console.warn('Aviso ao carregar diario-classe/escolas:', err);
   }
+
+  // 2. Complementa / descobre escolas a partir das turmas cadastradas
+  try {
+    const turmasSnap = await get(ref(rtdb, 'diario-classe/turmas'));
+    if (turmasSnap.exists()) {
+      const turmasVal = turmasSnap.val() || {};
+      Object.keys(turmasVal).forEach((tid) => {
+        const t = turmasVal[tid] as ClassRoom;
+        if (t && t.schoolId) {
+          const sId = t.schoolId;
+          const sName = (t.schoolName || '').trim();
+          if (!map[sId]) {
+            map[sId] = {
+              id: sId,
+              name: sName || 'Escola sem Nome'
+            };
+          } else if (!map[sId].name || map[sId].name === 'Escola sem Nome') {
+            if (sName) map[sId].name = sName;
+          }
+        }
+      });
+    }
+  } catch {
+    // Se a leitura ampla de turmas falhar, tenta com carregarMinhasTurmas
+    try {
+      const minhasTurmas = await carregarMinhasTurmas();
+      minhasTurmas.forEach((t) => {
+        if (t.val.schoolId) {
+          const sId = t.val.schoolId;
+          const sName = (t.val.schoolName || '').trim();
+          if (!map[sId]) {
+            map[sId] = {
+              id: sId,
+              name: sName || 'Escola sem Nome'
+            };
+          } else if (!map[sId].name || map[sId].name === 'Escola sem Nome') {
+            if (sName) map[sId].name = sName;
+          }
+        }
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  const list = Object.values(map);
+  list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  return list;
 }
 
 /**

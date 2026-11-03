@@ -2,8 +2,8 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
-import { get, ref, rtdb, dc, carregarMinhasTurmas } from './firebase';
-import { ClassRoom, DEFAULT_SUBJECTS } from '../types';
+import { get, ref, rtdb, dc, carregarMinhasTurmas, carregarEscolas, verificarIsAdmin, getCurrentAuthUid } from './firebase';
+import { ClassRoom, DEFAULT_SUBJECTS, SubjectItem, sortSubjectsByOrder } from '../types';
 import { isSkillApplicableToYear, formatSkillYearsLabel } from './bnccHelper';
 import {
   exportToExcelJS,
@@ -132,10 +132,50 @@ export function isStudentEnrolledOnDate(student: any, date: string): { enrolled:
   return { enrolled: true };
 }
 
+let _cachedCurricularSubjects: SubjectItem[] | null = null;
+let _cachedSubjectsTime = 0;
+
+export async function getCurricularSubjects(): Promise<SubjectItem[]> {
+  const now = Date.now();
+  if (_cachedCurricularSubjects && now - _cachedSubjectsTime < 10000) {
+    return _cachedCurricularSubjects;
+  }
+  try {
+    const snap = await get(ref(rtdb, 'diario-classe/disciplinas'));
+    if (snap.exists()) {
+      const val = snap.val() || {};
+      const list: SubjectItem[] = Object.keys(val).map((k) => {
+        const item = val[k];
+        return typeof item === 'object' && item !== null
+          ? {
+              id: item.id || k,
+              name: item.name || k,
+              shortName: item.shortName || item.name || k,
+              category: item.category === 'diversificada' ? 'diversificada' : 'regente',
+              order: typeof item.order === 'number' && !isNaN(item.order) ? item.order : undefined
+            }
+          : { id: k, name: String(item), shortName: String(item), category: 'regente' };
+      });
+      _cachedCurricularSubjects = sortSubjectsByOrder(list);
+      _cachedSubjectsTime = now;
+      return _cachedCurricularSubjects;
+    }
+  } catch (e) {
+    console.warn('Erro ao carregar disciplinas ordenadas no relatório:', e);
+  }
+  _cachedCurricularSubjects = sortSubjectsByOrder([...DEFAULT_SUBJECTS]);
+  _cachedSubjectsTime = now;
+  return _cachedCurricularSubjects;
+}
+
 export function getSubjectName(subId?: string): string {
   if (!subId || subId === 'todas') return 'Todas as Matérias';
-  const found = DEFAULT_SUBJECTS.find((s) => s.id === subId);
-  return found ? found.name : subId;
+  if (_cachedCurricularSubjects) {
+    const found = _cachedCurricularSubjects.find((s) => s.id === subId);
+    if (found) return found.name;
+  }
+  const foundDef = DEFAULT_SUBJECTS.find((s) => s.id === subId);
+  return foundDef ? foundDef.name : subId;
 }
 
 export function addPDFHeader(
@@ -245,12 +285,13 @@ export async function generateBimesterReport(
     .sort((a, b) => (a.number || 0) - (b.number || 0));
 
   if (isAllSubjects) {
-    // Matérias em colunas: Nº, Aluno, (RA opcional), LP, MAT, CIE, HIST, GEO, ART, EF, ING, ER, Média
+    const subjectsList = await getCurricularSubjects();
+    // Matérias em colunas ordenadas (1º, 2º, 3º...): Nº, Aluno, (RA opcional), Matérias..., Média
     const head = [
       'Nº',
       'Aluno',
       ...(showRA ? ['RA'] : []),
-      ...DEFAULT_SUBJECTS.map((s) => s.shortName),
+      ...subjectsList.map((s) => s.shortName || s.name),
       'Média'
     ];
 
@@ -270,7 +311,7 @@ export async function generateBimesterReport(
       let cnt = 0;
       const isTransferredOut = isStudentTransferredOutBeforeBimester(student, bimester);
 
-      DEFAULT_SUBJECTS.forEach((sub) => {
+      subjectsList.forEach((sub) => {
         let nota = '-';
         if (!isTransferredOut) {
           Object.keys(notasVal).forEach((k) => {
@@ -315,7 +356,7 @@ export async function generateBimesterReport(
     }
 
     // Disciplinas
-    DEFAULT_SUBJECTS.forEach(() => {
+    subjectsList.forEach(() => {
       columnStyles[colIdx] = { halign: 'center' };
       colIdx++;
     });
@@ -326,7 +367,7 @@ export async function generateBimesterReport(
     autoTable(doc, {
       startY,
       head: [head],
-      body: tableData.length > 0 ? tableData : [['-', 'Nenhum aluno cadastrado na turma.', ...(showRA ? ['-'] : []), ...DEFAULT_SUBJECTS.map(() => '-'), '-']],
+      body: tableData.length > 0 ? tableData : [['-', 'Nenhum aluno cadastrado na turma.', ...(showRA ? ['-'] : []), ...subjectsList.map(() => '-'), '-']],
       theme: 'grid',
       styles: { fontSize: 8 },
       headStyles: { halign: 'center' },
@@ -483,12 +524,13 @@ export async function generateBimesterReportXLSX(
   const rows: any[] = [];
 
   if (isAllSubjects) {
+    const subjectsList = await getCurricularSubjects();
     columns = [
       { header: 'Nº', key: 'number', width: 8, align: 'center' },
       { header: 'Aluno', key: 'name', width: 38 },
       ...(showRA ? [{ header: 'RA', key: 'ra', width: 16, align: 'center' as const }] : []),
-      ...DEFAULT_SUBJECTS.map((s) => ({
-        header: s.shortName,
+      ...subjectsList.map((s) => ({
+        header: s.shortName || s.name,
         key: s.id,
         width: 10,
         align: 'center' as const,
@@ -513,7 +555,7 @@ export async function generateBimesterReportXLSX(
       let cnt = 0;
       const isTransferredOut = isStudentTransferredOutBeforeBimester(student, bimester);
 
-      DEFAULT_SUBJECTS.forEach((sub) => {
+      subjectsList.forEach((sub) => {
         let notaVal: any = '-';
         if (!isTransferredOut) {
           Object.keys(notasVal).forEach((k) => {
@@ -3679,6 +3721,7 @@ export async function generateIndividualStudentReport(
   const notasVal = notasSnap.val() || {};
   const chamadaVal = chamadaSnap.val() || {};
   const eventosVal = eventosSnap.val() || {};
+  const subjectsList = await getCurricularSubjects();
 
   let targetStudents = Object.keys(studentsVal).map((k) => ({ id: k, ...studentsVal[k] }));
   if (studentId) targetStudents = targetStudents.filter((s) => s.id === studentId);
@@ -3722,7 +3765,7 @@ export async function generateIndividualStudentReport(
     doc.text('2. NOTAS POR DISCIPLINA (1º AO 4º BIMESTRE)', 14, y);
 
     const gradesTable: any[] = [];
-    DEFAULT_SUBJECTS.forEach((sub) => {
+    subjectsList.forEach((sub) => {
       const row: any[] = [sub.name];
       let sum = 0, cnt = 0;
       for (let b = 1; b <= 4; b++) {
@@ -3806,6 +3849,7 @@ export async function generateIndividualStudentReportXLSX(
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
   const notasSnap = await get(ref(rtdb, dc('notas')));
   const chamadaSnap = await get(ref(rtdb, dc('chamada')));
+  const subjectsList = await getCurricularSubjects();
 
   const studentsVal = snap.val() || {};
   const notasVal = notasSnap.val() || {};
@@ -3832,7 +3876,7 @@ export async function generateIndividualStudentReportXLSX(
     const freqPct = totalAtt > 0 ? `${((p / totalAtt) * 100).toFixed(1)}%` : '-';
 
     const gradeRows: any[] = [];
-    DEFAULT_SUBJECTS.forEach((sub) => {
+    subjectsList.forEach((sub) => {
       let sum = 0;
       let cnt = 0;
       const rObj: any = { disciplina: sub.name };
@@ -5165,4 +5209,910 @@ export async function generateConsolidatedReportXLSX(
     emptyMessage: 'Nenhum aluno cadastrado na turma.',
     filename: `consolidado_turma_${turma ? `${turma.year}_${turma.letter}` : ''}.xlsx`
   });
+}
+
+// ---------------------------------------------------------------------------
+// RANKING DE TURMAS MAIS FALTANTES (ABSENTEÍSMO POR ESCOLA / ANO LETIVO)
+// ---------------------------------------------------------------------------
+
+export interface ClassAbsenceStats {
+  rank: number;
+  classId: string;
+  schoolId: string;
+  schoolName: string;
+  year: string;
+  letter: string;
+  shift: string;
+  anoLetivo: string;
+  className: string;
+  studentCount: number;
+  callDatesCount: number;
+  totalPresences: number;
+  totalAbsences: number;
+  totalRecords: number;
+  absenceRate: number; // 0 a 100
+  attendanceRate: number; // 0 a 100
+  avgAbsencesPerStudent: number;
+  status: 'Crítico' | 'Alerta' | 'Atenção' | 'Adequado';
+
+  // Propriedades compatíveis com o modal de visualização em tela
+  activeStudents: number;
+  totalCalls: number;
+  riskLevel: 'Crítico' | 'Alerta' | 'Atenção' | 'Adequado';
+}
+
+export interface ClassesAbsenceRankingSummary {
+  totalTurmas: number;
+  totalAlunos: number;
+  totalPresences: number;
+  totalAbsences: number;
+  totalRecords: number;
+  avgAbsenceRate: number;
+  avgAttendanceRate: number;
+  mostAbsentClass: ClassAbsenceStats | null;
+  leastAbsentClass: ClassAbsenceStats | null;
+  criticalClassesCount: number;
+  alertClassesCount: number;
+
+  // Propriedades compatíveis com o modal de visualização em tela
+  totalClasses: number;
+  totalStudents: number;
+  totalCalls: number;
+  overallAbsenceRate: number;
+  overallAttendanceRate: number;
+  criticalCount: number;
+}
+
+/**
+ * Função utilitária com timeout seguro para requisições Firebase RTDB,
+ * evitando que qualquer consulta lenta ou sem resposta bloqueie a execução.
+ */
+function getWithTimeout<T>(promise: Promise<T>, timeoutMs = 4000): Promise<T | null> {
+  let timer: any;
+  const timeoutPromise = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  return Promise.race([
+    promise.then((res) => {
+      clearTimeout(timer);
+      return res;
+    }),
+    timeoutPromise
+  ]).catch(() => {
+    clearTimeout(timer);
+    return null;
+  });
+}
+
+/**
+ * Calcula os índices de absenteísmo de todas as turmas filtradas por ano letivo e escola,
+ * ordenadas da turma mais faltante para a de menor ausência.
+ * Otimizado para não travar a UI (não faz queries massivas no nó raiz e não bloqueia a thread).
+ */
+export async function calculateClassesAbsenceStats(options: {
+  schoolId?: string;
+  currentYear: string;
+  bimester?: string;
+}): Promise<{
+  stats: ClassAbsenceStats[];
+  summary: ClassesAbsenceRankingSummary;
+}> {
+  const { schoolId, currentYear, bimester } = options;
+
+  // Dá um respiro para a thread do navegador atualizar o estado de loading e spinners
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  // 1. Carrega todas as turmas disponíveis para o usuário
+  const turmasList = await carregarMinhasTurmas();
+  const filteredTurmas = turmasList.filter((t) => {
+    const turma = t.val;
+    if (turma.anoLetivo && String(turma.anoLetivo).trim() !== String(currentYear).trim()) {
+      return false;
+    }
+    if (schoolId && schoolId !== 'todas' && turma.schoolId !== schoolId) {
+      return false;
+    }
+    return true;
+  });
+
+  // 2. Carrega todos os registros de chamada da base com estratégia direcionada e rápida
+  const allChamadas: any[] = [];
+  const currentUid = getCurrentAuthUid();
+
+  // 2.1 Carrega chamadas do usuário atual
+  if (currentUid) {
+    try {
+      const selfSnap = await getWithTimeout(get(ref(rtdb, dc('chamada'))), 3500);
+      if (selfSnap && selfSnap.exists()) {
+        const sVal = selfSnap.val() || {};
+        Object.keys(sVal).forEach((k) => {
+          if (sVal[k]) allChamadas.push(sVal[k]);
+        });
+      }
+    } catch (e) {
+      console.warn('Aviso: erro ao carregar chamadas próprias:', e);
+    }
+  }
+
+  // 2.2 Se for administrador, carrega chamadas dos demais docentes cadastrados
+  try {
+    const isAdmin = await verificarIsAdmin(currentUid);
+    if (isAdmin) {
+      const profsSnap = await getWithTimeout(get(ref(rtdb, 'diario-classe/professores')), 3000);
+      if (profsSnap && profsSnap.exists()) {
+        const profsVal = profsSnap.val() || {};
+        const uidsToQuery = new Set<string>();
+        Object.keys(profsVal).forEach((pk) => {
+          const p = profsVal[pk];
+          if (pk && pk !== currentUid) uidsToQuery.add(pk);
+          if (p?.authUid && p.authUid !== currentUid) uidsToQuery.add(p.authUid);
+        });
+
+        // Limita e executa chamadas pontuais em paralelo
+        const uidList = Array.from(uidsToQuery).slice(0, 30);
+        await Promise.all(
+          uidList.map(async (u) => {
+            try {
+              const snap = await getWithTimeout(get(ref(rtdb, `diario-classe/dados/${u}/chamada`)), 2500);
+              if (snap && snap.exists()) {
+                const val = snap.val() || {};
+                Object.keys(val).forEach((k) => {
+                  if (val[k]) allChamadas.push(val[k]);
+                });
+              }
+            } catch {
+              // Silencioso se um nó específico não puder ser lido
+            }
+          })
+        );
+      }
+    }
+  } catch (err) {
+    console.warn('Aviso: verificação de admin para chamadas compartilhadas falhou:', err);
+  }
+
+  // 3. Processa estatísticas turma a turma de forma rápida (usando turma.alunos em memória)
+  const statsList: ClassAbsenceStats[] = [];
+
+  for (const t of filteredTurmas) {
+    const classId = t.id;
+    const turma = t.val;
+
+    // Alunos matriculados ativos (aproveita dados já em memória)
+    let studentCount = 0;
+    const sVal = turma.alunos || {};
+    const studentKeys = Object.keys(sVal);
+
+    if (studentKeys.length > 0) {
+      studentKeys.forEach((sid) => {
+        const s = sVal[sid];
+        if (s && s.status !== 'expedida' && (!s.anoLetivo || String(s.anoLetivo).trim() === String(currentYear).trim())) {
+          studentCount++;
+        }
+      });
+    }
+
+    // Filtrar chamadas desta turma
+    const classChamadas = allChamadas.filter((c) => {
+      if (!c || c.classId !== classId) return false;
+      if (c.anoLetivo && String(c.anoLetivo).trim() !== String(currentYear).trim()) return false;
+      if (bimester && bimester !== 'todas' && String(c.bimester) !== String(bimester)) return false;
+      return true;
+    });
+
+    const callDatesSet = new Set<string>();
+    let p = 0;
+    let f = 0;
+
+    classChamadas.forEach((c) => {
+      if (c.date) callDatesSet.add(c.date);
+      if (c.status === 'P') p++;
+      else if (c.status === 'F' || c.status === 'A') f++;
+    });
+
+    const totalRecs = p + f;
+    const absenceRate = totalRecs > 0 ? (f / totalRecs) * 100 : 0;
+    const attendanceRate = totalRecs > 0 ? (p / totalRecs) * 100 : 100;
+    const avgAbsencesPerStudent = studentCount > 0 ? f / studentCount : 0;
+
+    let status: 'Crítico' | 'Alerta' | 'Atenção' | 'Adequado' = 'Adequado';
+    if (totalRecs > 0) {
+      if (absenceRate >= 20) status = 'Crítico';
+      else if (absenceRate >= 15) status = 'Alerta';
+      else if (absenceRate >= 10) status = 'Atenção';
+      else status = 'Adequado';
+    }
+
+    const roundedAbsenceRate = parseFloat(absenceRate.toFixed(1));
+    const roundedAttendanceRate = parseFloat(attendanceRate.toFixed(1));
+    const roundedAvgAbsences = parseFloat(avgAbsencesPerStudent.toFixed(1));
+
+    statsList.push({
+      rank: 0,
+      classId,
+      schoolId: turma.schoolId || '',
+      schoolName: turma.schoolName || 'Não informada',
+      year: turma.year || '',
+      letter: turma.letter || '',
+      shift: turma.shift || 'Geral',
+      anoLetivo: turma.anoLetivo || currentYear,
+      className: `${turma.year}º Ano ${turma.letter}`,
+      studentCount,
+      callDatesCount: callDatesSet.size,
+      totalPresences: p,
+      totalAbsences: f,
+      totalRecords: totalRecs,
+      absenceRate: roundedAbsenceRate,
+      attendanceRate: roundedAttendanceRate,
+      avgAbsencesPerStudent: roundedAvgAbsences,
+      status,
+
+      // Aliases para visualização direta na tela
+      activeStudents: studentCount,
+      totalCalls: callDatesSet.size,
+      riskLevel: status
+    });
+  }
+
+  // 4. Ordenação estrita da turma MAIS FALTANTE para a de menor ausência
+  statsList.sort((a, b) => {
+    // 1º critério: taxa de ausência (%) decrescente
+    if (b.absenceRate !== a.absenceRate) return b.absenceRate - a.absenceRate;
+    // 2º critério de desempate: total absoluto de faltas
+    if (b.totalAbsences !== a.totalAbsences) return b.totalAbsences - a.totalAbsences;
+    // 3º critério de desempate: média de faltas por aluno
+    return b.avgAbsencesPerStudent - a.avgAbsencesPerStudent;
+  });
+
+  // Atribui posições de ranking oficiais
+  statsList.forEach((st, idx) => {
+    st.rank = idx + 1;
+  });
+
+  const totalTurmas = statsList.length;
+  const totalAlunos = statsList.reduce((acc, s) => acc + s.studentCount, 0);
+  const totalPresences = statsList.reduce((acc, s) => acc + s.totalPresences, 0);
+  const totalAbsences = statsList.reduce((acc, s) => acc + s.totalAbsences, 0);
+  const totalRecords = totalPresences + totalAbsences;
+  const avgAbsenceRate = totalRecords > 0 ? parseFloat(((totalAbsences / totalRecords) * 100).toFixed(1)) : 0;
+  const avgAttendanceRate = totalRecords > 0 ? parseFloat(((totalPresences / totalRecords) * 100).toFixed(1)) : 100;
+  const criticalClassesCount = statsList.filter((s) => s.status === 'Crítico').length;
+  const alertClassesCount = statsList.filter((s) => s.status === 'Alerta').length;
+
+  const summary: ClassesAbsenceRankingSummary = {
+    totalTurmas,
+    totalAlunos,
+    totalPresences,
+    totalAbsences,
+    totalRecords,
+    avgAbsenceRate,
+    avgAttendanceRate,
+    mostAbsentClass: statsList.length > 0 && statsList[0].totalRecords > 0 ? statsList[0] : null,
+    leastAbsentClass: statsList.length > 0 && statsList[statsList.length - 1].totalRecords > 0 ? statsList[statsList.length - 1] : null,
+    criticalClassesCount,
+    alertClassesCount,
+
+    // Aliases completos para a UI
+    totalClasses: totalTurmas,
+    totalStudents: totalAlunos,
+    totalCalls: totalRecords,
+    overallAbsenceRate: avgAbsenceRate,
+    overallAttendanceRate: avgAttendanceRate,
+    criticalCount: criticalClassesCount
+  };
+
+  return { stats: statsList, summary };
+}
+
+/**
+ * Gera o relatório estatístico oficial em PDF no formato Paisagem das turmas mais faltantes.
+ */
+export async function generateClassesAbsenceRankingReport(options: {
+  schoolId?: string;
+  schoolName?: string;
+  currentYear: string;
+  bimester?: string;
+}): Promise<void> {
+  const { schoolId, schoolName, currentYear, bimester } = options;
+  const { stats, summary } = await calculateClassesAbsenceStats({ schoolId, currentYear, bimester });
+
+  if (stats.length === 0) {
+    throw new Error('Nenhuma turma encontrada para o ano letivo e escola selecionados.');
+  }
+
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageWidth = 297;
+  const pageHeight = 210;
+  const margin = 14;
+
+  const bimesterLabel =
+    !bimester || bimester === 'todas'
+      ? 'Ano Letivo Completo (Todos os Bimestres)'
+      : `${bimester}º Bimestre`;
+  const schoolLabel = schoolId && schoolId !== 'todas' && schoolName ? schoolName : 'Todas as Escolas da Rede';
+  const dataHoje = new Date().toLocaleDateString('pt-BR');
+  const horaHoje = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+  // 1. Faixa Superior (Header)
+  doc.setFillColor(30, 27, 75); // Indigo 950
+  doc.rect(0, 0, pageWidth, 20, 'F');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(14);
+  doc.setTextColor(255, 255, 255);
+  doc.text('RANKING DE ABSENTEÍSMO ESCOLAR - TURMAS MAIS FALTANTES', margin, 12);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8.5);
+  doc.setTextColor(199, 210, 254);
+  doc.text('Estatísticas oficiais ordenadas da turma de maior ausência para a de menor ausência', margin, 17);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor(255, 255, 255);
+  doc.text(`Ano Letivo: ${currentYear}`, pageWidth - margin, 12, { align: 'right' });
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(224, 231, 255);
+  doc.text(`Emitido em: ${dataHoje} às ${horaHoje}`, pageWidth - margin, 17, { align: 'right' });
+
+  // 2. Barra de Metadados
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(226, 232, 240);
+  doc.roundedRect(margin, 24, pageWidth - 2 * margin, 10, 2, 2, 'FD');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.setTextColor(51, 65, 85);
+  doc.text(`Escola:`, margin + 4, 30.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(30, 41, 59);
+  doc.text(schoolLabel, margin + 17, 30.5);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(51, 65, 85);
+  doc.text(`Período de Análise:`, margin + 130, 30.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(30, 41, 59);
+  doc.text(bimesterLabel, margin + 162, 30.5);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(51, 65, 85);
+  doc.text(`Critério:`, margin + 220, 30.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(225, 29, 72);
+  doc.text(`Ordem Decrescente de Faltas (%)`, margin + 233, 30.5);
+
+  // 3. Cards de Resumo Executivo (KPIs)
+  const cardY = 37;
+  const cardH = 16;
+  const cardW = (pageWidth - 2 * margin - 9) / 4;
+
+  // KPI 1: Turmas Analisadas
+  doc.setFillColor(255, 255, 255);
+  doc.setDrawColor(226, 232, 240);
+  doc.roundedRect(margin, cardY, cardW, cardH, 2, 2, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.setTextColor(100, 116, 139);
+  doc.text('TURMAS ANALISADAS', margin + 4, cardY + 5);
+  doc.setFontSize(13);
+  doc.setTextColor(30, 41, 59);
+  doc.text(`${summary.totalTurmas} turmas`, margin + 4, cardY + 12);
+
+  // KPI 2: Turma Mais Faltante (Destaque em Vermelho)
+  const k2X = margin + cardW + 3;
+  doc.setFillColor(254, 242, 242);
+  doc.setDrawColor(254, 205, 211);
+  doc.roundedRect(k2X, cardY, cardW, cardH, 2, 2, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.setTextColor(190, 18, 60);
+  doc.text('MAIOR TAXA DE AUSÊNCIA (1º LUGAR)', k2X + 4, cardY + 5);
+  doc.setFontSize(11);
+  doc.setTextColor(159, 18, 57);
+  const mostText = summary.mostAbsentClass
+    ? `${summary.mostAbsentClass.className} • ${summary.mostAbsentClass.absenceRate}%`
+    : 'Sem registros';
+  doc.text(mostText, k2X + 4, cardY + 12);
+
+  // KPI 3: Taxa Média da Rede / Escola
+  const k3X = margin + 2 * (cardW + 3);
+  doc.setFillColor(255, 255, 255);
+  doc.setDrawColor(226, 232, 240);
+  doc.roundedRect(k3X, cardY, cardW, cardH, 2, 2, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.setTextColor(100, 116, 139);
+  doc.text('TAXA MÉDIA DE AUSÊNCIA', k3X + 4, cardY + 5);
+  doc.setFontSize(13);
+  doc.setTextColor(79, 70, 229);
+  doc.text(`${summary.avgAbsenceRate}% faltas`, k3X + 4, cardY + 12);
+
+  // KPI 4: Total de Faltas Acumuladas
+  const k4X = margin + 3 * (cardW + 3);
+  doc.setFillColor(255, 255, 255);
+  doc.setDrawColor(226, 232, 240);
+  doc.roundedRect(k4X, cardY, cardW, cardH, 2, 2, 'FD');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.setTextColor(100, 116, 139);
+  doc.text('TOTAL DE FALTAS ACUMULADAS', k4X + 4, cardY + 5);
+  doc.setFontSize(13);
+  doc.setTextColor(220, 38, 38);
+  doc.text(`${summary.totalAbsences.toLocaleString('pt-BR')} faltas`, k4X + 4, cardY + 12);
+
+  // 4. Montagem da Tabela com AutoTable
+  const isAllSchools = !schoolId || schoolId === 'todas';
+  const headCols = isAllSchools
+    ? [
+        'Pos.',
+        'Escola',
+        'Turma',
+        'Turno',
+        'Alunos',
+        'Dias',
+        'Presenças (P)',
+        'Faltas (F)',
+        'Total Reg.',
+        '% Ausência',
+        '% Frequência',
+        'Faltas/Aluno',
+        'Classificação'
+      ]
+    : [
+        'Pos.',
+        'Turma',
+        'Turno',
+        'Alunos',
+        'Dias',
+        'Presenças (P)',
+        'Faltas (F)',
+        'Total Reg.',
+        '% Ausência',
+        '% Frequência',
+        'Faltas/Aluno',
+        'Classificação'
+      ];
+
+  const bodyRows = stats.map((st) => {
+    const base = [
+      `${st.rank}º`,
+      ...(isAllSchools ? [st.schoolName] : []),
+      st.className,
+      st.shift,
+      st.studentCount,
+      st.callDatesCount,
+      st.totalPresences.toLocaleString('pt-BR'),
+      st.totalAbsences.toLocaleString('pt-BR'),
+      st.totalRecords.toLocaleString('pt-BR'),
+      `${st.absenceRate.toFixed(1)}%`,
+      `${st.attendanceRate.toFixed(1)}%`,
+      st.avgAbsencesPerStudent.toFixed(1),
+      st.status
+    ];
+    return base;
+  });
+
+  const absColIdx = isAllSchools ? 9 : 8;
+  const statusColIdx = isAllSchools ? 12 : 11;
+
+  autoTable(doc, {
+    startY: 57,
+    head: [headCols],
+    body: bodyRows,
+    theme: 'grid',
+    styles: {
+      fontSize: 7.5,
+      cellPadding: 2,
+      halign: 'center',
+      valign: 'middle'
+    },
+    headStyles: {
+      fillColor: [190, 18, 60], // Rose 700
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+      halign: 'center'
+    },
+    columnStyles: isAllSchools
+      ? {
+          0: { cellWidth: 12, halign: 'center', fontStyle: 'bold' },
+          1: { cellWidth: 54, halign: 'left' },
+          2: { cellWidth: 26, halign: 'left', fontStyle: 'bold' },
+          3: { cellWidth: 18, halign: 'center' },
+          4: { cellWidth: 16, halign: 'center' },
+          5: { cellWidth: 14, halign: 'center' },
+          6: { cellWidth: 22, halign: 'center' },
+          7: { cellWidth: 20, halign: 'center', fontStyle: 'bold' },
+          8: { cellWidth: 20, halign: 'center' },
+          9: { cellWidth: 22, halign: 'center', fontStyle: 'bold' },
+          10: { cellWidth: 22, halign: 'center' },
+          11: { cellWidth: 22, halign: 'center' },
+          12: { cellWidth: 26, halign: 'center', fontStyle: 'bold' }
+        }
+      : {
+          0: { cellWidth: 14, halign: 'center', fontStyle: 'bold' },
+          1: { cellWidth: 40, halign: 'left', fontStyle: 'bold' },
+          2: { cellWidth: 22, halign: 'center' },
+          3: { cellWidth: 18, halign: 'center' },
+          4: { cellWidth: 18, halign: 'center' },
+          5: { cellWidth: 26, halign: 'center' },
+          6: { cellWidth: 26, halign: 'center', fontStyle: 'bold' },
+          7: { cellWidth: 26, halign: 'center' },
+          8: { cellWidth: 26, halign: 'center', fontStyle: 'bold' },
+          9: { cellWidth: 26, halign: 'center' },
+          10: { cellWidth: 26, halign: 'center' },
+          11: { cellWidth: 26, halign: 'center', fontStyle: 'bold' }
+        },
+    alternateRowStyles: {
+      fillColor: [248, 250, 252]
+    },
+    didParseCell: (data) => {
+      if (data.section === 'body') {
+        // Destaque de medalha para as 3 turmas mais faltantes
+        if (data.column.index === 0) {
+          const valStr = String(data.cell.raw);
+          if (valStr === '1º') {
+            data.cell.styles.fillColor = [254, 226, 226];
+            data.cell.styles.textColor = [185, 28, 28];
+          } else if (valStr === '2º') {
+            data.cell.styles.fillColor = [254, 242, 242];
+            data.cell.styles.textColor = [190, 24, 93];
+          } else if (valStr === '3º') {
+            data.cell.styles.fillColor = [255, 247, 237];
+            data.cell.styles.textColor = [194, 65, 12];
+          }
+        }
+
+        // Coluna % Ausência
+        if (data.column.index === absColIdx) {
+          const num = parseFloat(String(data.cell.raw).replace('%', ''));
+          if (!isNaN(num)) {
+            if (num >= 20.0) {
+              data.cell.styles.textColor = [220, 38, 38];
+              data.cell.styles.fillColor = [254, 242, 242];
+            } else if (num >= 15.0) {
+              data.cell.styles.textColor = [217, 119, 6];
+            } else if (num >= 10.0) {
+              data.cell.styles.textColor = [202, 138, 4];
+            } else {
+              data.cell.styles.textColor = [16, 185, 129];
+            }
+          }
+        }
+
+        // Coluna Situação
+        if (data.column.index === statusColIdx) {
+          const statusText = String(data.cell.raw);
+          if (statusText === 'Crítico') {
+            data.cell.styles.fillColor = [254, 226, 226];
+            data.cell.styles.textColor = [153, 27, 27];
+          } else if (statusText === 'Alerta') {
+            data.cell.styles.fillColor = [254, 237, 213];
+            data.cell.styles.textColor = [154, 52, 18];
+          } else if (statusText === 'Atenção') {
+            data.cell.styles.fillColor = [254, 249, 195];
+            data.cell.styles.textColor = [133, 77, 14];
+          } else {
+            data.cell.styles.fillColor = [220, 252, 231];
+            data.cell.styles.textColor = [22, 101, 52];
+          }
+        }
+      }
+    }
+  });
+
+  // 5. Rodapé com Legenda de Criticidade
+  const finalY = (doc as any).lastAutoTable?.finalY || 180;
+  let legY = finalY + 7;
+  if (legY > pageHeight - 18) {
+    doc.addPage();
+    legY = 20;
+  }
+
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(226, 232, 240);
+  doc.roundedRect(margin, legY, pageWidth - 2 * margin, 12, 1.5, 1.5, 'FD');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(30, 41, 59);
+  doc.text('ESCALA DE RISCO E CLASSIFICAÇÃO PEDAGÓGICA DO ABSENTEÍSMO:', margin + 4, legY + 5);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.5);
+  doc.setTextColor(185, 28, 28);
+  doc.text('■ Crítico: Ausência ≥ 20.0% (Risco Iminente de Evasão / Infrequência Grave)', margin + 4, legY + 9);
+
+  doc.setTextColor(194, 65, 12);
+  doc.text('■ Alerta: Ausência de 15.0% a 19.9% (Acompanhamento Ativo)', margin + 98, legY + 9);
+
+  doc.setTextColor(161, 98, 7);
+  doc.text('■ Atenção: Ausência de 10.0% a 14.9% (Aviso Preventivo)', margin + 185, legY + 9);
+
+  doc.setTextColor(21, 128, 61);
+  doc.text('■ Adequado: Ausência < 10.0% (Regular)', margin + 252, legY + 9);
+
+  const cleanSchool = (schoolName || 'todas_escolas').toLowerCase().replace(/[^a-z0-9]/g, '_');
+  doc.save(`ranking_turmas_mais_faltantes_${currentYear}_${cleanSchool}.pdf`);
+}
+
+/**
+ * Gera a planilha Excel (XLSX) formatada com fórmulas dinâmicas das turmas mais faltantes.
+ */
+export async function generateClassesAbsenceRankingReportXLSX(options: {
+  schoolId?: string;
+  schoolName?: string;
+  currentYear: string;
+  bimester?: string;
+}): Promise<void> {
+  const { schoolId, schoolName, currentYear, bimester } = options;
+  const { stats, summary } = await calculateClassesAbsenceStats({ schoolId, currentYear, bimester });
+
+  if (stats.length === 0) {
+    throw new Error('Nenhuma turma encontrada para o ano letivo e escola selecionados.');
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Diário de Classe';
+  workbook.created = new Date();
+
+  const worksheet = workbook.addWorksheet('Turmas Mais Faltantes', {
+    views: [{ showGridLines: true }],
+    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
+  });
+
+  const bimesterLabel =
+    !bimester || bimester === 'todas'
+      ? 'Ano Letivo Completo (Todos os Bimestres)'
+      : `${bimester}º Bimestre`;
+  const schoolLabel = schoolId && schoolId !== 'todas' && schoolName ? schoolName : 'Todas as Escolas da Rede';
+  const dataHoje = new Date().toLocaleDateString('pt-BR');
+  const horaHoje = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+  const numCols = 13;
+
+  // 1. Título Principal
+  worksheet.mergeCells(1, 1, 1, numCols);
+  const tCell = worksheet.getCell(1, 1);
+  tCell.value = 'RANKING DE ABSENTEÍSMO ESCOLAR - TURMAS MAIS FALTANTES';
+  tCell.font = { name: 'Calibri', size: 14, bold: true, color: { argb: 'FFFFFFFF' } };
+  tCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF9F1239' } }; // Rose 800
+  tCell.alignment = { vertical: 'middle', horizontal: 'center' };
+  worksheet.getRow(1).height = 32;
+
+  // 2. Metadados
+  const metaRows = [
+    `Escola / Unidade: ${schoolLabel}`,
+    `Ano Letivo: ${currentYear}   |   Período Analisado: ${bimesterLabel}`,
+    `Critério de Ordenação: Taxa de Ausência / Faltas (%) Decrescente (Da Mais Faltante para a Menos Faltante)`,
+    `Data de Emissão: ${dataHoje} às ${horaHoje}`
+  ];
+
+  metaRows.forEach((str, idx) => {
+    const rowNum = idx + 2;
+    worksheet.mergeCells(rowNum, 1, rowNum, numCols);
+    const c = worksheet.getCell(rowNum, 1);
+    c.value = str;
+    c.font = { name: 'Calibri', size: 10, bold: idx === 1 || idx === 2, color: { argb: 'FF334155' } };
+    c.alignment = { vertical: 'middle', horizontal: 'left' };
+    worksheet.getRow(rowNum).height = 18;
+  });
+
+  worksheet.getRow(6).height = 10;
+
+  // 3. Cabeçalhos de Colunas (Linha 7)
+  const headers = [
+    'Posição',
+    'Escola',
+    'Turma',
+    'Turno',
+    'Qtd Alunos',
+    'Dias de Aula',
+    'Presenças (P)',
+    'Faltas (F)',
+    'Total Registros',
+    '% Ausência (Faltas)',
+    '% Frequência',
+    'Média Faltas/Aluno',
+    'Situação / Grau'
+  ];
+
+  const colWidths = [12, 36, 18, 12, 13, 14, 16, 16, 16, 20, 18, 18, 20];
+
+  const hRow = worksheet.getRow(7);
+  hRow.height = 26;
+  headers.forEach((h, i) => {
+    const cell = hRow.getCell(i + 1);
+    cell.value = h;
+    cell.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FFFFFFFF' } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFBE123C' } }; // Rose 700
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF9F1239' } },
+      bottom: { style: 'medium', color: { argb: 'FF9F1239' } },
+      left: { style: 'thin', color: { argb: 'FF9F1239' } },
+      right: { style: 'thin', color: { argb: 'FF9F1239' } }
+    };
+    worksheet.getColumn(i + 1).width = colWidths[i];
+  });
+
+  // 4. Linhas de Dados com Fórmulas Reais do Excel (Linha 8 em diante)
+  const startRow = 8;
+  stats.forEach((st, idx) => {
+    const r = startRow + idx;
+    const row = worksheet.getRow(r);
+    row.height = 22;
+
+    row.getCell(1).value = `${st.rank}º`;
+    row.getCell(2).value = st.schoolName;
+    row.getCell(3).value = st.className;
+    row.getCell(4).value = st.shift;
+    row.getCell(5).value = st.studentCount;
+    row.getCell(6).value = st.callDatesCount;
+    row.getCell(7).value = st.totalPresences;
+    row.getCell(8).value = st.totalAbsences;
+    row.getCell(9).value = {
+      formula: `G${r}+H${r}`,
+      result: st.totalRecords
+    };
+
+    // % Ausência (Fórmula Real do Excel)
+    row.getCell(10).value = {
+      formula: `IF(I${r}>0, ROUND(H${r}/I${r}, 3), 0)`,
+      result: st.absenceRate / 100
+    };
+    row.getCell(10).numFmt = '0.0%';
+
+    // % Frequência (Fórmula Real do Excel)
+    row.getCell(11).value = {
+      formula: `IF(I${r}>0, ROUND(G${r}/I${r}, 3), 1)`,
+      result: st.attendanceRate / 100
+    };
+    row.getCell(11).numFmt = '0.0%';
+
+    // Média Faltas/Aluno (Fórmula Real do Excel)
+    row.getCell(12).value = {
+      formula: `IF(E${r}>0, ROUND(H${r}/E${r}, 1), 0)`,
+      result: st.avgAbsencesPerStudent
+    };
+    row.getCell(12).numFmt = '0.0';
+
+    row.getCell(13).value = st.status;
+
+    // Estilos visuais
+    const isEven = idx % 2 === 1;
+    let bgArgb = isEven ? 'FFF8FAFC' : 'FFFFFFFF';
+    if (idx === 0 && st.totalRecords > 0) {
+      bgArgb = 'FFFFF1F2'; // Destaque na turma campeã de faltas
+    }
+
+    for (let c = 1; c <= numCols; c++) {
+      const cell = row.getCell(c);
+      cell.font = { name: 'Calibri', size: 10, color: { argb: 'FF1E293B' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgArgb } };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        left: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        right: { style: 'thin', color: { argb: 'FFE2E8F0' } }
+      };
+
+      if (c === 1 || c === 3 || c === 4 || c === 13) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        if (c === 1 || c === 3) cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FF0F172A' } };
+      } else if (c === 2) {
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+      } else {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        if (c >= 5 && c <= 9) {
+          cell.numFmt = '#,##0';
+        }
+      }
+
+      // Destaque de cor no percentual de ausência
+      if (c === 10) {
+        if (st.absenceRate >= 20) {
+          cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFDC2626' } };
+        } else if (st.absenceRate >= 15) {
+          cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFD97706' } };
+        }
+      }
+    }
+  });
+
+  const lastDataRow = startRow + stats.length - 1;
+
+  // 5. Linha Totalizadora e Média Geral da Rede
+  const totalRowIdx = lastDataRow + 2;
+  const totalRow = worksheet.getRow(totalRowIdx);
+  totalRow.height = 24;
+
+  worksheet.mergeCells(totalRowIdx, 1, totalRowIdx, 4);
+  totalRow.getCell(1).value = 'TOTAL / MÉDIA GERAL:';
+  totalRow.getCell(1).font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF1E1B4B' } };
+  totalRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'right' };
+
+  // Total Alunos
+  totalRow.getCell(5).value = {
+    formula: `SUM(E${startRow}:E${lastDataRow})`,
+    result: summary.totalAlunos
+  };
+  totalRow.getCell(5).numFmt = '#,##0';
+
+  // Total Presenças
+  totalRow.getCell(7).value = {
+    formula: `SUM(G${startRow}:G${lastDataRow})`,
+    result: summary.totalPresences
+  };
+  totalRow.getCell(7).numFmt = '#,##0';
+
+  // Total Faltas
+  totalRow.getCell(8).value = {
+    formula: `SUM(H${startRow}:H${lastDataRow})`,
+    result: summary.totalAbsences
+  };
+  totalRow.getCell(8).numFmt = '#,##0';
+  totalRow.getCell(8).font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FFDC2626' } };
+
+  // Total Registros
+  totalRow.getCell(9).value = {
+    formula: `SUM(I${startRow}:I${lastDataRow})`,
+    result: summary.totalRecords
+  };
+  totalRow.getCell(9).numFmt = '#,##0';
+
+  // Média Geral de Ausência
+  totalRow.getCell(10).value = {
+    formula: `IF(I${totalRowIdx}>0, ROUND(H${totalRowIdx}/I${totalRowIdx}, 3), 0)`,
+    result: summary.avgAbsenceRate / 100
+  };
+  totalRow.getCell(10).numFmt = '0.0%';
+  totalRow.getCell(10).font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FFBE123C' } };
+
+  // Média Geral de Frequência
+  totalRow.getCell(11).value = {
+    formula: `IF(I${totalRowIdx}>0, ROUND(G${totalRowIdx}/I${totalRowIdx}, 3), 1)`,
+    result: summary.avgAttendanceRate / 100
+  };
+  totalRow.getCell(11).numFmt = '0.0%';
+  totalRow.getCell(11).font = { name: 'Calibri', size: 11, bold: true, color: { argb: 'FF0D9488' } };
+
+  // Média Geral de Faltas/Aluno
+  totalRow.getCell(12).value = {
+    formula: `IF(E${totalRowIdx}>0, ROUND(H${totalRowIdx}/E${totalRowIdx}, 1), 0)`,
+    result: summary.totalAlunos > 0 ? parseFloat((summary.totalAbsences / summary.totalAlunos).toFixed(1)) : 0
+  };
+  totalRow.getCell(12).numFmt = '0.0';
+  totalRow.getCell(12).font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: 'FF334155' } };
+
+  totalRow.getCell(13).value =
+    summary.avgAbsenceRate >= 20 ? 'Risco Crítico' : summary.avgAbsenceRate >= 15 ? 'Alerta' : summary.avgAbsenceRate >= 10 ? 'Atenção' : 'Adequado';
+
+  for (let c = 1; c <= numCols; c++) {
+    const cell = totalRow.getCell(c);
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+    cell.border = {
+      top: { style: 'medium', color: { argb: 'FF94A3B8' } },
+      bottom: { style: 'medium', color: { argb: 'FF94A3B8' } },
+      left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+      right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
+    };
+    if (c >= 5) cell.alignment = { vertical: 'middle', horizontal: 'center' };
+  }
+
+  // Download do arquivo XLSX no browser
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+  });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const cleanSchool = (schoolName || 'todas_escolas').toLowerCase().replace(/[^a-z0-9]/g, '_');
+  a.download = `ranking_turmas_mais_faltantes_${currentYear}_${cleanSchool}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
 }

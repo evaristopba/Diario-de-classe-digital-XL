@@ -68,20 +68,30 @@ export interface SubjectItem {
   shortName: string;
   color?: string;
   category?: 'regente' | 'diversificada';
+  order?: number; // Ordem de exibição no Boletim Escolar (1, 2, 3...)
 }
 
 export const DEFAULT_SUBJECTS: SubjectItem[] = [
-  { id: 'portugues', name: 'Língua Portuguesa', shortName: 'LP', category: 'regente' },
-  { id: 'matematica', name: 'Matemática', shortName: 'MAT', category: 'regente' },
-  { id: 'ciencias', name: 'Ciências', shortName: 'CIE', category: 'regente' },
-  { id: 'historia', name: 'História', shortName: 'HIST', category: 'regente' },
-  { id: 'geografia', name: 'Geografia', shortName: 'GEO', category: 'regente' },
-  { id: 'arte', name: 'Arte', shortName: 'ART', category: 'diversificada' },
-  { id: 'ed_fisica', name: 'Educação Física', shortName: 'EF', category: 'diversificada' },
-  { id: 'ingles', name: 'Língua Inglesa', shortName: 'ING', category: 'diversificada' },
-  { id: 'computacao', name: 'Computação e Tecnologia', shortName: 'COMP', category: 'diversificada' },
-  { id: 'ens_religioso', name: 'Ensino Religioso', shortName: 'ER', category: 'regente' }
+  { id: 'portugues', name: 'Língua Portuguesa', shortName: 'LP', category: 'regente', order: 1 },
+  { id: 'arte', name: 'Arte', shortName: 'ART', category: 'diversificada', order: 2 },
+  { id: 'ed_fisica', name: 'Educação Física', shortName: 'EF', category: 'diversificada', order: 3 },
+  { id: 'ingles', name: 'Língua Inglesa', shortName: 'ING', category: 'diversificada', order: 4 },
+  { id: 'matematica', name: 'Matemática', shortName: 'MAT', category: 'regente', order: 5 },
+  { id: 'ciencias', name: 'Ciências', shortName: 'CIE', category: 'regente', order: 6 },
+  { id: 'geografia', name: 'Geografia', shortName: 'GEO', category: 'regente', order: 7 },
+  { id: 'historia', name: 'História', shortName: 'HIST', category: 'regente', order: 8 },
+  { id: 'ens_religioso', name: 'Ensino Religioso', shortName: 'ER', category: 'regente', order: 9 },
+  { id: 'computacao', name: 'Computação e Tecnologia', shortName: 'COMP', category: 'diversificada', order: 10 }
 ];
+
+export function sortSubjectsByOrder<T extends { order?: number; name?: string }>(subjects: T[]): T[] {
+  return [...subjects].sort((a, b) => {
+    const oA = typeof a.order === 'number' && !isNaN(a.order) ? a.order : 9999;
+    const oB = typeof b.order === 'number' && !isNaN(b.order) ? b.order : 9999;
+    if (oA !== oB) return oA - oB;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+}
 
 export interface AttendanceRecord {
   id?: string;

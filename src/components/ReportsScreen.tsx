@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { ClassRoom, Student, ModalConfig, DEFAULT_SUBJECTS, SubjectItem } from '../types';
-import { carregarMinhasTurmas, get, ref, rtdb } from '../lib/firebase';
+import { ClassRoom, Student, ModalConfig, DEFAULT_SUBJECTS, SubjectItem, School, sortSubjectsByOrder } from '../types';
+import { carregarMinhasTurmas, carregarEscolas, get, ref, rtdb } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
 import {
   generateBimesterReport,
@@ -19,6 +19,11 @@ import {
   generateDailyAttendanceReportXLSX,
   generateAbsenceReport,
   generateAbsenceReportXLSX,
+  calculateClassesAbsenceStats,
+  generateClassesAbsenceRankingReport,
+  generateClassesAbsenceRankingReportXLSX,
+  ClassAbsenceStats,
+  ClassesAbsenceRankingSummary,
   generateIndividualStudentReport,
   generateIndividualStudentReportXLSX,
   generateAtRiskStudentsReport,
@@ -57,7 +62,11 @@ import {
   CalendarDays,
   Flame,
   AlertCircle,
-  Users
+  Users,
+  ArrowDownNarrowWide,
+  Eye,
+  X,
+  Filter
 } from 'lucide-react';
 import { StudentEvolutionChartModal } from './StudentEvolutionChartModal';
 
@@ -103,6 +112,16 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
   const [isEvolutionChartOpen, setIsEvolutionChartOpen] = useState(false);
   const [evolutionChartInitialTab, setEvolutionChartInitialTab] = useState<'coletivo' | 'panorama'>('coletivo');
 
+  // Estados específicos para o Relatório / Ranking de Turmas Mais Faltantes
+  const [schoolsList, setSchoolsList] = useState<School[]>([]);
+  const [rankingSchoolId, setRankingSchoolId] = useState('todas');
+  const [rankingYear, setRankingYear] = useState(currentYear || new Date().getFullYear().toString());
+  const [rankingBimester, setRankingBimester] = useState('todas');
+  const [isAbsenceRankingModalOpen, setIsAbsenceRankingModalOpen] = useState(false);
+  const [rankingStats, setRankingStats] = useState<ClassAbsenceStats[]>([]);
+  const [rankingSummary, setRankingSummary] = useState<ClassesAbsenceRankingSummary | null>(null);
+  const [loadingRankingModal, setLoadingRankingModal] = useState(false);
+
   const loadSubjectsList = async () => {
     try {
       const snap = await get(ref(rtdb, 'diario-classe/disciplinas'));
@@ -115,18 +134,18 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                 id: item.id || k,
                 name: item.name || k,
                 shortName: item.shortName || item.name || k,
-                category: item.category === 'diversificada' ? 'diversificada' : 'regente'
+                category: item.category === 'diversificada' ? 'diversificada' : 'regente',
+                order: typeof item.order === 'number' && !isNaN(item.order) ? item.order : undefined
               }
             : { id: k, name: String(item), shortName: String(item), category: 'regente' };
         });
-        list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-        setAvailableSubjects(list);
+        setAvailableSubjects(sortSubjectsByOrder(list));
       } else {
-        setAvailableSubjects([]);
+        setAvailableSubjects(sortSubjectsByOrder([...DEFAULT_SUBJECTS]));
       }
     } catch (e) {
       console.warn('Erro ao carregar disciplinas cadastradas:', e);
-      setAvailableSubjects([]);
+      setAvailableSubjects(sortSubjectsByOrder([...DEFAULT_SUBJECTS]));
     }
   };
 
@@ -140,6 +159,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
       if (filtered.length > 0 && !selectedClassId) {
         setSelectedClassId(filtered[0].id);
       }
+      loadSchoolsList(filtered);
     } catch (err) {
       console.error(err);
     }
@@ -188,9 +208,64 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
     }
   };
 
+  const loadSchoolsList = async (turmas?: { id: string; val: ClassRoom }[]) => {
+    try {
+      const list = await carregarEscolas();
+      const currentClasses = turmas || classes;
+      const map: Record<string, School> = {};
+
+      list.forEach((s) => {
+        const sName = (s.name || (s as any).nome || '').trim();
+        if (s.id) {
+          map[s.id] = { ...s, name: sName || 'Escola sem Nome' };
+        }
+      });
+
+      currentClasses.forEach((t) => {
+        if (t.val.schoolId) {
+          const sId = t.val.schoolId;
+          const sName = (t.val.schoolName || '').trim();
+          if (!map[sId]) {
+            map[sId] = {
+              id: sId,
+              name: sName || 'Escola sem Nome'
+            };
+          } else if (!map[sId].name || map[sId].name === 'Escola sem Nome') {
+            if (sName) map[sId].name = sName;
+          }
+        }
+      });
+
+      const finalList = Object.values(map);
+      finalList.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      setSchoolsList(finalList);
+    } catch (e) {
+      console.warn('Erro ao carregar escolas:', e);
+      const map: Record<string, School> = {};
+      (turmas || classes).forEach((t) => {
+        if (t.val.schoolId) {
+          map[t.val.schoolId] = {
+            id: t.val.schoolId,
+            name: (t.val.schoolName || '').trim() || 'Escola sem Nome'
+          };
+        }
+      });
+      const finalList = Object.values(map);
+      finalList.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      setSchoolsList(finalList);
+    }
+  };
+
   useEffect(() => {
     loadClasses();
     loadSubjectsList();
+    loadSchoolsList();
+  }, [currentYear]);
+
+  useEffect(() => {
+    if (currentYear) {
+      setRankingYear(currentYear);
+    }
   }, [currentYear]);
 
   useEffect(() => {
@@ -233,6 +308,60 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
       });
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const runRankingReport = async (
+    fn: () => Promise<any>,
+    successMsg = 'Relatório de turmas mais faltantes gerado com sucesso!'
+  ) => {
+    setGenerating(true);
+    try {
+      await fn();
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Sucesso',
+        message: successMsg,
+        icon: '✅'
+      });
+    } catch (err: any) {
+      console.error(err);
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Erro ao Gerar Relatório de Absenteísmo',
+        message: formatFriendlyError(err, 'Não foi possível gerar as estatísticas de turmas mais faltantes'),
+        icon: '❌'
+      });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleOpenRankingModal = async () => {
+    setLoadingRankingModal(true);
+    setIsAbsenceRankingModalOpen(true);
+    try {
+      const res = await calculateClassesAbsenceStats({
+        schoolId: rankingSchoolId,
+        currentYear: rankingYear,
+        bimester: rankingBimester
+      });
+      setRankingStats(res.stats);
+      setRankingSummary(res.summary);
+    } catch (err: any) {
+      console.error(err);
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Erro ao Carregar Dados',
+        message: formatFriendlyError(err, 'Não foi possível calcular o ranking das turmas mais faltantes'),
+        icon: '❌'
+      });
+      setIsAbsenceRankingModalOpen(false);
+    } finally {
+      setLoadingRankingModal(false);
     }
   };
 
@@ -995,6 +1124,143 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
               </button>
             </div>
           </div>
+
+          {/* NOVO: Ranking de Turmas Mais Faltantes (Ano Letivo / Escola) */}
+          <div className="bg-gradient-to-br from-amber-50/60 via-white to-orange-50/40 rounded-2xl border-2 border-amber-300/80 p-5 shadow-sm flex flex-col justify-between col-span-1 md:col-span-2">
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                <div className="flex items-center gap-2 text-amber-700">
+                  <div className="p-1.5 bg-amber-100 rounded-lg">
+                    <ArrowDownNarrowWide className="w-5 h-5 text-amber-700" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                      Ranking de Turmas Mais Faltantes (Absenteísmo Escolar)
+                      <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-amber-200 text-amber-900">
+                        Novo
+                      </span>
+                    </h4>
+                    <p className="text-[11px] text-slate-500 font-normal">
+                      Classificação comparativa das turmas em ordem decrescente de ausências (% e volume total de faltas)
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleOpenRankingModal}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>Visualizar Ranking na Tela</span>
+                </button>
+              </div>
+
+              {/* Filtros Contextuais Específicos do Ranking */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 my-3 p-3 bg-white/80 rounded-xl border border-amber-200/70 text-xs">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                    <Building2 className="w-3.5 h-3.5 text-amber-600" />
+                    Escola
+                  </label>
+                  <select
+                    value={rankingSchoolId}
+                    onChange={(e) => setRankingSchoolId(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 font-medium focus:ring-2 focus:ring-amber-500 text-xs"
+                  >
+                    <option value="todas">Todas as Escolas</option>
+                    {schoolsList.map((sch) => {
+                      const label = sch.name || (sch as any).nome || 'Escola sem Nome';
+                      return (
+                        <option key={sch.id} value={sch.id}>
+                          {label}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                    <CalendarDays className="w-3.5 h-3.5 text-amber-600" />
+                    Ano Letivo
+                  </label>
+                  <input
+                    type="text"
+                    value={rankingYear}
+                    onChange={(e) => setRankingYear(e.target.value)}
+                    placeholder="Ex: 2026"
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 font-medium focus:ring-2 focus:ring-amber-500 text-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                    <Filter className="w-3.5 h-3.5 text-amber-600" />
+                    Bimestre
+                  </label>
+                  <select
+                    value={rankingBimester}
+                    onChange={(e) => setRankingBimester(e.target.value)}
+                    className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 font-medium focus:ring-2 focus:ring-amber-500 text-xs"
+                  >
+                    <option value="todas">Todos os Bimestres (Ano Todo)</option>
+                    <option value="1">1º Bimestre</option>
+                    <option value="2">2º Bimestre</option>
+                    <option value="3">3º Bimestre</option>
+                    <option value="4">4º Bimestre</option>
+                  </select>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Relatório executivo para gestão escolar e coordenação pedagógica. Cruza todas as chamadas lançadas, apontando as turmas mais faltosas da escola/rede, taxas percentuais de ausência, média de faltas por aluno e níveis de risco (Crítico, Alerta, Atenção e Adequado).
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 mt-4 pt-3 border-t border-amber-200/80 flex-wrap sm:flex-nowrap">
+              <button
+                disabled={generating}
+                onClick={() => {
+                  const selectedSchoolObj = schoolsList.find((s) => s.id === rankingSchoolId);
+                  const schoolName = selectedSchoolObj ? (selectedSchoolObj.name || (selectedSchoolObj as any).nome) : undefined;
+                  runRankingReport(() =>
+                    generateClassesAbsenceRankingReport({
+                      schoolId: rankingSchoolId,
+                      schoolName,
+                      currentYear: rankingYear,
+                      bimester: rankingBimester,
+                      teacherName: currentTeacher
+                    })
+                  );
+                }}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 py-2.5 px-4 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer"
+              >
+                <FileText className="w-4 h-4" />
+                <span>Exportar Relatório e Ranking (PDF Paisagem)</span>
+              </button>
+              <button
+                disabled={generating}
+                onClick={() => {
+                  const selectedSchoolObj = schoolsList.find((s) => s.id === rankingSchoolId);
+                  const schoolName = selectedSchoolObj ? (selectedSchoolObj.name || (selectedSchoolObj as any).nome) : undefined;
+                  runRankingReport(() =>
+                    generateClassesAbsenceRankingReportXLSX({
+                      schoolId: rankingSchoolId,
+                      schoolName,
+                      currentYear: rankingYear,
+                      bimester: rankingBimester,
+                      teacherName: currentTeacher
+                    })
+                  );
+                }}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors shadow-xs cursor-pointer"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Exportar Planilha Completa (Excel XLSX)</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1455,6 +1721,367 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
         studentsList={students.map((s) => ({ id: s.id, ...s.val }))}
         subjectsList={availableSubjects}
       />
+
+      {/* MODAL: RANKING INTERATIVO DAS TURMAS MAIS FALTANTES */}
+      {isAbsenceRankingModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white w-full max-w-5xl max-h-[92vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-200 animate-in zoom-in-95 duration-200">
+            {/* Header do Modal */}
+            <div className="px-6 py-4 bg-gradient-to-r from-amber-600 via-orange-600 to-amber-700 text-white flex items-center justify-between shadow-xs">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white/15 rounded-xl backdrop-blur-xs">
+                  <ArrowDownNarrowWide className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold flex items-center gap-2">
+                    Ranking de Turmas Mais Faltantes
+                    <span className="text-[11px] font-semibold bg-white/20 px-2 py-0.5 rounded-full">
+                      Absenteísmo
+                    </span>
+                  </h3>
+                  <p className="text-xs text-amber-100">
+                    Ano Letivo {rankingYear} • {rankingBimester === 'todas' ? 'Todos os Bimestres' : `${rankingBimester}º Bimestre`} • {rankingSchoolId === 'todas' ? 'Todas as Escolas' : schoolsList.find((s) => s.id === rankingSchoolId)?.name || (schoolsList.find((s) => s.id === rankingSchoolId) as any)?.nome || 'Escola Selecionada'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAbsenceRankingModalOpen(false)}
+                className="p-2 rounded-xl text-white/80 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                title="Fechar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Barra de Filtros Rápida dentro do Modal */}
+            <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  <label className="font-semibold text-slate-600">Escola:</label>
+                  <select
+                    value={rankingSchoolId}
+                    onChange={(e) => setRankingSchoolId(e.target.value)}
+                    className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-slate-700 text-xs font-medium"
+                  >
+                    <option value="todas">Todas as Escolas</option>
+                    {schoolsList.map((sch) => {
+                      const label = sch.name || (sch as any).nome || 'Escola sem Nome';
+                      return (
+                        <option key={sch.id} value={sch.id}>
+                          {label}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <label className="font-semibold text-slate-600">Ano:</label>
+                  <input
+                    type="text"
+                    value={rankingYear}
+                    onChange={(e) => setRankingYear(e.target.value)}
+                    className="w-20 px-2 py-1 bg-white border border-slate-200 rounded-lg text-slate-700 text-xs font-medium"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <label className="font-semibold text-slate-600">Bimestre:</label>
+                  <select
+                    value={rankingBimester}
+                    onChange={(e) => setRankingBimester(e.target.value)}
+                    className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-slate-700 text-xs font-medium"
+                  >
+                    <option value="todas">Ano Todo</option>
+                    <option value="1">1º Bimestre</option>
+                    <option value="2">2º Bimestre</option>
+                    <option value="3">3º Bimestre</option>
+                    <option value="4">4º Bimestre</option>
+                  </select>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleOpenRankingModal}
+                  disabled={loadingRankingModal}
+                  className="px-3 py-1 bg-slate-700 hover:bg-slate-800 text-white rounded-lg font-medium cursor-pointer transition-colors shadow-2xs"
+                >
+                  {loadingRankingModal ? 'Atualizando...' : 'Recalcular'}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={generating || rankingStats.length === 0}
+                  onClick={() => {
+                    const selectedSchoolObj = schoolsList.find((s) => s.id === rankingSchoolId);
+                    const schoolName = selectedSchoolObj ? (selectedSchoolObj.name || (selectedSchoolObj as any).nome) : undefined;
+                    runRankingReport(() =>
+                      generateClassesAbsenceRankingReport({
+                        schoolId: rankingSchoolId,
+                        schoolName,
+                        currentYear: rankingYear,
+                        bimester: rankingBimester,
+                        teacherName: currentTeacher
+                      })
+                    );
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>PDF Paisagem</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={generating || rankingStats.length === 0}
+                  onClick={() => {
+                    const selectedSchoolObj = schoolsList.find((s) => s.id === rankingSchoolId);
+                    const schoolName = selectedSchoolObj ? (selectedSchoolObj.name || (selectedSchoolObj as any).nome) : undefined;
+                    runRankingReport(() =>
+                      generateClassesAbsenceRankingReportXLSX({
+                        schoolId: rankingSchoolId,
+                        schoolName,
+                        currentYear: rankingYear,
+                        bimester: rankingBimester,
+                        teacherName: currentTeacher
+                      })
+                    );
+                  }}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Excel XLSX</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Corpo do Modal: KPIs e Tabela */}
+            <div className="p-6 overflow-y-auto flex-1 space-y-4">
+              {loadingRankingModal ? (
+                <div className="py-16 text-center text-slate-500 flex flex-col items-center justify-center gap-3">
+                  <div className="w-8 h-8 border-3 border-amber-600 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-sm font-medium">Cruzando chamadas e consolidando absenteísmo das turmas...</p>
+                </div>
+              ) : rankingStats.length === 0 ? (
+                <div className="py-16 text-center text-slate-500 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                  <ArrowDownNarrowWide className="w-10 h-10 mx-auto text-slate-300 mb-2" />
+                  <p className="text-sm font-semibold text-slate-700">Nenhuma turma com chamadas registradas encontrada</p>
+                  <p className="text-xs text-slate-400 mt-1">Verifique o ano letivo e os filtros selecionados.</p>
+                </div>
+              ) : (
+                <>
+                  {/* Cards de Resumo Executivo */}
+                  {rankingSummary && (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl">
+                        <span className="text-[10px] uppercase font-bold text-amber-700 tracking-wider">
+                          Turmas Analisadas
+                        </span>
+                        <div className="text-xl font-black text-amber-900 mt-0.5">
+                          {rankingSummary.totalClasses ?? rankingSummary.totalTurmas ?? 0}
+                        </div>
+                        <span className="text-[11px] text-amber-600">
+                          {rankingSummary.totalStudents ?? rankingSummary.totalAlunos ?? 0} alunos ativos
+                        </span>
+                      </div>
+
+                      <div className="p-3 bg-rose-50/70 border border-rose-200 rounded-xl">
+                        <span className="text-[10px] uppercase font-bold text-rose-700 tracking-wider">
+                          Total de Faltas
+                        </span>
+                        <div className="text-xl font-black text-rose-900 mt-0.5">
+                          {(rankingSummary.totalAbsences ?? 0).toLocaleString('pt-BR')}
+                        </div>
+                        <span className="text-[11px] text-rose-600">
+                          em {(rankingSummary.totalCalls ?? rankingSummary.totalRecords ?? 0).toLocaleString('pt-BR')} registros
+                        </span>
+                      </div>
+
+                      <div className="p-3 bg-indigo-50/70 border border-indigo-200 rounded-xl">
+                        <span className="text-[10px] uppercase font-bold text-indigo-700 tracking-wider">
+                          Taxa Média de Ausência
+                        </span>
+                        <div className="text-xl font-black text-indigo-900 mt-0.5">
+                          {Number(rankingSummary.overallAbsenceRate ?? rankingSummary.avgAbsenceRate ?? 0).toFixed(1)}%
+                        </div>
+                        <span className="text-[11px] text-indigo-600">
+                          Frequência: {Number(rankingSummary.overallAttendanceRate ?? rankingSummary.avgAttendanceRate ?? 100).toFixed(1)}%
+                        </span>
+                      </div>
+
+                      <div className="p-3 bg-purple-50/70 border border-purple-200 rounded-xl">
+                        <span className="text-[10px] uppercase font-bold text-purple-700 tracking-wider">
+                          Turmas em Risco Crítico
+                        </span>
+                        <div className="text-xl font-black text-purple-900 mt-0.5">
+                          {rankingSummary.criticalCount ?? rankingSummary.criticalClassesCount ?? 0}
+                        </div>
+                        <span className="text-[11px] text-purple-600">
+                          ausência superior a 20%
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tabela de Classificação Ordenada */}
+                  <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+                    <div className="overflow-x-auto max-h-[50vh]">
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead className="bg-slate-100 text-slate-700 sticky top-0 z-10 border-b border-slate-200 text-[11px]">
+                          <tr>
+                            <th className="py-2.5 px-3 font-bold text-center w-12">Pos.</th>
+                            <th className="py-2.5 px-3 font-bold">Turma</th>
+                            <th className="py-2.5 px-3 font-bold">Escola</th>
+                            <th className="py-2.5 px-3 font-bold text-center">Alunos</th>
+                            <th className="py-2.5 px-3 font-bold text-center">Chamadas</th>
+                            <th className="py-2.5 px-3 font-bold text-center text-emerald-700">Presenças</th>
+                            <th className="py-2.5 px-3 font-bold text-center text-rose-700">Faltas</th>
+                            <th className="py-2.5 px-3 font-bold text-center bg-amber-100/60 text-amber-900">
+                              % Ausência
+                            </th>
+                            <th className="py-2.5 px-3 font-bold text-center">Freq. %</th>
+                            <th className="py-2.5 px-3 font-bold text-center">Média Faltas/Al.</th>
+                            <th className="py-2.5 px-3 font-bold text-center">Risco</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 bg-white">
+                          {rankingStats.map((item) => {
+                            const isFirst = item.rank === 1;
+                            const currentRisk = item.riskLevel || item.status || 'Adequado';
+                            return (
+                              <tr
+                                key={item.classId}
+                                className={`hover:bg-slate-50 transition-colors ${
+                                  isFirst ? 'bg-amber-50/30' : ''
+                                }`}
+                              >
+                                <td className="py-2.5 px-3 text-center font-bold">
+                                  <span
+                                    className={`inline-flex items-center justify-center w-7 h-7 rounded-full text-xs font-black ${
+                                      item.rank === 1
+                                        ? 'bg-amber-400 text-amber-950 shadow-xs'
+                                        : item.rank === 2
+                                        ? 'bg-slate-300 text-slate-800'
+                                        : item.rank === 3
+                                        ? 'bg-amber-600/30 text-amber-900'
+                                        : 'bg-slate-100 text-slate-600'
+                                    }`}
+                                  >
+                                    {item.rank}º
+                                  </span>
+                                </td>
+                                <td className="py-2.5 px-3 font-bold text-slate-800">
+                                  <div className="flex items-center gap-1.5">
+                                    <span>{item.className}</span>
+                                    {item.shift && (
+                                      <span className="text-[10px] font-normal text-slate-400">
+                                        ({item.shift})
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="py-2.5 px-3 text-slate-600 text-[11px] truncate max-w-[180px]" title={item.schoolName}>
+                                  {item.schoolName}
+                                </td>
+                                <td className="py-2.5 px-3 text-center text-slate-700 font-medium">
+                                  {item.activeStudents ?? item.studentCount ?? 0}
+                                </td>
+                                <td className="py-2.5 px-3 text-center text-slate-600">
+                                  {item.totalCalls ?? item.callDatesCount ?? 0}
+                                </td>
+                                <td className="py-2.5 px-3 text-center text-emerald-700 font-semibold">
+                                  {(item.totalPresences ?? 0).toLocaleString('pt-BR')}
+                                </td>
+                                <td className="py-2.5 px-3 text-center text-rose-700 font-bold">
+                                  {(item.totalAbsences ?? 0).toLocaleString('pt-BR')}
+                                </td>
+                                <td className="py-2.5 px-3 text-center font-black bg-amber-50/50">
+                                  <span
+                                    className={`inline-block px-2 py-0.5 rounded-full text-xs font-black ${
+                                      currentRisk === 'Crítico'
+                                        ? 'bg-rose-100 text-rose-800'
+                                        : currentRisk === 'Alerta'
+                                        ? 'bg-orange-100 text-orange-800'
+                                        : currentRisk === 'Atenção'
+                                        ? 'bg-amber-100 text-amber-800'
+                                        : 'bg-emerald-100 text-emerald-800'
+                                    }`}
+                                  >
+                                    {Number(item.absenceRate ?? 0).toFixed(1)}%
+                                  </span>
+                                </td>
+                                <td className="py-2.5 px-3 text-center font-semibold text-slate-700">
+                                  {Number(item.attendanceRate ?? 100).toFixed(1)}%
+                                </td>
+                                <td className="py-2.5 px-3 text-center text-slate-600 font-medium">
+                                  {Number(item.avgAbsencesPerStudent ?? 0).toFixed(1)}
+                                </td>
+                                <td className="py-2.5 px-3 text-center">
+                                  <span
+                                    className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                      currentRisk === 'Crítico'
+                                        ? 'bg-rose-600 text-white'
+                                        : currentRisk === 'Alerta'
+                                        ? 'bg-orange-500 text-white'
+                                        : currentRisk === 'Atenção'
+                                        ? 'bg-amber-500 text-slate-900'
+                                        : 'bg-emerald-600 text-white'
+                                    }`}
+                                  >
+                                    {currentRisk}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="p-3 bg-slate-50 rounded-xl text-[11px] text-slate-500 flex flex-wrap items-center justify-between gap-2 border border-slate-200">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className="font-semibold text-slate-700">Critérios de Risco:</span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="w-2.5 h-2.5 rounded-full bg-rose-600" />
+                        <strong>Crítico:</strong> Ausência &gt; 25% (Risco LDB)
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="w-2.5 h-2.5 rounded-full bg-orange-500" />
+                        <strong>Alerta:</strong> 15% - 25%
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
+                        <strong>Atenção:</strong> 10% - 15%
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-600" />
+                        <strong>Adequado:</strong> &lt; 10%
+                      </span>
+                    </div>
+                    <span className="italic text-[10px]">
+                      Ordenação: 1º maior taxa de ausência (%), 2º total absoluto de faltas.
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Rodapé do Modal */}
+            <div className="px-6 py-3 bg-slate-100 border-t border-slate-200 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setIsAbsenceRankingModalOpen(false)}
+                className="px-4 py-2 bg-white hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold border border-slate-300 transition-colors cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

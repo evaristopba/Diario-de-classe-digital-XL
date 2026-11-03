@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { signInWithEmailAndPassword, sendPasswordResetEmail, auth, rtdb } from '../lib/firebase';
+import { signInWithEmailAndPassword, sendPasswordResetEmail, sincronizarOuCriarContaAuth, auth, rtdb } from '../lib/firebase';
 import { ref, get } from 'firebase/database';
 import { ModalConfig, Teacher } from '../types';
 import { TurnstileWidget } from './TurnstileWidget';
@@ -140,6 +140,18 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         setEmail(found.val.email);
         setForgotEmail(found.val.email);
       }
+      // Se houver senha salva no cadastro do docente/bibliotecário, preenche automaticamente
+      const rawVal = found.val as any;
+      const savedPass = rawVal.password || rawVal.tempPassword || rawVal.senha || '';
+      if (savedPass) {
+        setPassword(savedPass);
+      } else {
+        setPassword('');
+      }
+    } else {
+      setEmail('');
+      setPassword('');
+      setTeacherName('');
     }
   };
 
@@ -178,7 +190,60 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
 
     try {
       setLoading(true);
-      await signInWithEmailAndPassword(auth, email.trim(), password);
+
+      const inputEmail = email.trim().toLowerCase();
+      const matchedTeacher = teachersList.find(
+        (t) => (t.val.email || '').trim().toLowerCase() === inputEmail
+      );
+      const rawMatched = matchedTeacher?.val as any;
+      const targetAuthEmail = rawMatched?.authEmail || inputEmail;
+
+      let authSuccess = false;
+      let lastError: any = null;
+
+      // 1. Tenta autenticar diretamente com o e-mail prioritário (authEmail ou email padrão)
+      try {
+        await signInWithEmailAndPassword(auth, targetAuthEmail, password);
+        authSuccess = true;
+      } catch (err: any) {
+        lastError = err;
+        // 2. Se o e-mail prioritário era diferente do e-mail digitado, tenta o e-mail digitado
+        if (targetAuthEmail !== inputEmail) {
+          try {
+            await signInWithEmailAndPassword(auth, inputEmail, password);
+            authSuccess = true;
+          } catch (fallbackErr: any) {
+            lastError = fallbackErr;
+          }
+        }
+      }
+
+      // 3. Se falhou, mas a senha digitada confere exatamente com a senha salva no banco pelo administrador:
+      if (
+        !authSuccess &&
+        rawMatched &&
+        (password === rawMatched.password || password === rawMatched.tempPassword || password === rawMatched.senha)
+      ) {
+        try {
+          const syncRes = await sincronizarOuCriarContaAuth(
+            inputEmail,
+            password,
+            matchedTeacher?.val.name,
+            undefined,
+            rawMatched.authEmail
+          );
+          if (syncRes.authEmail) {
+            await signInWithEmailAndPassword(auth, syncRes.authEmail, password);
+            authSuccess = true;
+          }
+        } catch (healErr: any) {
+          console.warn('Auto-recuperação de credencial no login:', healErr);
+        }
+      }
+
+      if (!authSuccess) {
+        throw lastError || new Error('E-mail ou senha incorretos.');
+      }
 
       // Sucesso: limpa contadores de segurança
       try {
@@ -219,6 +284,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({
         msg = isLocked
           ? `⛔ Muitas tentativas incorretas (${nextFailed}/${MAX_LOGIN_ATTEMPTS}). Por segurança contra acessos automatizados, o login foi bloqueado por ${LOCKOUT_DURATION_SECONDS} segundos.`
           : `E-mail ou senha incorretos (${nextFailed}/${MAX_LOGIN_ATTEMPTS} tentativas). Caso tenha esquecido a senha, utilize a opção "Esqueci minha senha".`;
+      } else if (err.code === 'auth/too-many-requests') {
+        msg = `⛔ Esta conta foi temporariamente bloqueada pelo Firebase devido a tentativas com senha incorreta. O bloqueio é temporário (alguns minutos) ou pode ser restaurado imediatamente clicando em "Esqueci minha senha" para redefinir as credenciais.`;
       }
 
       setModal({
