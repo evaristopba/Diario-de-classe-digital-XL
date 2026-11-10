@@ -2,7 +2,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 import ExcelJS from 'exceljs';
-import { get, ref, rtdb, dc, carregarMinhasTurmas, carregarEscolas, verificarIsAdmin, getCurrentAuthUid } from './firebase';
+import { get, ref, rtdb, dc, carregarMinhasTurmas, carregarEscolas, verificarIsAdmin, getCurrentAuthUid, lerNotasDoPerfil } from './firebase';
 import { ClassRoom, DEFAULT_SUBJECTS, SubjectItem, sortSubjectsByOrder } from '../types';
 import { isSkillApplicableToYear, formatSkillYearsLabel } from './bnccHelper';
 import {
@@ -273,7 +273,7 @@ export async function generateBimesterReport(
   const startY = addPDFHeader(doc, title, turma, teacher, currentYear, subject);
 
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
 
   const tableData: any[] = [];
   const studentsVal = snap.val() || {};
@@ -507,7 +507,7 @@ export async function generateBimesterReportXLSX(
   showRA = true
 ) {
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
 
   const isAllSubjects = subject === 'todas';
   const title = `BOLETIM ESCOLAR - ${bimester}º BIMESTRE${!isAllSubjects ? ` (${getSubjectName(subject).toUpperCase()})` : ''}`;
@@ -713,7 +713,7 @@ export async function generateAnnualReport(
   );
 
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
 
   const tableData: any[] = [];
   const studentsVal = snap.val() || {};
@@ -841,7 +841,7 @@ export async function generateAnnualReportXLSX(
   teacher?: string
 ) {
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
 
   const isAllSubjects = subject === 'todas';
   const title = `BOLETIM ANUAL${!isAllSubjects ? ` - ${getSubjectName(subject).toUpperCase()}` : ' GERAL'}`;
@@ -986,7 +986,7 @@ export async function generateClassPerformanceReport(
   const startY = addPDFHeader(doc, `RELATÓRIO DE DESEMPENHO DA TURMA - ${bimester}º BIMESTRE`, turma, teacher, currentYear, subject);
 
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
 
   const studentsVal = snap.val() || {};
   const notasVal = notasSnap.val() || {};
@@ -1091,7 +1091,7 @@ export async function generateClassPerformanceReportXLSX(
   teacher?: string
 ) {
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
 
   const studentsVal = snap.val() || {};
   const notasVal = notasSnap.val() || {};
@@ -1187,7 +1187,7 @@ export async function generateStudentEvolutionReport(
   const startY = addPDFHeader(doc, 'EVOLUÇÃO E TRAJETÓRIA DE APRENDIZAGEM', turma, teacher, currentYear);
 
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
 
   const studentsVal = snap.val() || {};
   const notasVal = notasSnap.val() || {};
@@ -2721,7 +2721,7 @@ export async function generateStudentEvolutionReportXLSX(
   teacher?: string
 ) {
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
   const chamadaSnap = await get(ref(rtdb, dc('chamada')));
 
   const studentsVal = snap.val() || {};
@@ -2835,7 +2835,7 @@ export async function generateClassesComparisonReport(currentYear: string) {
   doc.text(`Ano Letivo: ${currentYear}`, 14, 25);
 
   const turmasList = await carregarMinhasTurmas();
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
   const chamadaSnap = await get(ref(rtdb, dc('chamada')));
 
   const notasVal = notasSnap.val() || {};
@@ -2899,7 +2899,7 @@ export async function generateClassesComparisonReport(currentYear: string) {
 // 1.5 Comparativo entre Turmas XLSX
 export async function generateClassesComparisonReportXLSX(currentYear: string) {
   const turmasList = await carregarMinhasTurmas();
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
   const chamadaSnap = await get(ref(rtdb, dc('chamada')));
 
   const notasVal = notasSnap.val() || {};
@@ -3713,7 +3713,7 @@ export async function generateIndividualStudentReport(
 ) {
   const doc = new jsPDF();
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
   const chamadaSnap = await get(ref(rtdb, dc('chamada')));
   const eventosSnap = await get(ref(rtdb, dc('eventos')));
 
@@ -3847,7 +3847,7 @@ export async function generateIndividualStudentReportXLSX(
   teacher?: string
 ) {
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
   const chamadaSnap = await get(ref(rtdb, dc('chamada')));
   const subjectsList = await getCurricularSubjects();
 
@@ -3937,7 +3937,7 @@ export async function generateAtRiskStudentsReport(classId: string, turma: Class
   const startY = addPDFHeader(doc, 'ALUNOS EM RISCO PEDAGÓGICO / BUSCA ATIVA', turma, teacher, currentYear);
 
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
   const chamadaSnap = await get(ref(rtdb, dc('chamada')));
 
   const studentsVal = snap.val() || {};
@@ -4008,7 +4008,7 @@ export async function generateAtRiskStudentsReportXLSX(
   teacher?: string
 ) {
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
   const chamadaSnap = await get(ref(rtdb, dc('chamada')));
 
   const columns: ExcelColumnDef[] = [
@@ -5042,7 +5042,7 @@ export async function generateConsolidatedReport(classId: string, turma: ClassRo
   const startY = addPDFHeader(doc, 'RELATÓRIO GERAL CONSOLIDADO DA TURMA', turma, teacher, currentYear);
 
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
   const chamadaSnap = await get(ref(rtdb, dc('chamada')));
   const eventosSnap = await get(ref(rtdb, dc('eventos')));
 
@@ -5123,7 +5123,7 @@ export async function generateConsolidatedReportXLSX(
   teacher?: string
 ) {
   const snap = await get(ref(rtdb, `diario-classe/turmas/${classId}/alunos`));
-  const notasSnap = await get(ref(rtdb, dc('notas')));
+  const notasSnap = await lerNotasDoPerfil();
   const chamadaSnap = await get(ref(rtdb, dc('chamada')));
   const eventosSnap = await get(ref(rtdb, dc('eventos')));
 
@@ -5512,8 +5512,9 @@ export async function generateClassesAbsenceRankingReport(options: {
   schoolName?: string;
   currentYear: string;
   bimester?: string;
+  teacherName?: string;
 }): Promise<void> {
-  const { schoolId, schoolName, currentYear, bimester } = options;
+  const { schoolId, schoolName, currentYear, bimester, teacherName } = options;
   const { stats, summary } = await calculateClassesAbsenceStats({ schoolId, currentYear, bimester });
 
   if (stats.length === 0) {
@@ -5845,8 +5846,9 @@ export async function generateClassesAbsenceRankingReportXLSX(options: {
   schoolName?: string;
   currentYear: string;
   bimester?: string;
+  teacherName?: string;
 }): Promise<void> {
-  const { schoolId, schoolName, currentYear, bimester } = options;
+  const { schoolId, schoolName, currentYear, bimester, teacherName } = options;
   const { stats, summary } = await calculateClassesAbsenceStats({ schoolId, currentYear, bimester });
 
   if (stats.length === 0) {

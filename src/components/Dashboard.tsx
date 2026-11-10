@@ -34,7 +34,8 @@ import {
   UploadCloud,
   Presentation,
   Video,
-  Sparkles
+  Sparkles,
+  Clock
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -425,6 +426,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
       icon: <CheckSquare className="w-8 h-8" />,
       color: 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:border-emerald-400 group-hover:bg-emerald-600 group-hover:text-white',
       badge: 'Admin'
+    },
+    {
+      id: 'schedule-screen',
+      title: 'Quadro de Horários',
+      desc: 'Grade semanal de especialistas (50 min), folgas, intervalos Grupo A/B e hora-atividade',
+      icon: <Clock className="w-8 h-8" />,
+      color: 'bg-violet-50 text-violet-600 border-violet-200 hover:border-violet-400 group-hover:bg-violet-600 group-hover:text-white',
+      badge: 'Especialistas'
     },
     {
       id: 'classes-screen',

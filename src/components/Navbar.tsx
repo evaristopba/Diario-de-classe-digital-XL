@@ -63,6 +63,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   {currentScreen === 'categories-screen' && 'Categorias Pedagógicas'}
                   {currentScreen === 'event-types-screen' && 'Tipos de Ocorrência'}
                   {(currentScreen === 'library-screen' || currentScreen === 'library') && 'Biblioteca Escolar & Empréstimos'}
+                  {(currentScreen === 'schedule-screen' || currentScreen === 'schedule') && 'Quadro de Horários & Especialistas'}
                   {(currentScreen === 'backup-screen' || currentScreen === 'backup') && 'Rotina de Backup & Restauração'}
                   {(currentScreen === 'presentation-screen' || currentScreen === 'presentation') && 'Apresentação Institucional & Pitch Municipal'}
                 </span>

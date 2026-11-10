@@ -4,6 +4,7 @@ import {
   generateFullBackup,
   validateBackupFile,
   restoreBackup,
+  analisarRestauracao,
   getBackupRoutineStatus,
   setBackupReminderFrequency,
   getBackupHistory,
@@ -13,6 +14,7 @@ import {
   RestoreOptions
 } from '../lib/backupService';
 import { formatFriendlyError } from '../lib/errorHandler';
+import { prepararBackupDeSeguranca } from '../lib/backupSeguranca';
 import { verificarIsAdmin } from '../lib/firebase';
 import {
   ShieldCheck,
@@ -92,6 +94,8 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
   const [parsedBackup, setParsedBackup] = useState<BackupPackage | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [isRestoring, setIsRestoring] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [exportAvisos, setExportAvisos] = useState<string[]>([]);
   const [restoreProgress, setRestoreProgress] = useState<{ msg: string; percent: number }>({
     msg: '',
     percent: 0
@@ -109,6 +113,9 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
     includeGrades: true,
     includeLessonPlans: true,
     includeEvents: true,
+    includeLibrary: true,
+    includeSettings: true,
+    includePermissions: false,
     mode: 'merge'
   });
 
@@ -141,6 +148,19 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
 
       refreshStatus();
 
+      // Leitura que falhou ou perfil sem acesso total: o arquivo NÃO contém esses dados
+      const meta = result.backupPkg.metadata;
+      const avisosExport: string[] = [];
+      if (meta.escopo === 'parcial') {
+        avisosExport.push(
+          'Este backup é PARCIAL. Para uma cópia completa do sistema, gere-o com uma conta de administrador.'
+        );
+      }
+      if (meta.leiturasIncompletas && meta.leiturasIncompletas.length > 0) {
+        avisosExport.push(`Não constam no arquivo: ${meta.leiturasIncompletas.join('; ')}.`);
+      }
+      setExportAvisos(avisosExport);
+
       setExportStats({
         schools: result.backupPkg.metadata.recordCounts.schools,
         classes: result.backupPkg.metadata.recordCounts.classes,
@@ -162,8 +182,10 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
         isOpen: true,
         type: 'alert',
         title: 'Backup Gerado com Sucesso!',
-        message: `O arquivo "${result.filename}" com ${result.backupPkg.metadata.recordCounts.totalRecords} registros foi baixado com sucesso. Guarde este arquivo em local seguro (ex: Google Drive, OneDrive ou Pendrive).`,
-        icon: '🛡️'
+        message:
+          `O arquivo "${result.filename}" com ${result.backupPkg.metadata.recordCounts.totalRecords} registros foi baixado com sucesso. Guarde este arquivo em local seguro (ex: Google Drive, OneDrive ou Pendrive).` +
+          (avisosExport.length > 0 ? `\n\n⚠️ ${avisosExport.join('\n⚠️ ')}` : ''),
+        icon: avisosExport.length > 0 ? '⚠️' : '🛡️'
       });
     } catch (err: any) {
       setModal({
@@ -227,25 +249,9 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
     reader.readAsText(file);
   };
 
-  // Handler para executar a restauração com confirmação dupla
-  const handleConfirmRestore = () => {
-    if (!parsedBackup) return;
-
-    const totalToImport = parsedBackup.metadata.recordCounts.totalRecords;
-
-    setModal({
-      isOpen: true,
-      type: 'confirm',
-      title: 'Confirmar Restauração de Dados',
-      message: `Você está prestes a restaurar os dados do arquivo "${importFile?.name}". O modo selecionado é "${restoreOptions.mode === 'merge' ? 'Mesclar e Atualizar (Recomendado)' : 'Substituição Controlada'}". Deseja prosseguir com a restauração de ${totalToImport} registros?`,
-      icon: '⚠️',
-      confirmText: 'Sim, Restaurar Agora',
-      cancelText: 'Cancelar',
-      onConfirm: () => executeRestore()
-    });
-  };
-
-  const executeRestore = async () => {
+  // Prévia da restauração: lê o banco atual e calcula, sem gravar nada, o que seria criado,
+  // atualizado ou mantido. O usuário só confirma depois de ver esse resumo.
+  const handleConfirmRestore = async () => {
     if (!parsedBackup) return;
 
     const admin = await verificarIsAdmin();
@@ -259,26 +265,111 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
       });
     }
 
+    setIsAnalyzing(true);
+    try {
+      const analise = await analisarRestauracao(parsedBackup, restoreOptions);
+      const { totais } = analise;
+
+      if (totais.novos + totais.atualizados === 0) {
+        const dicaSemData =
+          restoreOptions.mode === 'merge' && totais.mantidosSemData > 0
+            ? ` Atenção: ${totais.mantidosSemData} registro(s) do arquivo DIFEREM do banco, mas foram mantidos porque não há data para decidir qual é o mais novo. Para aplicá-los, use o modo Substituição.`
+            : '';
+        return setModal({
+          isOpen: true,
+          type: 'alert',
+          title: 'Nada a Restaurar',
+          message:
+            'Com as opções selecionadas, nenhum registro precisa ser criado ou atualizado (o banco já contém o que está no backup, ou os registros existentes são os mais recentes).' +
+            dicaSemData +
+            ' Nenhuma gravação será feita.',
+          icon: 'ℹ️'
+        });
+      }
+
+      const linhas = Object.values(analise.categorias)
+        .filter((c) => c.novos + c.atualizados + c.mantidos > 0)
+        .map((c) => {
+          const extras: string[] = [];
+          if (c.mantidosSemData > 0) extras.push(`${c.mantidosSemData} diferem mas ficaram sem alteração (sem data para comparar)`);
+          if (c.mantidosBancoMaisNovo > 0) extras.push(`${c.mantidosBancoMaisNovo} diferem mas o banco é igual/mais recente`);
+          return `• ${c.rotulo}: ${c.novos} novo(s), ${c.atualizados} atualizado(s), ${c.mantidos} mantido(s)${extras.length ? ` [${extras.join('; ')}]` : ''}`;
+        })
+        .join('\n');
+
+      const modoTexto =
+        restoreOptions.mode === 'merge'
+          ? 'Mesclar (cria o que falta e só atualiza o que o backup tem de mais recente)'
+          : 'Substituição dos módulos selecionados (grava a versão do backup por cima de cada registro de mesmo ID)';
+
+      const avisoRecentes =
+        totais.maisRecentesSobrescritos > 0
+          ? `\n\n⚠️ ATENÇÃO: ${totais.maisRecentesSobrescritos} registro(s) do banco são MAIS RECENTES que o backup e serão substituídos pela versão antiga. Se não quiser isso, volte e escolha o modo Mesclar.`
+          : '';
+      const avisoSemData =
+        restoreOptions.mode === 'merge' && totais.mantidosSemData > 0
+          ? `\n\nℹ️ ${totais.mantidosSemData} registro(s) do arquivo DIFEREM do banco, mas foram mantidos porque não há data para decidir qual é o mais novo. Para aplicá-los, volte e use o modo Substituição.`
+          : '';
+      const avisos = analise.avisos.length > 0 ? `\n\n${analise.avisos.map((a) => `ℹ️ ${a}`).join('\n')}` : '';
+
+      setModal({
+        isOpen: true,
+        type: 'confirm',
+        title: 'Confirmar Restauração de Dados',
+        message:
+          `Arquivo: "${importFile?.name}"\nModo: ${modoTexto}.\nNada será apagado do banco.\n\n` +
+          `${linhas}\n\nTotal: ${totais.novos} novo(s), ${totais.atualizados} atualizado(s), ${totais.mantidos} mantido(s).` +
+          `${avisoRecentes}${avisoSemData}${avisos}\n\n` +
+          'Antes de aplicar, será pedido que você salve um backup de segurança do estado atual. A restauração só prossegue com esse arquivo salvo.',
+        icon: '⚠️',
+        confirmText: 'Sim, Restaurar Agora',
+        cancelText: 'Cancelar',
+        onConfirm: () => executeRestore()
+      });
+    } catch (err: any) {
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Não foi possível analisar o backup',
+        message: formatFriendlyError(err, 'Falha ao comparar o backup com o banco de dados atual.'),
+        icon: '❌'
+      });
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  // Nome sugerido para o backup de segurança (mesmo padrão do backup normal)
+  const nomeBackupSeguranca = () => {
+    const dataStr = new Date().toISOString().replace(/T/, '_').replace(/:/g, '-').slice(0, 16);
+    return `ANTES-DA-RESTAURACAO-backup-diario-de-classe-${dataStr}.json`;
+  };
+
+  // Grava no banco. Só é chamada DEPOIS de o backup de segurança estar salvo (ou confirmado pelo usuário).
+  const executarGravacao = async (segurancaAviso: string, arquivoSeguranca: string) => {
+    if (!parsedBackup) return;
     setIsRestoring(true);
     setRestoreProgress({ msg: 'Iniciando restauração...', percent: 5 });
 
     try {
-      const result = await restoreBackup(
-        parsedBackup,
-        restoreOptions,
-        (msg, percent) => {
-          setRestoreProgress({ msg, percent });
-        }
-      );
+      const result = await restoreBackup(parsedBackup, restoreOptions, (msg, percent) => {
+        setRestoreProgress({ msg, percent });
+      });
 
       refreshStatus();
+
+      const gravados = Object.values(result.importedCounts).reduce((acc, n) => acc + n, 0);
+      const mantidos = Object.values(result.keptCounts).reduce((acc, n) => acc + n, 0);
+      const resumo = `${gravados} registro(s) gravado(s) e ${mantidos} mantido(s) sem alteração. Nada foi apagado.`;
+      const avisosTxt = result.avisos.length > 0 ? `\n\n${result.avisos.map((a) => `ℹ️ ${a}`).join('\n')}` : '';
+      const segurancaTxt = `\n\nBackup de segurança do estado anterior: ${arquivoSeguranca}. Guarde-o até conferir os dados.${segurancaAviso}`;
 
       if (result.success) {
         setModal({
           isOpen: true,
           type: 'alert',
           title: 'Restauração Concluída!',
-          message: `Dados restaurados com sucesso! ${Object.values(result.importedCounts).reduce((a, b) => a + b, 0)} registros foram gravados e sincronizados no banco de dados.`,
+          message: `${resumo}${avisosTxt}${segurancaTxt}`,
           icon: '✅'
         });
         setParsedBackup(null);
@@ -289,7 +380,7 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
           isOpen: true,
           type: 'alert',
           title: 'Restauração Finalizada com Avisos',
-          message: `A restauração foi processada com alguns avisos: ${result.errors.join('; ')}`,
+          message: `Parte da restauração não foi concluída: ${result.errors.join('; ')}\n\nO que foi gravado: ${resumo}${avisosTxt}${segurancaTxt}`,
           icon: '⚠️'
         });
       }
@@ -298,11 +389,96 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
         isOpen: true,
         type: 'alert',
         title: 'Erro Crítico na Restauração',
-        message: formatFriendlyError(err, 'Falha ao gravar os dados no banco de dados.'),
+        message: `${formatFriendlyError(err, 'Falha ao gravar os dados no banco de dados.')}${segurancaTxtFallback(arquivoSeguranca)}`,
         icon: '❌'
       });
     } finally {
       setIsRestoring(false);
+    }
+  };
+
+  const segurancaTxtFallback = (arquivoSeguranca: string) =>
+    `\n\nBackup de segurança do estado anterior: ${arquivoSeguranca}.`;
+
+  const cancelarPorSeguranca = (motivo: string) => {
+    setIsRestoring(false);
+    setModal({
+      isOpen: true,
+      type: 'alert',
+      title: 'Restauração Cancelada',
+      message: `${motivo}\n\nNada foi alterado no banco. A restauração só prossegue com o backup de segurança salvo.`,
+      icon: '❌'
+    });
+  };
+
+  const executeRestore = async () => {
+    if (!parsedBackup) return;
+
+    // Toda a lógica do backup de segurança está em ../lib/backupSeguranca (testada isoladamente).
+    // O seletor de arquivos é a primeira chamada assíncrona, dentro do clique do usuário.
+    const seletorNativo = (window as any).showSaveFilePicker;
+    const seguranca = await prepararBackupDeSeguranca({
+      seletor: typeof seletorNativo === 'function' ? (opcoes: any) => (window as any).showSaveFilePicker(opcoes) : undefined,
+      sugestaoNome: nomeBackupSeguranca(),
+      verificarAdmin: () => verificarIsAdmin(),
+      aoIniciarGeracao: () => {
+        setIsRestoring(true);
+        setRestoreProgress({ msg: 'Gerando backup de segurança do estado atual...', percent: 2 });
+      },
+      gerarBackup: () => generateFullBackup(),
+      baixar: (blob, nomeArquivo) => {
+        const urlSeg = window.URL.createObjectURL(blob);
+        const linkSeg = document.createElement('a');
+        linkSeg.href = urlSeg;
+        linkSeg.download = nomeArquivo;
+        document.body.appendChild(linkSeg);
+        linkSeg.click();
+        document.body.removeChild(linkSeg);
+        window.setTimeout(() => window.URL.revokeObjectURL(urlSeg), 60000);
+      },
+      mensagemErro: (err, padrao) => formatFriendlyError(err, padrao)
+    });
+
+    switch (seguranca.estado) {
+      case 'sem_permissao':
+        setIsRestoring(false);
+        return setModal({
+          isOpen: true,
+          type: 'alert',
+          title: 'Acesso Restrito',
+          message: '⛔ Apenas Administradores têm permissão para restaurar backups ou importar dados no sistema.',
+          icon: '⛔'
+        });
+
+      case 'cancelado':
+        return cancelarPorSeguranca(seguranca.motivo);
+
+      case 'salvo':
+        // Arquivo gravado pelo seletor de arquivos: verificado
+        return executarGravacao(seguranca.aviso, seguranca.descricao);
+
+      case 'aguardando_confirmacao':
+        // Download comum: o navegador pode bloqueá-lo sem avisar e isso não é detectável.
+        // A gravação só é liberada depois que a pessoa confirma que o arquivo existe.
+        setIsRestoring(false);
+        return setModal({
+          isOpen: true,
+          type: 'confirm',
+          title: 'Confirme o Backup de Segurança',
+          message:
+            `O backup do estado atual foi enviado ao navegador como "${seguranca.nomeArquivo}" (cerca de ${seguranca.tamanhoKB} KB).\n\n` +
+            'Alguns navegadores bloqueiam downloads automáticos SEM avisar. Antes de continuar, abra a pasta de Downloads e confira que o arquivo existe e não está vazio.' +
+            seguranca.aviso,
+          icon: '🛡️',
+          confirmText: 'Sim, o arquivo está salvo. Restaurar agora',
+          cancelText: 'Não encontrei. Cancelar',
+          onConfirm: () => {
+            void executarGravacao(seguranca.aviso, seguranca.descricao);
+          },
+          onCancel: () => {
+            setIsRestoring(false);
+          }
+        });
     }
   };
 
@@ -692,6 +868,13 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                     <strong className="text-slate-800 text-sm">{exportStats.grades}</strong>
                   </div>
                 </div>
+                {exportAvisos.length > 0 && (
+                  <div className="mt-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs space-y-1">
+                    {exportAvisos.map((a, i) => (
+                      <p key={i}>⚠️ {a}</p>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -846,7 +1029,8 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                             includeGrades: true,
                             includeLessonPlans: true,
                             includeEvents: true,
-                            includeLibrary: true
+                            includeLibrary: true,
+                            includeSettings: true
                           }))
                         }
                         className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 cursor-pointer"
@@ -871,7 +1055,9 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                             includeGrades: false,
                             includeLessonPlans: false,
                             includeEvents: false,
-                            includeLibrary: false
+                            includeLibrary: false,
+                            includeSettings: false,
+                            includePermissions: false
                           }))
                         }
                         className="text-xs font-semibold text-slate-500 hover:text-slate-700 cursor-pointer"
@@ -906,7 +1092,7 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                         }
                         className="rounded text-indigo-600 focus:ring-indigo-500"
                       />
-                      <span>Turmas & Alunos ({parsedBackup.metadata.recordCounts.students} alunos)</span>
+                      <span>Turmas, Alunos e Grade de Horários ({parsedBackup.metadata.recordCounts.students} alunos, {parsedBackup.metadata.recordCounts.schedule || 0} horários)</span>
                     </label>
 
                     <label className="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200">
@@ -1002,7 +1188,45 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                         }
                         className="rounded text-indigo-600 focus:ring-indigo-500"
                       />
-                      <span>Biblioteca Escolar ({(parsedBackup.metadata.recordCounts.books || 0) + (parsedBackup.metadata.recordCounts.loans || 0)} itens)</span>
+                      <span>
+                        Biblioteca Escolar (
+                        {(parsedBackup.metadata.recordCounts.books || 0) +
+                          (parsedBackup.metadata.recordCounts.loans || 0) +
+                          (parsedBackup.metadata.recordCounts.holdings || 0) +
+                          (parsedBackup.metadata.recordCounts.reservations || 0) +
+                          (parsedBackup.metadata.recordCounts.movements || 0) +
+                          (parsedBackup.metadata.recordCounts.readingCorners || 0)}{' '}
+                        itens: livros, acervo, empréstimos, reservas, movimentações e Cantinho da Leitura)
+                      </span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={restoreOptions.includeSettings !== false}
+                        onChange={(e) =>
+                          setRestoreOptions({ ...restoreOptions, includeSettings: e.target.checked })
+                        }
+                        className="rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>Configurações do sistema ({parsedBackup.metadata.recordCounts.settings || 0})</span>
+                    </label>
+
+                    <label className="flex items-start gap-2 cursor-pointer bg-amber-50 p-2 rounded-lg border border-amber-300 sm:col-span-2">
+                      <input
+                        type="checkbox"
+                        checked={restoreOptions.includePermissions === true}
+                        onChange={(e) =>
+                          setRestoreOptions({ ...restoreOptions, includePermissions: e.target.checked })
+                        }
+                        className="mt-0.5 rounded text-amber-600 focus:ring-amber-500"
+                      />
+                      <span>
+                        Permissões: administradores e bibliotecários ({parsedBackup.metadata.recordCounts.permissions || 0}){' '}
+                        <em className="text-amber-800 not-italic font-semibold">
+                          Desmarcado por padrão: concede acesso de volta a quem constava no backup.
+                        </em>
+                      </span>
                     </label>
                   </div>
                 </div>
@@ -1026,10 +1250,10 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                       />
                       <div className="text-xs">
                         <strong className="text-slate-800 block">
-                          Mesclar e Atualizar (Recomendado & Seguro)
+                          Mesclar (Recomendado & Seguro)
                         </strong>
                         <span className="text-slate-500">
-                          Preserva todos os dados existentes no banco e atualiza/adiciona os registros presentes no backup. Não apaga dados prévios.
+                          Cria o que falta e só atualiza um registro existente quando o do backup for comprovadamente mais recente (pela data de edição). Registros sem data para comparar são mantidos como estão no banco; para aplicá-los, use a Substituição. Não apaga nada.
                         </span>
                       </div>
                     </label>
@@ -1048,7 +1272,7 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                       <div className="text-xs">
                         <strong className="text-slate-800 block">Substituição dos Módulos Selecionados</strong>
                         <span className="text-slate-500">
-                          Aplica os nós selecionados sobrescrevendo as tabelas equivalentes.
+                          Nos módulos marcados, grava a versão do backup por cima dos registros de mesmo ID, mesmo que o banco tenha uma versão mais recente. Não apaga registros que não estão no backup. Antes de aplicar, mostra quantos registros mais recentes seriam substituídos.
                         </span>
                       </div>
                     </label>
@@ -1090,13 +1314,13 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                     type="button"
                     id="btn-run-restore"
                     onClick={handleConfirmRestore}
-                    disabled={isRestoring}
+                    disabled={isRestoring || isAnalyzing}
                     className="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold rounded-xl shadow-md transition transform active:scale-95 cursor-pointer"
                   >
-                    {isRestoring ? (
+                    {isRestoring || isAnalyzing ? (
                       <>
                         <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                        <span>Gravando Dados...</span>
+                        <span>{isAnalyzing ? 'Analisando o backup...' : 'Gravando Dados...'}</span>
                       </>
                     ) : (
                       <>

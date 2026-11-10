@@ -27,6 +27,14 @@ import {
   User
 } from 'firebase/auth';
 import { School, ClassRoom, Student, Book, BookLoan, Teacher, BookMovement, SchoolCopyHolding, BookReservation, SchoolAcervoItem, ReadingCornerBook } from '../types';
+import {
+  mesclarNotasDeUsuarios,
+  decidirGravacaoNotaOrigem,
+  consolidarNotasDeOrigem,
+  type NotasAgregadas,
+  type NotaOrigemColetada
+} from './notasAgregadas';
+import { normalizarRA, saoRAsIguais, compararIdentidade, type IdentidadeAluno } from './identidadeAluno';
 
 export const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyDBVGHr9RUJoFQfFcBAXm5elHuI0nKL4oQ",
@@ -158,6 +166,77 @@ export async function verificarIsAdmin(uid?: string | null): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Carrega as notas visíveis para o usuário atual.
+ * - Professor (não administrador): somente o próprio nó (comportamento de sempre).
+ * - Administrador: o próprio nó + o nó de cada professor/usuário conhecido, mesclados.
+ *   Os uids vêm de professores, atribuições e administradores (listas legíveis), o que evita
+ *   baixar chamadas, eventos e planos de todos os usuários só para ler as notas.
+ *   Se a leitura dos demais nós falhar, mantém o que conseguiu ler (nunca quebra a tela).
+ */
+export async function carregarNotasVisiveis(isAdminConhecido?: boolean): Promise<NotasAgregadas & { parcial: boolean }> {
+  const currentUid = getCurrentAuthUid();
+  if (!currentUid) return { notas: {}, vencedor: {}, donos: {}, parcial: true };
+
+  const porUsuario: Record<string, Record<string, any> | null> = {};
+  const minhasSnap = await get(ref(rtdb, dc('notas')));
+  porUsuario[currentUid] = minhasSnap.val() || {};
+
+  const admin = isAdminConhecido ?? (await verificarIsAdmin(currentUid));
+  // Professor comum só enxerga o próprio nó: leitura "parcial" por definição.
+  let parcial = !admin;
+
+  if (admin) {
+    try {
+      const [profSnap, atribSnap, adminsSnap] = await Promise.all([
+        get(ref(rtdb, 'diario-classe/professores')).catch(() => null),
+        get(ref(rtdb, 'diario-classe/atribuicoes')).catch(() => null),
+        get(ref(rtdb, 'diario-classe/admins')).catch(() => null)
+      ]);
+      const uids = new Set<string>();
+      [profSnap, atribSnap, adminsSnap].forEach((snap) => {
+        if (!snap) {
+          parcial = true; // uma das listas de usuários não pôde ser lida
+          return;
+        }
+        if (snap.exists()) {
+          Object.keys(snap.val() || {}).forEach((u) => uids.add(u));
+        }
+      });
+      uids.delete(currentUid);
+
+      await Promise.all(
+        Array.from(uids).map(async (uid) => {
+          try {
+            const snap = await get(ref(rtdb, `diario-classe/dados/${uid}/notas`));
+            if (snap.exists()) porUsuario[uid] = snap.val() || {};
+          } catch (e) {
+            parcial = true;
+            console.warn(`[carregarNotasVisiveis] Sem leitura das notas de ${uid}:`, e);
+          }
+        })
+      );
+    } catch (e) {
+      parcial = true;
+      console.warn('[carregarNotasVisiveis] Leitura dos demais nós ignorada:', e);
+    }
+  }
+
+  return { ...mesclarNotasDeUsuarios(porUsuario, currentUid), parcial };
+}
+
+/**
+ * Substituto direto de `get(ref(rtdb, dc('notas')))` nos relatórios:
+ * devolve um objeto com `val()` e `exists()`, já com as notas mescladas para administradores.
+ */
+export async function lerNotasDoPerfil(): Promise<{ val: () => Record<string, any>; exists: () => boolean }> {
+  const { notas } = await carregarNotasVisiveis();
+  return {
+    val: () => notas,
+    exists: () => Object.keys(notas).length > 0
+  };
 }
 
 /**
@@ -2405,24 +2484,227 @@ export async function reconciliarDisponibilidadeAcervo(
   }
 }
 
+// Normalização e comparação de RA/identidade ficam em ./identidadeAluno (lógica pura, testável).
+export { normalizarRA, saoRAsIguais };
+
+export interface HistoricalStudentLine {
+  id: string;
+  classId: string;
+  className?: string;
+  schoolName?: string;
+  val: Student;
+  sourceType: 'transferidoDe' | 'ra_match';
+  /**
+   * 'vinculo'   : ligada por `transferidoDe` explícito (confiável);
+   * 'confere'   : achada pelo RA e o nome ou a data de nascimento batem;
+   * 'divergente': achada pelo RA, mas nome E nascimento não batem (possível RA repetido/errado).
+   * Linhas 'divergente' NÃO devem ter notas migradas automaticamente.
+   */
+  identidade: 'vinculo' | IdentidadeAluno;
+}
+
 /**
- * Transpõe (copia) com segurança absoluta as notas do aluno de origem (arquivado)
- * para o novo cadastro de reingresso.
- * Não altera, não muta e não remove NENHUM dado do aluno de origem (zero corrupção).
+ * Localiza TODAS as linhas anteriores no histórico do aluno na escola/rede.
+ * - Suporta a cadeia completa de transferências (seguindo `transferidoDe` recursivamente).
+ * - Localiza também registros anteriores arquivados com status 'expedida' e mesmo RA normalizado.
+ * - Evita ciclos e duplicatas através de Set de IDs visitados.
+ * - Retorna ordenado cronologicamente da mais antiga para a mais recente.
+ */
+export async function buscarTodasLinhasAnterioresAluno(
+  alunoAtual: Student,
+  alunoAtualId?: string,
+  turmaAtualId?: string,
+  anoLetivo?: string,
+  turmasCache?: Record<string, ClassRoom>
+): Promise<HistoricalStudentLine[]> {
+  if (!alunoAtual) return [];
+
+  try {
+    let turmasVal = turmasCache;
+    if (!turmasVal) {
+      const turmasSnap = await get(ref(rtdb, 'diario-classe/turmas'));
+      if (!turmasSnap.exists()) return [];
+      turmasVal = turmasSnap.val() || {};
+    }
+
+    const visitedIds = new Set<string>();
+    if (alunoAtualId) {
+      visitedIds.add(alunoAtualId);
+    }
+
+    const results: HistoricalStudentLine[] = [];
+
+    const formatClassName = (c?: ClassRoom): string => {
+      if (!c) return '';
+      return (c as any).name || `${c.year}º ${c.letter}`;
+    };
+
+    const findStudentById = (targetId: string): { classId: string; student: Student; className?: string; schoolName?: string } | null => {
+      if (turmaAtualId && turmasVal[turmaAtualId]?.alunos?.[targetId]) {
+        const cls = turmasVal[turmaAtualId];
+        return {
+          classId: turmaAtualId,
+          student: cls.alunos![targetId],
+          className: formatClassName(cls),
+          schoolName: cls.schoolName
+        };
+      }
+      for (const tId of Object.keys(turmasVal)) {
+        const cls = turmasVal[tId];
+        if (cls?.alunos?.[targetId]) {
+          return {
+            classId: tId,
+            student: cls.alunos[targetId],
+            className: formatClassName(cls),
+            schoolName: cls.schoolName
+          };
+        }
+      }
+      return null;
+    };
+
+    // 1. Segue a cadeia para trás via transferidoDe explícito
+    let currTargetId = alunoAtual.transferidoDe;
+    while (currTargetId && !visitedIds.has(currTargetId)) {
+      visitedIds.add(currTargetId);
+      const found = findStudentById(currTargetId);
+      if (found) {
+        results.push({
+          id: currTargetId,
+          classId: found.classId,
+          className: found.className,
+          schoolName: found.schoolName,
+          val: found.student,
+          sourceType: 'transferidoDe',
+          identidade: 'vinculo'
+        });
+        currTargetId = found.student.transferidoDe;
+      } else {
+        break;
+      }
+    }
+
+    // 2. Busca por RA normalizado em turmas da rede/escola (status 'expedida')
+    const targetNormRA = normalizarRA(alunoAtual.ra);
+    if (targetNormRA) {
+      for (const tId of Object.keys(turmasVal)) {
+        const cls = turmasVal[tId];
+        const alunos = cls?.alunos || {};
+        for (const sId of Object.keys(alunos)) {
+          if (visitedIds.has(sId)) continue;
+          const s = alunos[sId] as Student;
+          if (
+            s &&
+            s.status === 'expedida' &&
+            saoRAsIguais(s.ra, alunoAtual.ra) &&
+            (!anoLetivo || !s.anoLetivo || String(s.anoLetivo) === String(anoLetivo))
+          ) {
+            visitedIds.add(sId);
+            const identidadeLinhaRA = compararIdentidade(alunoAtual, s);
+            results.push({
+              id: sId,
+              classId: tId,
+              className: formatClassName(cls),
+              schoolName: cls.schoolName,
+              val: s,
+              sourceType: 'ra_match',
+              identidade: identidadeLinhaRA
+            });
+
+            // Se este registro também tiver uma cadeia de transferidoDe anterior, segue-a também
+            let nestedCurr = s.transferidoDe;
+            while (nestedCurr && !visitedIds.has(nestedCurr)) {
+              visitedIds.add(nestedCurr);
+              const nestedFound = findStudentById(nestedCurr);
+              if (nestedFound) {
+                results.push({
+                  id: nestedCurr,
+                  classId: nestedFound.classId,
+                  className: nestedFound.className,
+                  schoolName: nestedFound.schoolName,
+                  val: nestedFound.student,
+                  sourceType: 'transferidoDe',
+                  identidade: identidadeLinhaRA === 'divergente' ? 'divergente' : 'vinculo'
+                });
+                nestedCurr = nestedFound.student.transferidoDe;
+              } else {
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 3. Ordena cronologicamente da linha mais antiga para a mais recente
+    results.sort((a, b) => {
+      const dateA = a.val.transferOutDate || a.val.transferDate || '';
+      const dateB = b.val.transferOutDate || b.val.transferDate || '';
+      if (dateA && dateB && dateA !== dateB) return dateA.localeCompare(dateB);
+      return (Number(a.val.createdAt) || 0) - (Number(b.val.createdAt) || 0);
+    });
+
+    return results;
+  } catch (err) {
+    console.warn('[buscarTodasLinhasAnterioresAluno] Erro:', err);
+    return [];
+  }
+}
+
+/**
+ * Mantém só as linhas em que é seguro migrar notas automaticamente:
+ * as ligadas por `transferidoDe` e as achadas pelo RA cujo nome ou nascimento conferem.
+ */
+export function filtrarLinhasConfiaveis(linhas: HistoricalStudentLine[]): HistoricalStudentLine[] {
+  return linhas.filter((l) => l.identidade !== 'divergente');
+}
+
+/**
+ * Localiza a linha anterior mais recente de um aluno reingressado ou transferido.
+ * Prioridade 1: Vínculo explícito em `transferidoDe`.
+ * Prioridade 2: Busca por RA normalizado com status 'expedida'.
+ * Suporta turmasCache opcional para evitar múltiplas leituras em lote.
+ */
+export async function buscarLinhaAnteriorAluno(
+  alunoAtual: Student,
+  alunoAtualId: string,
+  turmaAtualId?: string,
+  anoLetivo?: string,
+  turmasCache?: Record<string, ClassRoom>
+): Promise<{ id: string; classId: string; val: Student } | null> {
+  const all = await buscarTodasLinhasAnterioresAluno(alunoAtual, alunoAtualId, turmaAtualId, anoLetivo, turmasCache);
+  if (all.length === 0) return null;
+  const last = all[all.length - 1];
+  return { id: last.id, classId: last.classId, val: last.val };
+}
+
+/**
+ * Transpõe as notas bimestrais de uma ou mais linhas anteriores para o cadastro de destino.
+ * - Suporta múltiplas linhas históricas em cadeia (array de sourceStudentId ordenado cronologicamente).
+ * - Suporta transferência entre turmas diferentes.
+ * - Lê de todos os nós de professores quando admin.
+ * - Resolução de conflitos cirúrgica com decidirGravacaoNotaOrigem.
+ * - Preserva notas diretas lançadas no destino.
+ * - Grava no nó do professor responsável sem duplicar no nó de administrador.
  */
 export async function transporNotasParaReingresso(
-  sourceStudentId: string,
+  sourceStudentId: string | string[],
   newStudentId: string,
   classId: string,
-  anoLetivo: string
-): Promise<{ count: number; bimesters: string[]; subjects: string[] }> {
+  anoLetivo: string,
+  /** Notas já carregadas pela tela (evita reler tudo a cada aluno). */
+  notasPreCarregadas?: NotasAgregadas
+): Promise<{ count: number; bimesters: string[]; subjects: string[]; parcial: boolean }> {
   const result = {
     count: 0,
     bimesters: [] as string[],
-    subjects: [] as string[]
+    subjects: [] as string[],
+    parcial: true
   };
+  const rawSourceIds = Array.isArray(sourceStudentId) ? sourceStudentId : [sourceStudentId];
+  const sourceIds = rawSourceIds.filter(Boolean);
 
-  if (!sourceStudentId || !newStudentId || !classId) return result;
+  if (sourceIds.length === 0 || !newStudentId || !classId) return result;
 
   try {
     const currentUid = getCurrentAuthUid();
@@ -2433,103 +2715,90 @@ export async function transporNotasParaReingresso(
     const subjectsSet = new Set<string>();
     const updates: Record<string, any> = {};
 
-    // 1. Se for administrador, busca todas as notas nos nós dos usuários (professores/admins)
-    if (isAdmin) {
-      try {
-        const usersSnap = await get(ref(rtdb, 'diario-classe/dados'));
-        if (usersSnap.exists()) {
-          const allUsers = usersSnap.val() || {};
-          Object.keys(allUsers).forEach((uId) => {
-            const uData = allUsers[uId] || {};
-            const notas = uData.notas || {};
-        Object.keys(notas).forEach((k) => {
-          const g = notas[k];
-          if (
-            g &&
-            g.studentId === sourceStudentId &&
-            g.classId === classId &&
-            (!g.anoLetivo || String(g.anoLetivo) === String(anoLetivo))
-          ) {
-            const bim = String(g.bimester);
-            const sub = g.subject || 'portugues';
-            const valNum = parseFloat(g.value);
-            if (!isNaN(valNum) && valNum >= 0 && valNum <= 10) {
-              const newKey = `${classId}_${bim}_${sub}_${newStudentId}`;
-              
-              // Sempre grava com sucesso no nó do usuário autenticado atual (garantia de permissão de escrita)
-              updates[dc(`notas/${newKey}`)] = {
-                classId,
-                studentId: newStudentId,
-                bimester: bim,
-                subject: sub,
-                value: valNum,
-                teacher: g.teacher || '',
-                anoLetivo: g.anoLetivo || anoLetivo,
-                createdAt: Date.now()
-              };
+    // 1. Notas visíveis: administrador = nós de todos os usuários (lidos um a um, sem baixar
+    //    chamadas/eventos/planos); professor = só o próprio nó. A tela pode passar as já carregadas.
+    const agreg = notasPreCarregadas || (await carregarNotasVisiveis(isAdmin));
+    const parcialLeitura = agreg.parcial ?? !isAdmin;
 
-              // Se o usuário atual for admin E for o nó de outro usuário, atualiza também no nó original
-              if (isAdmin && uId !== currentUid) {
-                updates[`diario-classe/dados/${uId}/notas/${newKey}`] = {
-                  classId,
-                  studentId: newStudentId,
-                  bimester: bim,
-                  subject: sub,
-                  value: valNum,
-                  teacher: g.teacher || '',
-                  anoLetivo: g.anoLetivo || anoLetivo,
-                  createdAt: Date.now()
-                };
-              }
+    // 2. Separa as notas já existentes no destino e as das linhas de origem
+    const existingDestGrades: Record<string, { value: number; isOrigem: boolean; teacher?: string; uId: string }> = {};
+    const sourceIdsSet = new Set(sourceIds);
+    const coletadas: NotaOrigemColetada[] = [];
 
-              result.count++;
-              bimestersSet.add(bim);
-              subjectsSet.add(sub);
-            }
-          }
-        });
-      });
-    }
-  } catch (e) {
-    console.warn('Busca global de notas ignorada (sem permissão de admin):', e);
-  }
-}
+    Object.keys(agreg.notas).forEach((k) => {
+      const g = agreg.notas[k];
+      if (!g) return;
+      if (g.anoLetivo && String(g.anoLetivo) !== String(anoLetivo)) return;
 
-    // 2. Se o usuário atual possui notas em seu próprio nó dc('notas')
-    const myNotasSnap = await get(ref(rtdb, dc('notas')));
-    if (myNotasSnap.exists()) {
-      const myNotas = myNotasSnap.val() || {};
-      Object.keys(myNotas).forEach((k) => {
-        const g = myNotas[k];
-        if (
-          g &&
-          g.studentId === sourceStudentId &&
-          g.classId === classId &&
-          (!g.anoLetivo || String(g.anoLetivo) === String(anoLetivo))
-        ) {
-          const bim = String(g.bimester);
-          const sub = g.subject || 'portugues';
-          const valNum = parseFloat(g.value);
-          if (!isNaN(valNum) && valNum >= 0 && valNum <= 10) {
-            const newKey = `${classId}_${bim}_${sub}_${newStudentId}`;
-            if (!updates[dc(`notas/${newKey}`)]) {
-              updates[dc(`notas/${newKey}`)] = {
-                classId,
-                studentId: newStudentId,
-                bimester: bim,
-                subject: sub,
-                value: valNum,
-                teacher: g.teacher || '',
-                anoLetivo: g.anoLetivo || anoLetivo,
-                createdAt: Date.now()
-              };
-              result.count++;
-              bimestersSet.add(bim);
-              subjectsSet.add(sub);
-            }
-          }
+      const bim = String(g.bimester);
+      const sub = g.subject || 'portugues';
+      const uId = agreg.vencedor[k] || currentUid;
+      const isOrigem = !!g.isOrigem || g.origem === 'nota de origem';
+
+      if (g.studentId === newStudentId) {
+        const gradeKey = `${bim}_${sub}`;
+        const atual = existingDestGrades[gradeKey];
+        // Se houver duas, a nota lançada direto prevalece sobre a cópia de origem.
+        if (!atual || (atual.isOrigem && !isOrigem)) {
+          existingDestGrades[gradeKey] = { value: Number(g.value), isOrigem, teacher: g.teacher || '', uId };
         }
-      });
+      } else if (sourceIdsSet.has(g.studentId)) {
+        const valNum = parseFloat(g.value);
+        if (!isNaN(valNum) && valNum >= 0 && valNum <= 10) {
+          coletadas.push({
+            bim,
+            sub,
+            valNum,
+            teacher: g.teacher || '',
+            ano: g.anoLetivo || anoLetivo,
+            uId,
+            isOrigem,
+            sourceOrder: sourceIds.indexOf(g.studentId),
+            criadoEm: Number(g.createdAt) || 0
+          });
+        }
+      }
+    });
+
+    // Uma nota por disciplina/bimestre, independente da ordem de leitura
+    const sourceGradesMap = consolidarNotasDeOrigem(coletadas);
+
+    // 3. Aplica cada nota no cadastro de destino com regra estrita de desempate
+    const now = Date.now();
+    for (const item of sourceGradesMap) {
+      const gradeKey = `${item.bim}_${item.sub}`;
+      const destGrade = existingDestGrades[gradeKey];
+
+      // Desempate e idempotência
+      if (decidirGravacaoNotaOrigem(destGrade, item) === 'pular') {
+        continue;
+      }
+
+      // Aplica a nota na linha nova
+      const newKey = `${classId}_${item.bim}_${item.sub}_${newStudentId}`;
+      const gradePayload = {
+        classId,
+        studentId: newStudentId,
+        bimester: item.bim,
+        subject: item.sub,
+        value: item.valNum,
+        teacher: item.teacher || '',
+        anoLetivo: item.ano || anoLetivo,
+        origem: 'nota de origem',
+        isOrigem: true,
+        createdAt: now
+      };
+
+      // Grava EXCLUSIVAMENTE no nó do professor responsável
+      if (isAdmin && item.uId) {
+        updates[`diario-classe/dados/${item.uId}/notas/${newKey}`] = gradePayload;
+      } else {
+        updates[dc(`notas/${newKey}`)] = gradePayload;
+      }
+
+      result.count++;
+      bimestersSet.add(item.bim);
+      subjectsSet.add(item.sub);
     }
 
     if (Object.keys(updates).length > 0) {
@@ -2538,6 +2807,7 @@ export async function transporNotasParaReingresso(
 
     result.bimesters = Array.from(bimestersSet).sort();
     result.subjects = Array.from(subjectsSet);
+    result.parcial = parcialLeitura;
   } catch (err) {
     console.warn('[transporNotasParaReingresso] Erro ao transpor notas:', err);
   }

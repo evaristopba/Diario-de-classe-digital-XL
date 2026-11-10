@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ClassRoom, Student, ModalConfig } from '../types';
-import { get, ref, update, rtdb } from '../lib/firebase';
+import { get, ref, update, rtdb, normalizarRA } from '../lib/firebase';
 import { formatDate } from '../lib/reports';
 import { formatFriendlyError } from '../lib/errorHandler';
 import {
@@ -129,11 +129,11 @@ export const AuditTransfersModal: React.FC<AuditTransfersModalProps> = ({
     }
   }, [isOpen, currentYear]);
 
-  // Identificar potenciais pares de origem e destino pelo mesmo RA
+  // Identificar potenciais pares de origem e destino pelo mesmo RA normalizado
   const raCounts = useMemo(() => {
     const counts: Record<string, number> = {};
     items.forEach((item) => {
-      const cleanRa = item.ra.trim();
+      const cleanRa = normalizarRA(item.ra);
       if (cleanRa) {
         counts[cleanRa] = (counts[cleanRa] || 0) + 1;
       }
@@ -507,7 +507,8 @@ export const AuditTransfersModal: React.FC<AuditTransfersModalProps> = ({
                     );
                     const warnings = getItemWarnings(item);
                     const dirty = isItemDirty(item);
-                    const hasPairedClass = item.ra.trim() && (raCounts[item.ra.trim()] || 0) > 1;
+                    const normRa = normalizarRA(item.ra);
+                    const hasPairedClass = normRa && (raCounts[normRa] || 0) > 1;
 
                     return (
                       <tr

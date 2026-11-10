@@ -123,26 +123,27 @@ O sistema mantém total integridade sobre a vida escolar do estudante:
     - Recebe o indicativo `(TR. REC. em DD/MM/AAAA)`.
     - Os bimestres anteriores à matrícula na escola são tratados de acordo com a documentação transferida anexada ao sistema.
 
-### 3.4 Fluxo Oficial de Reingresso (Retorno de Aluno TR. EXP.)
-Conforme a escrituração escolar normativa, quando um estudante que teve sua transferência expedida retorna à escola no decorrer do ano letivo:
-1. **Preservação da Matrícula 1 (Histórico Arquivado):**
-   - O cadastro original do estudante na turma permanece com o número antigo e status `TR. EXP. (DD/MM/AAAA)`.
-   - Comprova a frequência e as notas originais do período inicial na ata da escola.
-2. **Abertura da Matrícula 2 (Reingresso):**
-   - O aluno é reincluído no final da chamada com novo número e status `TR. REC. (DD/MM/AAAA)`.
-3. **Mecanismo de Reingresso Assistido no Sistema:**
-   - **Exclusividade para `TR. EXP.`:** Os botões de cópia e reingresso só são exibidos quando o aluno possui efetivamente o status de Transferência Expedida.
-   - **Trava de Segurança Anti-Duplicação por R.A.:** Se o aluno arquivado com `TR. EXP.` já possuir outra matrícula ativa de reingresso na mesma turma com o mesmo R.A. (ex: Nº 3 e Nº 23), os botões `Reingressar` e `Gravar em Memória` são **automaticamente bloqueados**, exibindo no lugar o selo `[✓ Reingressado]`. Isso impede que o aluno seja reingressado múltiplas vezes por engano.
-   - **Botão "Gravar em Memória (TR. EXP.)":** Salva instantaneamente os dados cadastrais (Nome, RA, RM, Data de Nascimento e Data de Saída) na memória da sessão.
-   - **Botão "Colar Dados Reingresso":** Na seção *Novo Aluno*, preenche todos os campos cadastrais, calcula e sugere automaticamente o próximo número de chamada no final da fila da turma, define status como `TR. REC.` e preenche a data de retorno.
-   - **Atalho Direto "Reingressar" (1 Clique):** Na linha do aluno com `TR. EXP.` na tabela, copia os dados e abre o formulário de novo cadastro com a numeração atualizada pronta para salvar.
-4. **Auditoria Ativa de Divergências Cadastrais (TR. EXP ➔ TR. REC):**
-   - **Fim do Silêncio Cadastral:** O sistema nunca atua de forma oculta. Caso detecte divergências entre o cadastro de saída (TR. EXP) e o reingresso (TR. REC) — como divergência de grafia de nome, data de nascimento ou RM — um **Alerta de Auditoria** amarelo/âmbar é exibido com destaque.
+### 3.4 Fluxo Oficial de Reingresso e Transferência Inteligente de Notas
+Conforme a escrituração escolar normativa, quando um estudante que teve sua transferência expedida retorna à escola ou é transferido entre turmas/escolas:
+1. **Vínculo Oficial entre Linhas (`transferidoDe` e Busca Cross-Turma):**
+   - Cada linha nova criada por transferência guarda o campo `transferidoDe`, registrando o ID exato da linha de onde o estudante veio.
+   - Para cadastros antigos/legados (que não possuem esse campo), o sistema localiza a linha anterior pelo **mesmo R.A.** em **qualquer turma da escola ou da rede municipal** com status `expedida`. Dessa forma, o reingresso e o retorno **não dependem de ser para a mesma turma**.
+2. **Preservação da Matrícula de Origem (Histórico Arquivado e Inalterado):**
+   - O cadastro original do estudante permanece intacto na turma anterior com seu número e status `TR. EXP. (DD/MM/AAAA)`.
+   - Comprova a frequência e as notas originais do período inicial na ata da escola, sem qualquer mutação ou risco de corrupção.
+3. **Transposição Integral de Todas as Disciplinas de Todos os Professores:**
+   - A realização da transferência é atribuição oficial de Administradores (Secretaria Escolar / Direção) para evitar transferências parciais ou fragmentação do boletim.
+   - O sistema lê as notas do ano letivo de **todos os nós de professores** no banco de dados e replica na nova turma cada nota no nó do respectivo docente, identificadas com a marcação `origem: "nota de origem"`. Todas as matérias e bimestres cursados acompanham o estudante.
+4. **Volta para a Escola A e Desempate por Período Cursado:**
+   - Quando um estudante vai para a Escola B e posteriormente retorna para a Escola A, a nova linha em A recebe o histórico consolidado de B (que já contempla o que veio de A).
+   - **Regra Oficial de Desempate:** Se a mesma disciplina e bimestre tiverem nota nos dois lados, prevalece a nota da escola/turma que o(a) aluno(a) **cursava presencialmente naquele bimestre**, cruzando o calendário bimestral com as datas de entrada (`transferInDate`) e saída (`transferOutDate`). Avaliações lançadas diretamente pelo professor no período de matrícula ativa têm precedência sobre notas de origem.
+5. **Sem Exclusão Automática de Notas no Salvamento:**
+   - Na tela de Notas (`handleSaveAll`), notas de alunos com transferência expedida são preservadas intactas no banco de dados, sem qualquer deleção automática baseada em cortes do calendário escolar. Uma nota histórica só desaparece se o operador limpar a célula deliberadamente.
+6. **Comprovante de Transferência com Extrato Completo de Notas:**
+   - Ao concluir a transferência, o sistema emite um comprovante transparente com o extrato completo de todas as notas transpostas, agrupadas por bimestre e componente curricular (ex.: `1º Bimestre: Língua Portuguesa (8.0), Matemática (7.5)`), confirmando a integridade das notas de origem.
+7. **Auditoria Ativa de Divergências Cadastrais (TR. EXP ➔ TR. REC):**
+   - O sistema nunca atua de forma oculta. Caso detecte divergências entre o cadastro de saída (TR. EXP) e o reingresso (TR. REC) — como divergência de grafia de nome, data de nascimento ou RM — um **Alerta de Auditoria** amarelo/âmbar é exibido com destaque.
    - **Painel Comparativo Lado a Lado:** Disponível tanto no menu **Alunos** quanto no menu **Notas** através do botão `🔍 Auditar / Comparar`, permitindo conferir campo a campo as informações originais versus as atuais e o status das notas aproveitadas.
-5. **Aproveitamento Automático de Notas & Fechamento Anual (Zero Corrupção):**
-   - **Migração Segura e Instantânea:** Ao salvar o novo cadastro de reingresso, o sistema busca todas as disciplinas cursadas pelo aluno no cadastro original e replica automaticamente as notas dos bimestres anteriores cursados na própria escola para o novo número.
-   - **Integridade Absoluta:** O cadastro original arquivado (`Nº 3`) **não sofre nenhuma alteração ou mutação** (zero risco de corrupção). O sistema cria novos registros dedicados para a nova matrícula (`Nº 23`).
-   - **Botão "Puxar Notas" (Para cadastros já criados):** Para alunos que foram reingressados manualmente antes da automação, a linha do aluno na tabela e o formulário exibem o botão `✨ Puxar Notas`, permitindo migrar as notas anteriores em apenas 1 clique.
    - **Média Anual Consolidada:** O **Boletim Anual** da nova matrícula fecha os 4 bimestres com a **Média Anual completa (100% calculada)**, necessitando apenas que o professor digite as notas do período intermediário caso a família tenha trazido histórico da escola externa.
 
 ### 3.5 Frequência Escolar Normativa para Alunos TR. REC & Auditoria de Presenças

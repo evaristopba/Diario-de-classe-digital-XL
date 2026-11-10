@@ -4,34 +4,38 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Diário de Classe Digital</title>
-    <meta name="description" content="Sistema de gestão escolar completo com controle de turmas, alunos, chamada, notas, planos de aula, BNCC, biblioteca escolar com cadastro inteligente por IA e relatórios em PDF e Excel integrado ao Firebase Realtime Database." />
+    <meta name="description" content="Sistema de gestão escolar completo com controle de turmas, alunos, chamada, notas, planos de aula, BNCC, biblioteca escolar e relatórios em PDF e Excel." />
     <meta property="og:title" content="Diário de Classe Digital" />
-    <meta property="og:description" content="Sistema de gestão escolar completo com controle de turmas, alunos, chamada, notas, planos de aula, BNCC, biblioteca escolar com cadastro inteligente por IA e relatórios em PDF e Excel integrado ao Firebase Realtime Database." />
+    <meta property="og:description" content="Sistema de gestão escolar completo com controle de turmas, alunos, chamada, notas, planos de aula, BNCC, biblioteca escolar e relatórios em PDF e Excel." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <script>
-      // Suprime erros benignos de reconexão de WebSocket/HMR do Vite no iframe da sandbox
-      window.addEventListener('error', function (event) {
-        if (
-          (event.message && (event.message.includes('WebSocket') || event.message.includes('createWebSocketModuleRunnerTransport'))) ||
-          (event.filename && event.filename.includes('@vite/client'))
-        ) {
-          event.stopImmediatePropagation();
-          event.preventDefault();
-          return true;
+      // Suprime erros benignos de reconexão de WebSocket/HMR do Vite no iframe da sandbox do AI Studio
+      (function() {
+        function isViteHmrError(err, msg, filename) {
+          var str = String(msg || '') + ' ' + String(filename || '') + ' ' + String(err && (err.message || err.stack || err.name) || '');
+          return str.indexOf('WebSocket') !== -1 ||
+                 str.indexOf('createWebSocketModuleRunnerTransport') !== -1 ||
+                 str.indexOf('@vite/client') !== -1 ||
+                 str.indexOf('vite:ws') !== -1;
         }
-      }, true);
-      window.addEventListener('unhandledrejection', function (event) {
-        var reason = String(event.reason || '');
-        if (
-          reason.includes('WebSocket') ||
-          reason.includes('createWebSocketModuleRunnerTransport') ||
-          reason.includes('@vite/client')
-        ) {
-          event.stopImmediatePropagation();
-          event.preventDefault();
-        }
-      }, true);
+
+        window.addEventListener('error', function (event) {
+          if (isViteHmrError(event.error, event.message, event.filename)) {
+            event.stopImmediatePropagation();
+            event.preventDefault();
+            return true;
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function (event) {
+          if (isViteHmrError(event.reason, event.reason && event.reason.message)) {
+            event.stopImmediatePropagation();
+            event.preventDefault();
+            return true;
+          }
+        }, true);
+      })();
     </script>
   </head>
   <body>

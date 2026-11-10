@@ -19,6 +19,7 @@ export interface Student {
   transferDate?: string; // Legado / espelho da última data de transferência
   transferInDate?: string; // Data da Transferência Recebida (Entrada)
   transferOutDate?: string; // Data da Transferência Expedida (Saída)
+  transferidoDe?: string; // ID da linha anterior de onde o aluno foi transferido
   anoLetivo: string;
   createdAt?: number;
   updatedAt?: number;
@@ -36,6 +37,138 @@ export interface ClassRoom {
   criadoPor?: string;
   teacherId?: string;
   alunos?: Record<string, Student>;
+  intervaloGrupo?: 'A' | 'B'; // 'A': 09:30-09:50 (Infantil/1º-3º), 'B': 10:00-10:20 (4º e 5º anos)
+  gradeHoraria?: Record<string, HorarioSlot>; // Chave: `${diaSemana}_${ordemAula}` ex: "1_1" = Segunda 1ª aula
+}
+
+export type DiaSemana = 1 | 2 | 3 | 4 | 5; // 1: Segunda, 2: Terça, 3: Quarta, 4: Quinta, 5: Sexta
+
+export interface HorarioSlot {
+  disciplinaId: string;
+  disciplinaNome: string;
+  disciplinaSigla?: string;
+  teacherId?: string; // ID do professor especialista ou regente
+  teacherNome?: string;
+  isEspecialista?: boolean;
+  horarioCustomInicio?: string; // Ex: '09:30' (ajuste pontual de horário)
+  horarioCustomFim?: string; // Ex: '10:20'
+  observacao?: string; // Ex: 'Aula adiantada/subida', 'Permuta com Ed. Física'
+}
+
+export const GRADE_DIAS_SEMANA = [
+  { id: 1 as DiaSemana, nome: 'Segunda-feira', sigla: 'SEG', curto: 'Seg' },
+  { id: 2 as DiaSemana, nome: 'Terça-feira', sigla: 'TER', curto: 'Ter' },
+  { id: 3 as DiaSemana, nome: 'Quarta-feira', sigla: 'QUA', curto: 'Qua' },
+  { id: 4 as DiaSemana, nome: 'Quinta-feira', sigla: 'QUI', curto: 'Qui' },
+  { id: 5 as DiaSemana, nome: 'Sexta-feira', sigla: 'SEX', curto: 'Sex' }
+];
+
+export const HORARIOS_SINO = {
+  matutino: {
+    A: {
+      grupo: 'A' as const,
+      nome: 'Grupo A (Infantil / 1º ao 3º Ano)',
+      intervalo: { inicio: '09:30', fim: '09:50', duracaoMin: 20, rotulo: 'Intervalo / Recreio (09:30 – 09:50)' },
+      refeicaoFinal: { inicio: '11:30', fim: '12:00', duracaoMin: 30, rotulo: 'Refeição e Saída (11:30 – 12:00)' },
+      aulas: [
+        { ordem: 1, nome: '1ª Aula', inicio: '07:00', fim: '07:50', duracaoMin: 50 },
+        { ordem: 2, nome: '2ª Aula', inicio: '07:50', fim: '08:40', duracaoMin: 50 },
+        { ordem: 3, nome: '3ª Aula', inicio: '08:40', fim: '09:30', duracaoMin: 50 },
+        { ordem: 4, nome: '4ª Aula', inicio: '09:50', fim: '10:40', duracaoMin: 50 },
+        { ordem: 5, nome: '5ª Aula', inicio: '10:40', fim: '11:30', duracaoMin: 50 }
+      ]
+    },
+    B: {
+      grupo: 'B' as const,
+      nome: 'Grupo B (4º e 5º Anos)',
+      intervalo: { inicio: '10:00', fim: '10:20', duracaoMin: 20, rotulo: 'Intervalo / Recreio (10:00 – 10:20)' },
+      complementar: { inicio: '09:30', fim: '10:00', duracaoMin: 30, rotulo: 'Leitura / Lanche dos Maiores (09:30 – 10:00)' },
+      aulas: [
+        { ordem: 1, nome: '1ª Aula', inicio: '07:00', fim: '07:50', duracaoMin: 50 },
+        { ordem: 2, nome: '2ª Aula', inicio: '07:50', fim: '08:40', duracaoMin: 50 },
+        { ordem: 3, nome: '3ª Aula', inicio: '08:40', fim: '09:30', duracaoMin: 50 },
+        { ordem: 4, nome: '4ª Aula', inicio: '10:20', fim: '11:10', duracaoMin: 50 },
+        { ordem: 5, nome: '5ª Aula', inicio: '11:10', fim: '12:00', duracaoMin: 50 }
+      ]
+    }
+  },
+  vespertino: {
+    padrao: {
+      grupo: 'T' as const,
+      nome: 'Vespertino (Todas as Turmas)',
+      intervalo: { inicio: '15:00', fim: '15:20', duracaoMin: 20, rotulo: 'Intervalo / Recreio (15:00 – 15:20)' },
+      aulas: [
+        { ordem: 1, nome: '1ª Aula', inicio: '12:30', fim: '13:20', duracaoMin: 50 },
+        { ordem: 2, nome: '2ª Aula', inicio: '13:20', fim: '14:10', duracaoMin: 50 },
+        { ordem: 3, nome: '3ª Aula', inicio: '14:10', fim: '15:00', duracaoMin: 50 },
+        { ordem: 4, nome: '4ª Aula', inicio: '15:20', fim: '16:10', duracaoMin: 50 },
+        { ordem: 5, nome: '5ª Aula', inicio: '16:10', fim: '17:00', duracaoMin: 50 }
+      ]
+    }
+  }
+};
+
+export function getHorariosTurma(shift?: string, intervaloGrupo?: 'A' | 'B', year?: string) {
+  const isVespertino = (shift || '').toLowerCase().includes('vesp') || (shift || '').toLowerCase().includes('tarde');
+  if (isVespertino) {
+    return HORARIOS_SINO.vespertino.padrao;
+  }
+  const grupo = intervaloGrupo || (year === '4' || year === '5' ? 'B' : 'A');
+  return HORARIOS_SINO.matutino[grupo] || HORARIOS_SINO.matutino.A;
+}
+
+export function getTurnoCanonical(shift?: string): 'manha' | 'tarde' | 'noite' | 'outro' {
+  const s = (shift || '').trim().toLowerCase();
+  if (s.includes('manh') || s.includes('matut')) return 'manha';
+  if (s.includes('tard') || s.includes('vesp')) return 'tarde';
+  if (s.includes('noit') || s.includes('notur')) return 'noite';
+  return 'outro';
+}
+
+export function timeToMinutes(timeStr?: string): number | null {
+  if (!timeStr || !timeStr.includes(':')) return null;
+  const [h, m] = timeStr.split(':').map(Number);
+  if (isNaN(h) || isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+export function getSlotTimeRange(
+  classItem: { shift?: string; intervaloGrupo?: 'A' | 'B'; year?: string },
+  ordem: number,
+  customInicio?: string,
+  customFim?: string
+): { startMin: number; endMin: number; inicioStr: string; fimStr: string } {
+  const cStart = timeToMinutes(customInicio);
+  const cEnd = timeToMinutes(customFim);
+  if (cStart !== null && cEnd !== null && cEnd > cStart) {
+    return { startMin: cStart, endMin: cEnd, inicioStr: customInicio!, fimStr: customFim! };
+  }
+  const sched = getHorariosTurma(classItem.shift, classItem.intervaloGrupo, classItem.year);
+  const aula = sched.aulas.find((a) => a.ordem === ordem);
+  if (aula) {
+    const sMin = timeToMinutes(aula.inicio) ?? 0;
+    const eMin = timeToMinutes(aula.fim) ?? 0;
+    return { startMin: sMin, endMin: eMin, inicioStr: aula.inicio, fimStr: aula.fim };
+  }
+  const turno = getTurnoCanonical(classItem.shift);
+  if (turno === 'tarde') {
+    const sMin = 12 * 60 + 30 + (ordem - 1) * 50;
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return {
+      startMin: sMin,
+      endMin: sMin + 50,
+      inicioStr: `${pad(Math.floor(sMin / 60))}:${pad(sMin % 60)}`,
+      fimStr: `${pad(Math.floor((sMin + 50) / 60))}:${pad((sMin + 50) % 60)}`
+    };
+  }
+  const sMin = 7 * 60 + (ordem - 1) * 50;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return {
+    startMin: sMin,
+    endMin: sMin + 50,
+    inicioStr: `${pad(Math.floor(sMin / 60))}:${pad(sMin % 60)}`,
+    fimStr: `${pad(Math.floor((sMin + 50) / 60))}:${pad((sMin + 50) % 60)}`
+  };
 }
 
 export interface Category {
@@ -115,6 +248,8 @@ export interface GradeRecord {
   value: number;
   teacher?: string;
   anoLetivo?: string;
+  origem?: string; // Ex: 'nota de origem'
+  isOrigem?: boolean;
   createdAt?: number;
 }
 
@@ -168,6 +303,7 @@ export interface Teacher {
   status?: 'active' | 'inactive';
   canManageLibrary?: boolean; // Permissão configurável para gerenciar acervo e empréstimos da biblioteca
   exibirApresentacaoAdmin?: boolean; // Checkbox para exibir atalho da Apresentação Municipal/Pitch no painel principal
+  diasDisponiveis?: number[]; // [1, 2, 3, 4, 5] (1: Seg ... 5: Sex). Se vazio ou ausente, todos os 5 dias são úteis/disponíveis
   createdAt?: number;
   updatedAt?: number;
 }
@@ -352,6 +488,8 @@ export type ScreenType =
   | 'library'
   | 'backup-screen'
   | 'backup'
+  | 'schedule-screen'
+  | 'schedule'
   | 'presentation-screen'
   | 'presentation';
 

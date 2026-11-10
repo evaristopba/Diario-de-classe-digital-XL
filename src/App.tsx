@@ -42,6 +42,7 @@ import { ReportsScreen } from './components/ReportsScreen';
 import { CategoriesScreen } from './components/CategoriesScreen';
 import { SubjectsScreen } from './components/SubjectsScreen';
 import { LibraryScreen } from './components/LibraryScreen';
+import { ScheduleScreen } from './components/ScheduleScreen';
 import { BackupScreen } from './components/BackupScreen';
 import { PresentationScreen } from './components/PresentationScreen';
 import { PendingApprovalScreen } from './components/PendingApprovalScreen';
@@ -61,6 +62,7 @@ export function App() {
   );
   const [selectedTeacherForAssignment, setSelectedTeacherForAssignment] = useState<string | null>(null);
   const [selectedClassForStudents, setSelectedClassForStudents] = useState<string | null>(null);
+  const [selectedClassForSchedule, setSelectedClassForSchedule] = useState<string | null>(null);
 
   const [modal, setModal] = useState<ModalConfig>({
     isOpen: false,
@@ -204,6 +206,10 @@ export function App() {
               setSelectedClassForStudents(classId);
               setCurrentScreen('students-screen');
             }}
+            onNavigateToSchedule={(classId) => {
+              setSelectedClassForSchedule(classId);
+              setCurrentScreen('schedule-screen');
+            }}
           />
         )}
 
@@ -294,6 +300,15 @@ export function App() {
           <LibraryScreen
             currentYear={currentYear}
             setModal={setModal}
+          />
+        )}
+
+        {(currentScreen === 'schedule-screen' || currentScreen === 'schedule') && (
+          <ScheduleScreen
+            currentYear={currentYear}
+            setModal={setModal}
+            onNavigate={setCurrentScreen}
+            initialClassId={selectedClassForSchedule || undefined}
           />
         )}
 

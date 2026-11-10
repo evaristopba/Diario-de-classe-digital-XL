@@ -8,8 +8,12 @@ import {
   rtdb,
   dc,
   carregarMinhasTurmas,
-  verificarIsAdmin
+  verificarIsAdmin,
+  buscarTodasLinhasAnterioresAluno,
+  filtrarLinhasConfiaveis,
+  carregarNotasVisiveis
 } from '../lib/firebase';
+import { consolidarNotasDeOrigem, type NotaOrigemColetada } from '../lib/notasAgregadas';
 import { formatFriendlyError } from '../lib/errorHandler';
 import { formatDate } from '../lib/reports';
 import {
@@ -326,6 +330,7 @@ export const TransferStudentModal: React.FC<TransferStudentModalProps> = ({
         status: 'recebida',
         transferInDate: transferDate,
         transferDate: transferDate,
+        transferidoDe: selectedStudentId, // PONTO 1: Vínculo explícito com a linha anterior de onde veio
         anoLetivo: selectedStudentData.anoLetivo || currentYear,
         createdAt: now,
         updatedAt: now
@@ -333,40 +338,79 @@ export const TransferStudentModal: React.FC<TransferStudentModalProps> = ({
 
       updatesPayload[`diario-classe/turmas/${destClassId}/alunos/${newStudentKey}`] = newStudentData;
 
-      // 3. Se solicitado, copia notas bimestrais dos bimestres anteriores
-      let notasCopiadasCount = 0;
+      // 3. PONTO 2: Copia notas de todos os bimestres e disciplinas de TODOS os professores/usuários
+      const notasCopiadas: { bimester: string; subject: string; teacher: string; value: number }[] = [];
+      let globalReadSuccess = false;
       if (copyGrades) {
-        const notasSnap = await get(ref(rtdb, dc('notas')));
-        if (notasSnap.exists()) {
-          const notasVal = notasSnap.val() || {};
-          Object.keys(notasVal).forEach((key) => {
-            const g = notasVal[key];
-            if (
-              g &&
-              g.classId === sourceClassId &&
-              g.studentId === selectedStudentId &&
-              (!g.anoLetivo || g.anoLetivo === currentYear)
-            ) {
-              const subject = g.subject || 'portugues';
-              const bimester = g.bimester;
-              const newGradeKey = `${destClassId}_${bimester}_${subject}_${newStudentKey}`;
-              updatesPayload[dc(`notas/${newGradeKey}`)] = {
-                classId: destClassId,
-                studentId: newStudentKey,
-                bimester: String(bimester),
-                subject: subject,
-                value: Number(g.value),
-                teacher: g.teacher || 'Transferência Escolar',
-                anoLetivo: g.anoLetivo || currentYear,
-                createdAt: now
-              };
-              notasCopiadasCount++;
-            }
+        // Linhas anteriores do aluno (cadeia por transferidoDe e por RA). Só entram as confiáveis:
+        // RA igual com nome E nascimento diferentes não leva notas junto.
+        const studentHistory = filtrarLinhasConfiaveis(
+          await buscarTodasLinhasAnterioresAluno(
+            selectedStudentData,
+            selectedStudentId,
+            sourceClassId,
+            currentYear
+          )
+        );
+        // Ordem cronológica: linhas anteriores (da mais antiga à mais recente) e, por último, a linha atual.
+        const ordemIds = [...studentHistory.map((h) => h.id), selectedStudentId];
+        const sourceIdsSet = new Set(ordemIds);
+
+        try {
+          // Lê as notas de cada usuário (só `notas`); `parcial` indica que algum nó não pôde ser lido.
+          const agreg = await carregarNotasVisiveis(true);
+          globalReadSuccess = !agreg.parcial;
+
+          const coletadas: NotaOrigemColetada[] = [];
+          Object.keys(agreg.notas).forEach((key) => {
+            const g = agreg.notas[key];
+            if (!g || !sourceIdsSet.has(g.studentId)) return;
+            if (g.anoLetivo && String(g.anoLetivo) !== String(currentYear)) return;
+            const valNum = Number(g.value);
+            if (isNaN(valNum) || valNum < 0 || valNum > 10) return;
+            coletadas.push({
+              bim: String(g.bimester),
+              sub: g.subject || 'portugues',
+              valNum,
+              teacher: g.teacher || '',
+              ano: g.anoLetivo || currentYear,
+              uId: agreg.vencedor[key],
+              isOrigem: !!g.isOrigem || g.origem === 'nota de origem',
+              sourceOrder: ordemIds.indexOf(g.studentId),
+              criadoEm: Number(g.createdAt) || 0
+            });
           });
+
+          // Uma nota por disciplina/bimestre: direta vence cópia; entre iguais, a linha mais recente.
+          // O resultado não depende da ordem em que as notas foram lidas.
+          consolidarNotasDeOrigem(coletadas).forEach((item) => {
+            const newGradeKey = `${destClassId}_${item.bim}_${item.sub}_${newStudentKey}`;
+            // Grava EXCLUSIVAMENTE no nó do professor responsável que lançou a nota
+            updatesPayload[`diario-classe/dados/${item.uId}/notas/${newGradeKey}`] = {
+              classId: destClassId,
+              studentId: newStudentKey,
+              bimester: item.bim,
+              subject: item.sub,
+              value: item.valNum,
+              teacher: item.teacher,
+              anoLetivo: item.ano || currentYear,
+              origem: 'nota de origem',
+              isOrigem: true,
+              createdAt: now
+            };
+            notasCopiadas.push({
+              bimester: item.bim,
+              subject: item.sub,
+              teacher: item.teacher,
+              value: item.valNum
+            });
+          });
+        } catch (errNotas) {
+          console.warn('Erro ao ler as notas para a transferência:', errNotas);
         }
       }
 
-      // Executa todas as atualizações de forma atômica
+      // Executa todas as atualizações de forma atômica no banco de dados
       await update(ref(rtdb), updatesPayload);
 
       // Fecha modal e notifica
@@ -376,12 +420,50 @@ export const TransferStudentModal: React.FC<TransferStudentModalProps> = ({
       const sourceDesc = sourceTurma ? `${sourceTurma.year}º ${sourceTurma.letter} (${sourceTurma.shift})` : 'Turma de Origem';
       const destDesc = destTurma ? `${destTurma.year}º ${destTurma.letter} (${destTurma.shift})` : 'Turma de Destino';
 
+      // PONTO 6: Aviso detalhado com deduplicação real e transparência de acesso
+      let notasResumoMsg = '';
+      if (copyGrades) {
+        if (notasCopiadas.length > 0) {
+          const seenBimSub = new Set<string>();
+          const porBimestre: Record<string, string[]> = {};
+          notasCopiadas.forEach((n) => {
+            const key = `${n.bimester}_${n.subject.toLowerCase()}`;
+            if (seenBimSub.has(key)) return;
+            seenBimSub.add(key);
+
+            const bim = `${n.bimester}º Bimestre`;
+            if (!porBimestre[bim]) porBimestre[bim] = [];
+            const subName = n.subject.charAt(0).toUpperCase() + n.subject.slice(1);
+            porBimestre[bim].push(`${subName} (${n.value.toFixed(1)})`);
+          });
+          const bimStr = Object.entries(porBimestre)
+            .map(([bim, subs]) => `  • ${bim}: ${subs.join(', ')}`)
+            .join('\n');
+          const destinoMsg = globalReadSuccess
+            ? 'Gravadas no nó de cada professor responsável como "nota de origem" sem duplicações.'
+            : 'Gravadas no seu próprio nó como "nota de origem".';
+          notasResumoMsg = `\n\n📊 Notas de Origem Transpostas (${seenBimSub.size} nota(s)):\n${bimStr}\n${destinoMsg} O cadastro anterior continua 100% arquivado e preservado.`;
+          if (!globalReadSuccess) {
+            notasResumoMsg += '\n\n⚠️ Atenção: não foi possível ler as notas de todos os professores; só as do seu próprio nó foram verificadas. Confira o aluno em Notas e, se faltar alguma, repita a transposição.';
+          }
+        } else if (!globalReadSuccess) {
+          notasResumoMsg = '\n\n⚠️ Atenção: não foi possível ler as notas de todos os professores; só as do seu próprio nó foram verificadas e nenhuma foi encontrada. Confira o aluno em Notas.';
+        } else {
+          notasResumoMsg = '\n\nℹ️ Nenhuma nota anterior encontrada no ano letivo para transposição.';
+        }
+      } else {
+        notasResumoMsg = '\n\nℹ️ Opção de cópia de notas não foi marcada.';
+      }
+
       setModal({
         isOpen: true,
         type: 'alert',
         title: 'Transferência Concluída com Sucesso! 🎓',
         icon: '✅',
-        message: `O aluno ${selectedStudentData.name} foi transferido com sucesso!\n\n• Origem: ${sourceDesc} → Marcado como Transferência Expedida (${formatDate(transferDate)})\n• Destino: ${destDesc} → Ingressou como Nº ${destCallNumber} (Transferência Recebida)\n• Histórico: ${notasCopiadasCount > 0 ? `${notasCopiadasCount} nota(s) bimestral(is) replicada(s).` : 'Sem notas para replicar.'}`
+        message: `O aluno "${selectedStudentData.name}" foi transferido com sucesso!\n\n` +
+          `• Origem: ${sourceDesc} → Marcado como Transferência Expedida (${formatDate(transferDate)})\n` +
+          `• Destino: ${destDesc} → Ingressou como Nº ${destCallNumber} (Transferência Recebida)` +
+          `${notasResumoMsg}`
       });
     } catch (err: any) {
       console.error('Erro ao executar transferência:', err);

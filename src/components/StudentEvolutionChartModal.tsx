@@ -2170,7 +2170,7 @@ export const StudentEvolutionChartModal: React.FC<StudentEvolutionChartModalProp
                               <StudentEvolutionRowCard
                                 key={row.student.id || idx}
                                 row={row}
-                                turmaNome={turma?.nome}
+                                turmaNome={turma ? `${turma.year}º ${turma.letter} (${turma.shift})` : undefined}
                                 currentYear={currentYear}
                                 overallAverage={classSummary.overallAverage}
                                 bAverages={classSummary.bAverages}
@@ -3060,7 +3060,7 @@ export const StudentEvolutionChartModal: React.FC<StudentEvolutionChartModalProp
                             </span>
                           </div>
                           <p className="text-xs text-slate-500 mt-0.5">
-                            RA: {currentStudent.ra || 'N/D'} · Nascimento: {currentStudent.birthDate || 'N/D'}
+                            RA: {currentStudent.ra || 'N/D'} · Nascimento: {currentStudent.birthdate || 'N/D'}
                           </p>
                         </div>
                       </div>

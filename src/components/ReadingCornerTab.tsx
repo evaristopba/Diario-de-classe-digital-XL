@@ -573,8 +573,9 @@ export const ReadingCornerTab: React.FC<ReadingCornerTabProps> = ({
       };
     });
 
+    const selectedTurmaObj = availableClasses.find((c) => c.id === selectedTurmaFilter)?.val;
     const turmaFilterLabel = selectedTurmaFilter !== 'todas'
-      ? ` - ${availableClasses.find((c) => c.id === selectedTurmaFilter)?.val?.name || 'Turma'}`
+      ? ` - ${selectedTurmaObj ? `${selectedTurmaObj.year}º ${selectedTurmaObj.letter} (${selectedTurmaObj.shift})` : 'Turma'}`
       : '';
 
     await exportToExcelJS({

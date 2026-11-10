@@ -26,13 +26,16 @@ interface AssignmentsScreenProps {
   currentYear: string;
   setModal: (config: ModalConfig) => void;
   selectedTeacherId?: string;
+  initialTeacherId?: string;
 }
 
 export const AssignmentsScreen: React.FC<AssignmentsScreenProps> = ({
   currentYear,
   setModal,
-  selectedTeacherId: initialTeacherId
+  selectedTeacherId: propSelectedTeacherId,
+  initialTeacherId: propInitialTeacherId
 }) => {
+  const initialTeacherId = propInitialTeacherId || propSelectedTeacherId;
   const [teachers, setTeachers] = useState<Array<{ id: string; val: Teacher }>>([]);
   const [allClasses, setAllClasses] = useState<Array<{ id: string; val: ClassRoom }>>([]);
   const [assignments, setAssignments] = useState<Record<string, Record<string, boolean>>>({});

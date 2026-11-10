@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ClassRoom, Student, ModalConfig, DEFAULT_SUBJECTS, SubjectItem } from '../types';
 import {
   get,
@@ -8,8 +8,15 @@ import {
   dc,
   carregarMinhasTurmas,
   verificarIsAdmin,
-  transporNotasParaReingresso
+  transporNotasParaReingresso,
+  buscarLinhaAnteriorAluno,
+  buscarTodasLinhasAnterioresAluno,
+  filtrarLinhasConfiaveis,
+  carregarNotasVisiveis,
+  getCurrentAuthUid
 } from '../lib/firebase';
+import type { NotasAgregadas } from '../lib/notasAgregadas';
+import { raValidoParaVinculo } from '../lib/identidadeAluno';
 import { formatFriendlyError } from '../lib/errorHandler';
 import { formatDate, isStudentTransferredOutBeforeBimester } from '../lib/reports';
 import {
@@ -44,6 +51,8 @@ export interface ReingressoAuditNotice {
   transCount: number;
   bimesters: string[];
   subjects: string[];
+  /** true quando só as notas do próprio usuário puderam ser verificadas */
+  parcial?: boolean;
   divergences: { field: string; orig: string; rec: string }[];
 }
 
@@ -80,6 +89,7 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
 
   const [students, setStudents] = useState<{ id: string; val: Student }[]>([]);
   const [grades, setGrades] = useState<Record<string, string>>({});
+  const [initialGrades, setInitialGrades] = useState<Record<string, string>>({});
   const [gradeKeysMap, setGradeKeysMap] = useState<Record<string, string[]>>({});
   
   // Mapa de todas as notas da turma no bimestre atual: [studentId][subject] = { value, keys }
@@ -99,6 +109,8 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
   // Auditoria e Alertas de Reingresso (TR EXP ➔ TR REC)
   const [reingressoNotices, setReingressoNotices] = useState<ReingressoAuditNotice[]>([]);
   const [reingressoModalNotice, setReingressoModalNotice] = useState<ReingressoAuditNotice | null>(null);
+  // Notas de todos os nós visíveis (o administrador enxerga as dos professores) e quem guarda cada chave
+  const notasVisiveisRef = useRef<NotasAgregadas>({ notas: {}, vencedor: {}, donos: {} });
 
   const [loading, setLoading] = useState(false);
 
@@ -181,53 +193,94 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
       list.sort((a, b) => (a.val.number || 0) - (b.val.number || 0));
       setStudents(list);
 
-      let notasSnap = await get(ref(rtdb, dc('notas')));
-      let notasVal = notasSnap.val() || {};
+      let notasAgreg = await carregarNotasVisiveis();
+      let notasVal = notasAgreg.notas;
 
-      // Sincronização e Auditoria de Notas para Alunos de Reingresso (TR. EXP ➔ TR. REC):
-      // Identifica alunos com status 'recebida' que possuam cadastro original 'expedida' com mesmo RA nesta turma
-      const receivedStudents = list.filter((s) => s.val.status === 'recebida');
+      // Sincronização e Auditoria de Notas para Alunos de Reingresso / Histórico Escolar:
+      // PONTOS 1, 2, 3 & 7: Abrange alunos com status 'recebida' e também alunos ativos que possuam histórico de saída arquivado
+      const candidateStudents = list.filter((s) => s.val.status !== 'expedida');
       let didAutoSync = false;
       const detectedNotices: ReingressoAuditNotice[] = [];
 
-      for (const rec of receivedStudents) {
-        const orig = list.find(
-          (o) => o.id !== rec.id && o.val.status === 'expedida' && o.val.ra && o.val.ra === rec.val.ra
-        );
-        if (orig) {
-          const trans = await transporNotasParaReingresso(orig.id, rec.id, selectedClassId, currentYear);
+      let turmasCache: Record<string, ClassRoom> | undefined = undefined;
+      // Só lê o nó de turmas se algum aluno puder ter histórico (vínculo explícito ou RA utilizável)
+      if (candidateStudents.some((s) => s.val.transferidoDe || raValidoParaVinculo(s.val.ra))) {
+        try {
+          const tSnap = await get(ref(rtdb, 'diario-classe/turmas'));
+          if (tSnap.exists()) {
+            turmasCache = tSnap.val() || {};
+          }
+        } catch (e) {
+          console.warn('Erro ao carregar cache de turmas para reingresso:', e);
+        }
+      }
+
+      for (const cand of candidateStudents) {
+        const todasLinhas = await buscarTodasLinhasAnterioresAluno(cand.val, cand.id, selectedClassId, currentYear, turmasCache);
+        // Linhas achadas só pelo RA, com nome E nascimento divergentes, não migram notas sozinhas:
+        // o usuário confere e usa o botão "Puxar Notas" na tela de Alunos.
+        const history = filtrarLinhasConfiaveis(todasLinhas);
+        if (todasLinhas.length > history.length) {
+          console.warn(
+            `[Reingresso] ${todasLinhas.length - history.length} linha(s) com mesmo RA mas nome e nascimento divergentes foram ignoradas para o aluno ${cand.id}.`
+          );
+        }
+        if (history.length > 0) {
+          const mostRecent = history[history.length - 1];
+
+          // Se ainda não tinha vínculo transferidoDe formalizado no RTDB, grava
+          if (!cand.val.transferidoDe) {
+            try {
+              await update(ref(rtdb, `diario-classe/turmas/${selectedClassId}/alunos/${cand.id}`), {
+                transferidoDe: mostRecent.id
+              });
+              cand.val.transferidoDe = mostRecent.id;
+            } catch (e) {
+              console.warn('Erro ao atualizar transferidoDe:', e);
+            }
+          }
+
+          const allSourceIds = history.map((h) => h.id);
+          const trans = await transporNotasParaReingresso(
+            allSourceIds,
+            cand.id,
+            selectedClassId,
+            currentYear,
+            notasAgreg
+          );
           if (trans.count > 0) {
             didAutoSync = true;
           }
 
-          // Checagem ativa de divergências cadastrais entre o cadastro de saída e o de reingresso
+          // Checagem ativa de divergências cadastrais entre a linha anterior e o cadastro atual
           const divergences: { field: string; orig: string; rec: string }[] = [];
-          if (orig.val.name.trim().toLowerCase() !== rec.val.name.trim().toLowerCase()) {
+          if (mostRecent.val.name.trim().toLowerCase() !== cand.val.name.trim().toLowerCase()) {
             divergences.push({
               field: 'Nome Completo',
-              orig: orig.val.name,
-              rec: rec.val.name
+              orig: mostRecent.val.name,
+              rec: cand.val.name
             });
           }
-          if ((orig.val.birthdate || '') !== (rec.val.birthdate || '')) {
+          if ((mostRecent.val.birthdate || '') !== (cand.val.birthdate || '')) {
             divergences.push({
               field: 'Data de Nascimento',
-              orig: formatDate(orig.val.birthdate),
-              rec: formatDate(rec.val.birthdate)
+              orig: formatDate(mostRecent.val.birthdate),
+              rec: formatDate(cand.val.birthdate)
             });
           }
-          if ((orig.val.rm || '').trim() !== (rec.val.rm || '').trim()) {
+          if ((mostRecent.val.rm || '').trim() !== (cand.val.rm || '').trim()) {
             divergences.push({
               field: 'RM',
-              orig: orig.val.rm || 'Não informado',
-              rec: rec.val.rm || 'Não informado'
+              orig: mostRecent.val.rm || 'Não informado',
+              rec: cand.val.rm || 'Não informado'
             });
           }
 
           detectedNotices.push({
-            recStudent: rec,
-            origStudent: orig,
+            recStudent: cand,
+            origStudent: { id: mostRecent.id, val: mostRecent.val },
             transCount: trans.count,
+            parcial: trans.parcial,
             bimesters: trans.bimesters,
             subjects: trans.subjects,
             divergences
@@ -238,9 +291,10 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
       setReingressoNotices(detectedNotices);
 
       if (didAutoSync) {
-        notasSnap = await get(ref(rtdb, dc('notas')));
-        notasVal = notasSnap.val() || {};
+        notasAgreg = await carregarNotasVisiveis();
+        notasVal = notasAgreg.notas;
       }
+      notasVisiveisRef.current = notasAgreg;
 
       const newGrades: Record<string, string> = {};
       const newGradeKeysMap: Record<string, string[]> = {};
@@ -312,6 +366,7 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
       });
 
       setGrades(newGrades);
+      setInitialGrades({ ...newGrades });
       setGradeKeysMap(newGradeKeysMap);
       setClassMatrixGrades(matrixMap);
       setSubjectCounts(counts);
@@ -338,6 +393,30 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
   useEffect(() => {
     loadGrades();
   }, [selectedClassId, selectedBimester, selectedSubject, currentYear]);
+
+  const meuUid = getCurrentAuthUid();
+
+  // Onde gravar a nota: no nó de quem a lançou (se for outro usuário) ou no próprio nó.
+  const caminhoNota = (key: string): string => {
+    const dono = notasVisiveisRef.current.vencedor[key];
+    return dono && dono !== meuUid ? `diario-classe/dados/${dono}/notas/${key}` : dc(`notas/${key}`);
+  };
+
+  // Exclui a chave em todos os nós que a guardam, para uma cópia antiga não reaparecer.
+  const marcarExclusao = (updates: Record<string, any>, key: string) => {
+    const donos = notasVisiveisRef.current.donos[key] || [];
+    donos.forEach((uid) => {
+      updates[uid === meuUid ? dc(`notas/${key}`) : `diario-classe/dados/${uid}/notas/${key}`] = null;
+    });
+    updates[dc(`notas/${key}`)] = null;
+  };
+
+  // Ao corrigir a nota de outro professor, mantém o nome de quem a lançou.
+  const professorDaNota = (key: string): string => {
+    const dono = notasVisiveisRef.current.vencedor[key];
+    const existente = notasVisiveisRef.current.notas[key];
+    return dono && dono !== meuUid && existente?.teacher ? existente.teacher : currentTeacher;
+  };
 
   const handleGradeChange = (studentId: string, valStr: string) => {
     let formatted = valStr.replace(',', '.');
@@ -369,46 +448,55 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
 
       students.forEach((s) => {
         if (s.val.status === 'expedida') {
-          if (isStudentTransferredOutBeforeBimester(s.val, selectedBimester)) {
-            const canonicalKey = `${selectedClassId}_${selectedBimester}_${selectedSubject}_${s.id}`;
-            const existingKeys = gradeKeysMap[s.id] || [];
-            existingKeys.forEach((oldKey) => {
-              updates[dc(`notas/${oldKey}`)] = null;
-            });
-            updates[dc(`notas/${canonicalKey}`)] = null;
-            if (selectedSubject === 'portugues') {
-              updates[dc(`notas/${selectedClassId}_${selectedBimester}_${s.id}`)] = null;
-            }
-          }
+          // PONTO 4: SEM EXCLUSÃO AUTOMÁTICA!
+          // Alunos com transferência expedida mantêm todas as suas notas históricas intactas.
+          // Nenhuma exclusão automática é feita. A nota só desaparece se o usuário limpar intencionalmente.
           return;
         }
         const valStr = grades[s.id];
+        const initialVal = initialGrades[s.id];
         const canonicalKey = `${selectedClassId}_${selectedBimester}_${selectedSubject}_${s.id}`;
-
-        const existingKeys = gradeKeysMap[s.id] || [];
-        existingKeys.forEach((oldKey) => {
-          if (oldKey !== canonicalKey) {
-            updates[dc(`notas/${oldKey}`)] = null;
-          }
-        });
-        if (selectedSubject === 'portugues') {
-          updates[dc(`notas/${selectedClassId}_${selectedBimester}_${s.id}`)] = null;
-        }
 
         if (valStr !== undefined && valStr !== '' && !isNaN(parseFloat(valStr))) {
           const numVal = parseFloat(valStr);
-          updates[dc(`notas/${canonicalKey}`)] = {
-            classId: selectedClassId,
-            studentId: s.id,
-            bimester: selectedBimester,
-            subject: selectedSubject,
-            value: numVal,
-            teacher: currentTeacher,
-            anoLetivo: currentYear,
-            createdAt: Date.now()
-          };
-        } else {
-          updates[dc(`notas/${canonicalKey}`)] = null;
+          const existingKeys = gradeKeysMap[s.id] || [];
+          existingKeys.forEach((oldKey) => {
+            if (oldKey !== canonicalKey) {
+              marcarExclusao(updates, `${oldKey}`);
+            }
+          });
+          if (selectedSubject === 'portugues') {
+            marcarExclusao(updates, `${selectedClassId}_${selectedBimester}_${s.id}`);
+          }
+
+          // Nota já existente e inalterada não é regravada: preserva autoria e data de quem a lançou.
+          const inalterada =
+            initialVal !== undefined &&
+            valStr === initialVal &&
+            (notasVisiveisRef.current.donos[canonicalKey] || []).length > 0;
+          if (!inalterada) {
+            updates[caminhoNota(canonicalKey)] = {
+              classId: selectedClassId,
+              studentId: s.id,
+              bimester: selectedBimester,
+              subject: selectedSubject,
+              value: numVal,
+              teacher: professorDaNota(canonicalKey),
+              anoLetivo: currentYear,
+              createdAt: Date.now()
+            };
+          }
+        } else if (initialVal !== undefined && initialVal !== '' && (valStr === '' || valStr === undefined)) {
+          // PONTO 5: Só apaga (grava null) se a célula continha uma nota anteriormente e foi intencionalmente limpa pelo usuário!
+          // Células que já estavam vazias e continuam vazias não geram exclusão desnecessária no Firebase.
+          const existingKeys = gradeKeysMap[s.id] || [];
+          existingKeys.forEach((oldKey) => {
+            marcarExclusao(updates, `${oldKey}`);
+          });
+          marcarExclusao(updates, `${canonicalKey}`);
+          if (selectedSubject === 'portugues') {
+            marcarExclusao(updates, `${selectedClassId}_${selectedBimester}_${s.id}`);
+          }
         }
       });
 
@@ -466,20 +554,20 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
       const existingKeys = gradeKeysMap[studentId] || [];
       existingKeys.forEach((oldKey) => {
         if (oldKey !== canonicalKey) {
-          updates[dc(`notas/${oldKey}`)] = null;
+          marcarExclusao(updates, `${oldKey}`);
         }
       });
       if (selectedSubject === 'portugues') {
-        updates[dc(`notas/${selectedClassId}_${selectedBimester}_${studentId}`)] = null;
+        marcarExclusao(updates, `${selectedClassId}_${selectedBimester}_${studentId}`);
       }
 
-      updates[dc(`notas/${canonicalKey}`)] = {
+      updates[caminhoNota(canonicalKey)] = {
         classId: selectedClassId,
         studentId: studentId,
         bimester: selectedBimester,
         subject: selectedSubject,
         value: numVal,
-        teacher: currentTeacher,
+        teacher: professorDaNota(canonicalKey),
         anoLetivo: currentYear,
         createdAt: Date.now()
       };
@@ -506,6 +594,17 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
   };
 
   const handleDeleteSingle = async (studentId: string, subjectToDelete?: string) => {
+    const targetStudent = students.find((s) => s.id === studentId);
+    if (targetStudent?.val.status === 'expedida') {
+      return setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Operação Não Permitida',
+        message: '⛔ Não é possível excluir notas de alunos com transferência expedida.',
+        icon: '⛔'
+      });
+    }
+
     const subId = subjectToDelete || selectedSubject;
     const subName = getSubjectName(subId);
 
@@ -522,9 +621,9 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
           const keyLegacy = `${selectedClassId}_${selectedBimester}_${studentId}`;
           const updates: Record<string, any> = {};
 
-          updates[dc(`notas/${canonicalKey}`)] = null;
+          marcarExclusao(updates, `${canonicalKey}`);
           if (subId === 'portugues') {
-            updates[dc(`notas/${keyLegacy}`)] = null;
+            marcarExclusao(updates, `${keyLegacy}`);
           }
 
           // Se tiver chaves mapeadas da matriz ou do mapa atual
@@ -534,7 +633,7 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
             [];
 
           existingKeys.forEach((k) => {
-            updates[dc(`notas/${k}`)] = null;
+            marcarExclusao(updates, `${k}`);
           });
 
           await update(ref(rtdb), updates);
@@ -576,16 +675,18 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
           const updates: Record<string, any> = {};
 
           students.forEach((s) => {
-            const canonicalKey = `${selectedClassId}_${selectedBimester}_${selectedSubject}_${s.id}`;
-            updates[dc(`notas/${canonicalKey}`)] = null;
-            if (selectedSubject === 'portugues') {
-              updates[dc(`notas/${selectedClassId}_${selectedBimester}_${s.id}`)] = null;
+            if (s.val.status === 'expedida') {
+              // PONTO 4: Blindagem de expedida - jamais apaga notas de alunos com transferência expedida em lote
+              return;
             }
-          });
-
-          Object.values(gradeKeysMap).forEach((keys: string[]) => {
-            keys.forEach((k: string) => {
-              updates[dc(`notas/${k}`)] = null;
+            const canonicalKey = `${selectedClassId}_${selectedBimester}_${selectedSubject}_${s.id}`;
+            marcarExclusao(updates, `${canonicalKey}`);
+            if (selectedSubject === 'portugues') {
+              marcarExclusao(updates, `${selectedClassId}_${selectedBimester}_${s.id}`);
+            }
+            const existingKeys = gradeKeysMap[s.id] || [];
+            existingKeys.forEach((k: string) => {
+              marcarExclusao(updates, `${k}`);
             });
           });
 
@@ -982,6 +1083,11 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                       ) : (
                         <p>
                           Foram migradas com sucesso <strong>{notice.transCount} nota(s)</strong> do cadastro original arquivado para o novo número de chamada do aluno <strong>{notice.recStudent.val.name}</strong>. Dados cadastrais idênticos e 100% consistentes.
+                        </p>
+                      )}
+                      {notice.parcial && (
+                        <p className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+                          ⚠️ Só as notas do seu próprio perfil foram verificadas. Notas lançadas por outros professores não foram consideradas; peça a um administrador para conferir.
                         </p>
                       )}
                     </div>
@@ -1777,6 +1883,11 @@ export const GradesScreen: React.FC<GradesScreenProps> = ({
                 {reingressoModalNotice.bimesters.length > 0 && (
                   <p className="text-[11px] text-indigo-700 mt-1">
                     Bimestres com notas migradas: <strong>{reingressoModalNotice.bimesters.map(b => `${b}º`).join(', ')} Bimestre(s)</strong>
+                  </p>
+                )}
+                {reingressoModalNotice.parcial && (
+                  <p className="mt-2 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+                    ⚠️ Só as notas do seu próprio perfil foram verificadas. Notas lançadas por outros professores não foram consideradas; peça a um administrador para conferir.
                   </p>
                 )}
               </div>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Student, ClassRoom, ModalConfig } from '../types';
+import { compararIdentidade, raValidoParaVinculo, type IdentidadeAluno } from '../lib/identidadeAluno';
 import {
   get,
   ref,
@@ -11,7 +12,11 @@ import {
   carregarMinhasTurmas,
   alunosDasMinhasTurmas,
   verificarIsAdmin,
-  transporNotasParaReingresso
+  transporNotasParaReingresso,
+  buscarLinhaAnteriorAluno,
+  buscarTodasLinhasAnterioresAluno,
+  filtrarLinhasConfiaveis,
+  saoRAsIguais
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
 import { checkStudentDeleteIntegrity } from '../lib/referentialIntegrity';
@@ -113,6 +118,37 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
       return true;
     });
   }, [students, searchQuery, statusFilter]);
+
+  // PONTO 1 & 2: Identifica se o RA digitado no formulário já existe em uma linha arquivada (status 'expedida')
+  // em qualquer turma da escola/rede, com comparação normalizada de RA.
+  const matchingExpedidaHistory = useMemo(() => {
+    if (!raValidoParaVinculo(ra)) return [];
+    const matches: {
+      classId: string;
+      className: string;
+      studentId: string;
+      student: Student;
+      identidade: IdentidadeAluno;
+    }[] = [];
+    classes.forEach((cls) => {
+      const alunos = cls.val.alunos || {};
+      Object.keys(alunos).forEach((sId) => {
+        if (editingId && sId === editingId) return;
+        const s = alunos[sId];
+        if (s && s.status === 'expedida' && saoRAsIguais(s.ra, ra)) {
+          matches.push({
+            classId: cls.id,
+            className: (cls.val as any).name || `${cls.val.year}º ${cls.val.letter}`,
+            studentId: sId,
+            student: s,
+            // Nome E nascimento diferentes: possível RA repetido/errado. Não migra notas sozinho.
+            identidade: compararIdentidade({ name, birthdate }, s)
+          });
+        }
+      });
+    });
+    return matches;
+  }, [ra, name, birthdate, classes, editingId]);
 
   const loadClasses = async () => {
     try {
@@ -281,72 +317,145 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
         } else {
           await update(ref(rtdb, `diario-classe/turmas/${selectedClassId}/alunos/${editingId}`), data);
         }
-        setModal({
-          isOpen: true,
-          type: 'alert',
-          title: 'Sucesso',
-          message: 'Aluno atualizado com sucesso!',
-          icon: '✅'
-        });
-      } else {
-        data.createdAt = Date.now();
-        const newRef = await push(ref(rtdb, `diario-classe/turmas/${selectedClassId}/alunos`), data);
-        const newStudentId = newRef.key;
-        const isReingressoOuRecebida = status === 'recebida';
 
+        // PONTO 1: Ao editar uma linha existente (seja alterada para 'recebida' ou 'ativo'),
+        // dispara a busca no histórico escolar de saídas e transpõe as notas de toda a cadeia anterior!
         let notasTranspostasMsg = '';
-        let divergenciasMsg = '';
-
-        if (isReingressoOuRecebida && newStudentId) {
-          // Localiza aluno de origem: pelo clipboard ou por RA idêntico na turma com status expedida
-          let sourceItem = studentClipboard?.id ? students.find(s => s.id === studentClipboard.id) : null;
-          if (!sourceItem) {
-            sourceItem = students.find(
-              (s) => s.classId === selectedClassId && s.val.status === 'expedida' && s.val.ra === ra.trim()
-            ) || null;
-          }
-
-          if (sourceItem) {
-            // Auditoria ativa de divergências entre saída e retorno
-            const diffs: { field: string; origVal: string; recVal: string }[] = [];
-            if (sourceItem.val.name.trim().toLowerCase() !== name.trim().toLowerCase()) {
-              diffs.push({ field: 'Nome Completo', origVal: sourceItem.val.name, recVal: name.trim() });
-            }
-            if ((sourceItem.val.birthdate || '') !== (birthdate || '')) {
-              diffs.push({ field: 'Data de Nascimento', origVal: formatDate(sourceItem.val.birthdate), recVal: formatDate(birthdate) });
-            }
-            if ((sourceItem.val.rm || '').trim() !== (rm || '').trim()) {
-              diffs.push({ field: 'RM', origVal: sourceItem.val.rm || 'Não informado', recVal: rm.trim() || 'Não informado' });
+        if (status !== 'expedida') {
+          // `data` vem do formulário e não traz o vínculo já gravado: junta com o cadastro atual
+          const atual = students.find((s) => s.id === editingId);
+          const alunoParaBusca = { ...(atual?.val || {}), ...data } as Student;
+          const todasLinhas = await buscarTodasLinhasAnterioresAluno(alunoParaBusca, editingId, selectedClassId, currentYear);
+          const history = filtrarLinhasConfiaveis(todasLinhas);
+          const ignoradas = todasLinhas.length - history.length;
+          if (history.length > 0) {
+            const mostRecent = history[history.length - 1];
+            if (!alunoParaBusca.transferidoDe) {
+              await update(ref(rtdb, `diario-classe/turmas/${selectedClassId}/alunos/${editingId}`), {
+                transferidoDe: mostRecent.id
+              });
             }
 
-            if (diffs.length > 0) {
-              divergenciasMsg = `\n\n⚠️ Divergências Cadastrais Detectadas (TR EXP x TR REC):\n` +
-                diffs.map(d => `• ${d.field}: "${d.origVal}" (Saída) ➔ "${d.recVal}" (Reingresso)`).join('\n') +
-                `\nVerifique se os dados estão corretos ou se houve erro de digitação.`;
-            } else {
-              divergenciasMsg = `\n\n✅ Auditoria Cadastral: Nenhum conflito detectado. Todos os dados cadastrais conferem 100% com o registro original.`;
-            }
-
+            const allSourceIds = history.map((h) => h.id);
             const transResult = await transporNotasParaReingresso(
-              sourceItem.id,
-              newStudentId,
+              allSourceIds,
+              editingId,
               selectedClassId,
               currentYear
             );
+            const avisoParcial = transResult.parcial
+              ? '\n\n⚠️ Atenção: Só as notas do seu próprio perfil foram verificadas. Notas lançadas por outros professores não foram consideradas; peça a um administrador para conferir.'
+              : '';
             if (transResult.count > 0) {
-              notasTranspostasMsg = `\n\n✨ Aproveitamento Automático de Notas:\nForam migradas com sucesso ${transResult.count} nota(s) do(s) ${transResult.bimesters.map((b) => `${b}º`).join(', ')} Bimestre(s) de todas as disciplinas já cursadas nesta escola!\nO cadastro original continua 100% arquivado e preservado.`;
+              notasTranspostasMsg = `\n\n✨ Aproveitamento Automático de Notas:\nForam sincronizadas ${transResult.count} nota(s) do(s) ${transResult.bimesters.map((b) => `${b}º`).join(', ')} Bimestre(s) a partir de ${allSourceIds.length} linha(s) anterior(es) do histórico escolar!${avisoParcial}`;
+            } else if (avisoParcial) {
+              notasTranspostasMsg = avisoParcial;
             }
+          }
+          if (ignoradas > 0) {
+            notasTranspostasMsg += `\n\n⚠️ Há ${ignoradas} cadastro(s) arquivado(s) com o mesmo RA, mas nome e data de nascimento diferentes: as notas NÃO foram migradas automaticamente. Se for o mesmo aluno, use "Puxar Notas" após conferir.`;
           }
         }
 
         setModal({
           isOpen: true,
           type: 'alert',
-          title: isReingressoOuRecebida ? 'Aluno Adicionado (Reingresso / Transferência)' : 'Sucesso',
-          message: isReingressoOuRecebida
-            ? `Aluno(a) "${name.trim()}" cadastrado(a) com sucesso como Transferência Recebida!${divergenciasMsg}${notasTranspostasMsg}\n\n📝 Próximo Passo:\nAcesse o menu "Notas" caso precise complementar avaliações do período em que o aluno esteve fora (da guia de transferência trazida da outra escola).`
+          title: 'Sucesso',
+          message: `Aluno atualizado com sucesso!${notasTranspostasMsg}`,
+          icon: '✅'
+        });
+      } else {
+        data.createdAt = Date.now();
+        const newRef = await push(ref(rtdb, `diario-classe/turmas/${selectedClassId}/alunos`), data);
+        const newStudentId = newRef.key;
+        const isReingressoOuAtivo = status !== 'expedida';
+
+        let notasTranspostasMsg = '';
+        let divergenciasMsg = '';
+        let avisoDivergentesMsg = '';
+        let matchedHistoryCount = 0;
+
+        if (isReingressoOuAtivo && newStudentId) {
+          // PONTO 1 & 3: Busca TODAS as linhas da cadeia histórica (via transferidoDe e RA normalizado)
+          const todasLinhas = await buscarTodasLinhasAnterioresAluno(data as Student, newStudentId, selectedClassId, currentYear);
+          // Linhas achadas só pelo RA, com nome E nascimento diferentes, não migram notas sozinhas
+          const history = filtrarLinhasConfiaveis(todasLinhas);
+          matchedHistoryCount = history.length;
+          const ignoradas = todasLinhas.length - history.length;
+          if (ignoradas > 0) {
+            avisoDivergentesMsg = `\n\n⚠️ Há ${ignoradas} cadastro(s) arquivado(s) com o mesmo RA, mas nome e data de nascimento diferentes: as notas NÃO foram migradas automaticamente. Se for o mesmo aluno, use "Puxar Notas" após conferir.`;
+          }
+
+          let sourceItem = studentClipboard?.id ? students.find((s) => s.id === studentClipboard.id) : null;
+          if (!sourceItem && history.length > 0) {
+            const mostRecent = history[history.length - 1];
+            sourceItem = {
+              id: mostRecent.id,
+              classId: mostRecent.classId,
+              val: mostRecent.val
+            };
+          }
+
+          if (history.length > 0 || sourceItem) {
+            const primarySourceId = sourceItem ? sourceItem.id : history[history.length - 1].id;
+            // Salva vínculo transferidoDe no cadastro de destino
+            await update(ref(rtdb, `diario-classe/turmas/${selectedClassId}/alunos/${newStudentId}`), {
+              transferidoDe: primarySourceId
+            });
+
+            // Auditoria ativa de divergências entre histórico de saída e o novo cadastro
+            const compareVal = sourceItem ? sourceItem.val : history[history.length - 1].val;
+            const diffs: { field: string; origVal: string; recVal: string }[] = [];
+            if (compareVal.name.trim().toLowerCase() !== name.trim().toLowerCase()) {
+              diffs.push({ field: 'Nome Completo', origVal: compareVal.name, recVal: name.trim() });
+            }
+            if ((compareVal.birthdate || '') !== (birthdate || '')) {
+              diffs.push({ field: 'Data de Nascimento', origVal: formatDate(compareVal.birthdate), recVal: formatDate(birthdate) });
+            }
+            if ((compareVal.rm || '').trim() !== (rm || '').trim()) {
+              diffs.push({ field: 'RM', origVal: compareVal.rm || 'Não informado', recVal: rm.trim() || 'Não informado' });
+            }
+
+            if (diffs.length > 0) {
+              divergenciasMsg = `\n\n⚠️ Divergências Cadastrais Detectadas (Histórico Anterior x Novo Cadastro):\n` +
+                diffs.map((d) => `• ${d.field}: "${d.origVal}" (Anterior) ➔ "${d.recVal}" (Novo)`).join('\n') +
+                `\nVerifique se os dados estão corretos ou se houve erro de digitação.`;
+            } else {
+              divergenciasMsg = `\n\n✅ Auditoria Cadastral: Nenhum conflito detectado. Todos os dados cadastrais conferem 100% com o registro histórico.`;
+            }
+
+            // PONTO 3: Transpõe notas de TODAS as linhas da cadeia histórica (não apenas da última)
+            const allSourceIds = Array.from(new Set([
+              ...history.map((h) => h.id),
+              ...(sourceItem ? [sourceItem.id] : [])
+            ]));
+
+            const transResult = await transporNotasParaReingresso(
+              allSourceIds,
+              newStudentId,
+              selectedClassId,
+              currentYear
+            );
+            const avisoParcial = transResult.parcial
+              ? '\n\n⚠️ Atenção: Só as notas do seu próprio perfil foram verificadas. Notas lançadas por outros professores não foram consideradas; peça a um administrador para conferir.'
+              : '';
+            if (transResult.count > 0) {
+              notasTranspostasMsg = `\n\n✨ Aproveitamento Automático de Notas:\nForam migradas com sucesso ${transResult.count} nota(s) do(s) ${transResult.bimesters.map((b) => `${b}º`).join(', ')} Bimestre(s) de todas as disciplinas já cursadas nesta escola (${allSourceIds.length} linha(s) anterior(es))!\nO histórico original continua 100% arquivado e preservado.${avisoParcial}`;
+            } else if (avisoParcial) {
+              notasTranspostasMsg = avisoParcial;
+            }
+          }
+        }
+
+        const isReingressoDetectado = status === 'recebida' || matchedHistoryCount > 0 || avisoDivergentesMsg !== '';
+        setModal({
+          isOpen: true,
+          type: 'alert',
+          title: isReingressoDetectado ? 'Aluno Adicionado (Reingresso / Histórico Integrado)' : 'Sucesso',
+          message: isReingressoDetectado
+            ? `Aluno(a) "${name.trim()}" cadastrado(a) com sucesso!${divergenciasMsg}${notasTranspostasMsg}${avisoDivergentesMsg}\n\n📝 Próximo Passo:\nAcesse o menu "Notas" caso precise complementar avaliações do período em que o aluno esteve fora (da guia de transferência trazida da outra escola).`
             : 'Aluno adicionado com sucesso!',
-          icon: isReingressoOuRecebida ? '📝' : '✅'
+          icon: isReingressoDetectado ? '📝' : '✅'
         });
       }
 
@@ -562,16 +671,26 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
     });
   };
 
-  const handleOpenComparisonModal = (item: { id: string; classId: string; val: Student }) => {
-    const matchedSource = students.find(
-      (s) => s.classId === item.classId && s.id !== item.id && s.val.status === 'expedida' && s.val.ra === item.val.ra
+  const handleOpenComparisonModal = async (item: { id: string; classId: string; val: Student }) => {
+    let matchedSource = students.find(
+      (s) => s.id !== item.id && s.val.status === 'expedida' && saoRAsIguais(s.val.ra, item.val.ra)
     );
+    if (!matchedSource) {
+      const found = await buscarLinhaAnteriorAluno(item.val, item.id, item.classId, currentYear);
+      if (found) {
+        matchedSource = {
+          id: found.id,
+          classId: found.classId,
+          val: found.val
+        };
+      }
+    }
     if (!matchedSource) {
       return setModal({
         isOpen: true,
         type: 'alert',
         title: 'Cadastro Anterior Não Localizado',
-        message: `Não foi encontrado nenhum cadastro arquivado com status TR. EXP. e mesmo RA (${item.val.ra}) nesta turma para comparar.`,
+        message: `Não foi encontrado nenhum cadastro arquivado com status TR. EXP. e mesmo RA (${item.val.ra || 'Não informado'}) na escola para comparar.`,
         icon: 'ℹ️'
       });
     }
@@ -594,21 +713,22 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
     });
   };
 
-  const handleTransporNotasManualmente = async (item: { id: string; classId: string; val: Student }) => {
-    // Procura na mesma turma outro aluno com status 'expedida' e o mesmo RA
-    const matchedSource = students.find(
-      (s) => s.classId === item.classId && s.id !== item.id && s.val.status === 'expedida' && s.val.ra === item.val.ra
-    );
+  const handleTransporNotasManualmente = async (item: { id: string; classId?: string; val: Student }) => {
+    const classIdToUse = item.classId || selectedClassId;
+    const allHistory = await buscarTodasLinhasAnterioresAluno(item.val, item.id, classIdToUse, currentYear);
 
-    if (!matchedSource) {
+    if (allHistory.length === 0) {
       return setModal({
         isOpen: true,
         type: 'alert',
-        title: 'Cadastro Anterior Não Localizado',
-        message: `Não foi encontrado nenhum cadastro arquivado com status TR. EXP. e mesmo RA (${item.val.ra}) nesta turma para transpor notas.`,
+        title: 'Histórico Anterior Não Localizado',
+        message: `Não foi encontrado nenhum cadastro arquivado com status TR. EXP. e mesmo RA (${item.val.ra || 'Não informado'}) na escola para transpor notas.`,
         icon: 'ℹ️'
       });
     }
+
+    const matchedSource = allHistory[allHistory.length - 1];
+    const allSourceIds = allHistory.map((h) => h.id);
 
     // Auditoria de divergências cadastrais
     const diffs: string[] = [];
@@ -626,19 +746,34 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
       ? `\n\n⚠️ Divergências Cadastrais Detectadas:\n${diffs.join('\n')}\n`
       : '\n\n✅ Dados cadastrais idênticos entre a saída e o retorno.\n';
 
+    const multiInfo = allHistory.length > 1
+      ? `\n• O histórico escolar possui ${allHistory.length} registros anteriores que serão consolidados cronologicamente.`
+      : '';
+    const qtdDivergentes = allHistory.filter((h) => h.identidade === 'divergente').length;
+    const divergentesInfo = qtdDivergentes > 0
+      ? `\n• ⚠️ ${qtdDivergentes} registro(s) têm nome e data de nascimento diferentes deste aluno. Confirme só se for a mesma pessoa.`
+      : '';
+
     setModal({
       isOpen: true,
       type: 'confirm',
       title: 'Aproveitamento de Estudos',
-      message: `Deseja transpor automaticamente as notas de todas as disciplinas cursadas no cadastro original (Nº ${matchedSource.val.number}) para este aluno (Nº ${item.val.number})?${diffsMsg}\n• O cadastro original (Nº ${matchedSource.val.number}) permanecerá 100% arquivado e inalterado.\n• As notas serão replicadas para composição da Média Anual no novo número.`,
+      message: `Deseja transpor automaticamente as notas de todas as disciplinas cursadas no histórico escolar deste aluno para este cadastro (Nº ${item.val.number})?${diffsMsg}${multiInfo}${divergentesInfo}\n• O cadastro original arquivado permanecerá 100% inalterado.\n• As notas serão replicadas para composição da Média Anual no novo número.`,
       icon: '✨',
       onConfirm: async () => {
         try {
           setLoading(true);
+
+          if (!item.val.transferidoDe) {
+            await update(ref(rtdb, `diario-classe/turmas/${classIdToUse}/alunos/${item.id}`), {
+              transferidoDe: matchedSource.id
+            });
+          }
+
           const trans = await transporNotasParaReingresso(
-            matchedSource.id,
+            allSourceIds,
             item.id,
-            item.classId,
+            classIdToUse,
             currentYear
           );
 
@@ -647,7 +782,7 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
               isOpen: true,
               type: 'alert',
               title: 'Notas Transpostas com Sucesso',
-              message: `Foram migradas com sucesso ${trans.count} nota(s) do(s) ${trans.bimesters.map((b) => `${b}º`).join(', ')} Bimestre(s) para o aluno Nº ${item.val.number}!\n\nDisciplinas: ${trans.subjects.join(', ')}.\nO Boletim Anual agora possui o aproveitamento de estudos integrado!`,
+              message: `Foram migradas com sucesso ${trans.count} nota(s) do(s) ${trans.bimesters.map((b) => `${b}º`).join(', ')} Bimestre(s) para o aluno Nº ${item.val.number} (${allHistory.length} linha(s) anterior(es))!\n\nDisciplinas: ${trans.subjects.join(', ')}.\nO Boletim Anual agora possui o aproveitamento de estudos integrado!${trans.parcial ? '\n\n⚠️ Atenção: Só as notas do seu próprio perfil foram verificadas. Notas lançadas por outros professores não foram consideradas; peça a um administrador para conferir.' : ''}`,
               icon: '✅'
             });
           } else {
@@ -655,7 +790,7 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
               isOpen: true,
               type: 'alert',
               title: 'Nenhuma Nota Encontrada',
-              message: `O cadastro original (Nº ${matchedSource.val.number}) ainda não possui notas lançadas registradas nesta turma para o ano letivo ${currentYear}.`,
+              message: `Os cadastros anteriores arquivados ainda não possuem notas lançadas registradas nesta escola para o ano letivo ${currentYear}.${trans.parcial ? '\n\n⚠️ Atenção: Só as notas do seu próprio perfil foram verificadas. Notas lançadas por outros professores não foram consideradas; peça a um administrador para conferir.' : ''}`,
               icon: 'ℹ️'
             });
           }
@@ -1111,7 +1246,60 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
             )}
           </div>
 
-          {status === 'recebida' && (
+          {matchingExpedidaHistory.length > 0 && (
+            <div className="p-3.5 bg-blue-50/90 border border-blue-200/90 rounded-xl text-xs text-blue-950 flex items-start gap-2.5">
+              <span className="text-lg leading-none shrink-0 mt-0.5">ℹ️</span>
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <strong className="font-bold text-blue-900">Histórico de Transferência Expedida (Saída) Localizado</strong>
+                  <span className="px-2 py-0.5 text-[10px] font-semibold bg-blue-200/70 text-blue-800 rounded-full">
+                    {matchingExpedidaHistory.length} registro(s)
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] text-blue-800 leading-relaxed">
+                  Existe cadastro arquivado com status <strong>Transferência Expedida</strong> e mesmo RA nesta escola:
+                </p>
+                <ul className="mt-1.5 space-y-1 text-[11px] text-blue-950 font-medium">
+                  {matchingExpedidaHistory.map((m) => (
+                    <li key={m.studentId} className="flex items-center gap-1.5">
+                      <span className="text-blue-500">•</span>
+                      <strong className="font-semibold">{m.student.name}</strong>
+                      <span className="text-blue-700 font-normal">({m.className} - Nº {m.student.number})</span>
+                      {m.student.transferOutDate && (
+                        <span className="text-slate-500 font-normal text-[10px]">Saída em {formatDate(m.student.transferOutDate)}</span>
+                      )}
+                      {m.identidade === 'divergente' && (
+                        <span className="text-amber-700 font-semibold text-[10px]">⚠️ nome e nascimento diferentes: não migra notas sozinho</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-[11px] text-blue-700 leading-tight">
+                  {matchingExpedidaHistory.every((m) => m.identidade === 'divergente') ? (
+                    <>Nome e data de nascimento <strong>não conferem</strong> com o cadastro arquivado: nenhuma nota será migrada automaticamente. Se for o mesmo aluno, use <strong>Puxar Notas</strong> depois de conferir.</>
+                  ) : (
+                    <>Ao salvar como <strong>{status === 'recebida' ? 'Transferência Recebida' : 'Ativo'}</strong>, o histórico será vinculado e as notas dos bimestres anteriores serão migradas automaticamente!</>
+                  )}
+                </p>
+                {editingId && (
+                  <button
+                    type="button"
+                    id="btn-form-transpor-notas"
+                    onClick={() => {
+                      const cur = students.find((s) => s.id === editingId);
+                      if (cur) handleTransporNotasManualmente(cur);
+                    }}
+                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition shadow-xs cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Puxar Notas do Histórico Escolar ({matchingExpedidaHistory.length} registro(s))</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {status === 'recebida' && matchingExpedidaHistory.length === 0 && (
             <div className="p-3 bg-amber-50/80 border border-amber-200/90 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
               <span className="text-base leading-none shrink-0 mt-0.5">💡</span>
               <div className="flex-1">
@@ -1119,20 +1307,6 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
                 <p className="mt-0.5 text-[11px] text-amber-800 leading-relaxed">
                   Para alunos com Transferência Recebida ou Reingresso, acesse o menu <strong>Notas</strong> para lançar as notas dos bimestres anteriores (transpondo do cadastro anterior arquivado ou da guia de transferência). Isso garante o cálculo completo da <strong>Média Anual</strong> nos Boletins.
                 </p>
-                {editingId && students.some(s => s.id !== editingId && s.classId === selectedClassId && s.val.status === 'expedida' && s.val.ra === ra.trim()) && (
-                  <button
-                    type="button"
-                    id="btn-form-transpor-notas"
-                    onClick={() => {
-                      const cur = students.find(s => s.id === editingId);
-                      if (cur) handleTransporNotasManualmente(cur);
-                    }}
-                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition shadow-xs cursor-pointer"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>Puxar Notas do Cadastro Original (Automático)</span>
-                  </button>
-                )}
               </div>
             </div>
           )}
@@ -1315,35 +1489,37 @@ export const StudentsScreen: React.FC<StudentsScreenProps> = ({ currentYear, set
                         );
                       })()
                     )}
-                    {student.status === 'recebida' &&
+                    {student.status !== 'expedida' && (
+                      student.status === 'recebida' ||
+                      Boolean(student.transferidoDe) ||
                       students.some(
                         (other) =>
-                          other.classId === item.classId &&
                           other.id !== item.id &&
                           other.val.status === 'expedida' &&
-                          other.val.ra === student.ra
-                      ) && (
-                        <>
-                          <button
-                            id={`student-compare-reingresso-${item.id}`}
-                            onClick={() => handleOpenComparisonModal(item)}
-                            className="p-1.5 text-amber-700 hover:text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-bold cursor-pointer"
-                            title="Auditar e comparar dados cadastrais com o cadastro de saída original (TR. EXP)"
-                          >
-                            <ArrowRightLeft className="w-3.5 h-3.5 text-amber-600" />
-                            <span className="hidden lg:inline">Auditar / Comparar</span>
-                          </button>
-                          <button
-                            id={`student-transpor-notas-${item.id}`}
-                            onClick={() => handleTransporNotasManualmente(item)}
-                            className="p-1.5 text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/80 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-bold cursor-pointer"
-                            title="Puxar notas de todas as matérias cursadas no cadastro original deste aluno arquivado"
-                          >
-                            <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-                            <span className="hidden md:inline">Puxar Notas</span>
-                          </button>
-                        </>
-                      )}
+                          saoRAsIguais(other.val.ra, student.ra)
+                      )
+                    ) && (
+                      <>
+                        <button
+                          id={`student-compare-reingresso-${item.id}`}
+                          onClick={() => handleOpenComparisonModal(item)}
+                          className="p-1.5 text-amber-700 hover:text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-bold cursor-pointer"
+                          title="Auditar e comparar dados cadastrais com o histórico de saída original (TR. EXP)"
+                        >
+                          <ArrowRightLeft className="w-3.5 h-3.5 text-amber-600" />
+                          <span className="hidden lg:inline">Auditar / Comparar</span>
+                        </button>
+                        <button
+                          id={`student-transpor-notas-${item.id}`}
+                          onClick={() => handleTransporNotasManualmente(item)}
+                          className="p-1.5 text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/80 rounded-lg transition-colors inline-flex items-center gap-1 text-xs font-bold cursor-pointer"
+                          title="Puxar notas de todas as matérias cursadas no histórico escolar deste aluno arquivado"
+                        >
+                          <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                          <span className="hidden md:inline">Puxar Notas</span>
+                        </button>
+                      </>
+                    )}
                     <button
                       id={`student-evolution-${item.id}`}
                       onClick={() =>

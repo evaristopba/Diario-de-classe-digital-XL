@@ -46,7 +46,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
   onNavigateToAssignments
 }) => {
   const [teachers, setTeachers] = useState<Array<{ id: string; val: Teacher }>>([]);
-  const [availableSubjects, setAvailableSubjects] = useState<SubjectItem[]>(DEFAULT_SUBJECTS);
+  const [availableSubjects, setAvailableSubjects] = useState<SubjectItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -63,6 +63,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
   const [status, setStatus] = useState<'active' | 'inactive'>('active');
   const [canManageLibrary, setCanManageLibrary] = useState(false);
   const [exibirApresentacaoAdmin, setExibirApresentacaoAdmin] = useState(false);
+  const [diasDisponiveis, setDiasDisponiveis] = useState<number[]>([1, 2, 3, 4, 5]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -90,12 +91,13 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
         const val = snap.val() || {};
         const list: SubjectItem[] = Object.keys(val).map((k) => val[k]);
         list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-        if (list.length > 0) {
-          setAvailableSubjects(list);
-        }
+        setAvailableSubjects(list);
+      } else {
+        setAvailableSubjects([]);
       }
     } catch (e) {
-      console.log('Usando disciplinas padrão:', e);
+      console.log('Erro ao carregar disciplinas do banco:', e);
+      setAvailableSubjects([]);
     }
   };
 
@@ -163,6 +165,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
       setStatus(t.val.status || 'active');
       setCanManageLibrary(!!t.val.canManageLibrary);
       setExibirApresentacaoAdmin(!!t.val.exibirApresentacaoAdmin);
+      setDiasDisponiveis(Array.isArray(t.val.diasDisponiveis) && t.val.diasDisponiveis.length > 0 ? t.val.diasDisponiveis : [1, 2, 3, 4, 5]);
     } else {
       setEditingId(null);
       setName('');
@@ -174,6 +177,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
       setStatus('active');
       setCanManageLibrary(false);
       setExibirApresentacaoAdmin(false);
+      setDiasDisponiveis([1, 2, 3, 4, 5]);
     }
     setIsFormOpen(true);
   };
@@ -285,6 +289,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
         status,
         canManageLibrary: !!canManageLibrary,
         exibirApresentacaoAdmin: !!exibirApresentacaoAdmin,
+        diasDisponiveis: diasDisponiveis.length === 5 ? [1, 2, 3, 4, 5] : diasDisponiveis,
         ...(preservedAuthUid ? { authUid: preservedAuthUid } : {}),
         ...(effectiveAuthEmail ? { authEmail: effectiveAuthEmail } : {}),
         ...(effectivePassword ? { password: effectivePassword, tempPassword: effectivePassword } : {})
@@ -559,6 +564,11 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
                         🔑 Auto-login
                       </span>
                     )}
+                    {Array.isArray(t.val.diasDisponiveis) && t.val.diasDisponiveis.length > 0 && t.val.diasDisponiveis.length < 5 && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200" title={`Atua em ${t.val.diasDisponiveis.length} dias na semana`}>
+                        🗓️ Folga: {[1, 2, 3, 4, 5].filter((d) => !t.val.diasDisponiveis!.includes(d)).map((d) => ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'][d - 1]).join(', ')}
+                      </span>
+                    )}
                     <span
                       className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full ${
                         t.val.status === 'inactive'
@@ -817,6 +827,60 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
                   <option value="active">Ativo (Permitir Acesso)</option>
                   <option value="inactive">Inativo (Bloquear Acesso)</option>
                 </select>
+              </div>
+
+              {/* Escala Semanal e Dias de Atuação na Escola (Especialistas / Folga) */}
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-800 block">
+                    Dias de Atendimento nesta Escola (Escala Semanal)
+                  </label>
+                  <span className="text-[10px] text-slate-500 font-medium">
+                    {diasDisponiveis.length === 5 ? 'Todos os dias (5/5)' : `${diasDisponiveis.length} dias presentes`}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 leading-tight">
+                  Desmarque os dias em que o docente tem folga ou não atua na escola (ex: Informática folga na sexta, Educação Física na quinta).
+                </p>
+                <div className="grid grid-cols-5 gap-1.5 pt-1">
+                  {[
+                    { id: 1, label: 'Seg', full: 'Segunda-feira' },
+                    { id: 2, label: 'Ter', full: 'Terça-feira' },
+                    { id: 3, label: 'Qua', full: 'Quarta-feira' },
+                    { id: 4, label: 'Qui', full: 'Quinta-feira' },
+                    { id: 5, label: 'Sex', full: 'Sexta-feira' }
+                  ].map((dia) => {
+                    const isChecked = diasDisponiveis.includes(dia.id);
+                    return (
+                      <button
+                        key={dia.id}
+                        type="button"
+                        onClick={() => {
+                          setDiasDisponiveis((prev) =>
+                            isChecked ? prev.filter((d) => d !== dia.id) : [...prev, dia.id].sort()
+                          );
+                        }}
+                        className={`py-1.5 px-2 rounded-xl text-xs font-bold border transition cursor-pointer text-center ${
+                          isChecked
+                            ? 'bg-indigo-600 border-indigo-700 text-white shadow-2xs'
+                            : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300 hover:text-slate-600 line-through'
+                        }`}
+                        title={isChecked ? `${dia.full}: Presente na escola` : `${dia.full}: Dia de folga / fora da escola`}
+                      >
+                        {dia.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {diasDisponiveis.length < 5 && (
+                  <p className="text-[10px] text-amber-700 font-semibold pt-1">
+                    🏖️ Folga / Dia livre:{' '}
+                    {[1, 2, 3, 4, 5]
+                      .filter((d) => !diasDisponiveis.includes(d))
+                      .map((d) => ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta'][d - 1])
+                      .join(', ')}. O sistema previne conflitos ao montar a grade.
+                  </p>
+                )}
               </div>
 
               {/* Permissão de Biblioteca Escolar */}

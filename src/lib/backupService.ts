@@ -1,4 +1,13 @@
-import { ref, get, set, update, rtdb, dc, getCurrentAuthUid, auth } from './firebase';
+import { ref, get, set, update, rtdb, dc, getCurrentAuthUid, auth, verificarIsAdmin } from './firebase';
+import {
+  planejarRegistros,
+  planejarTurmas,
+  extrairDadosPorUsuario,
+  dividirEmLotes,
+  novaEstatistica,
+  type EstatisticaGrupo,
+  type NoUsuario
+} from './restauracaoPlano';
 import {
   School,
   ClassRoom,
@@ -13,7 +22,10 @@ import {
   LessonPlan,
   EventOccurrence,
   Book,
-  BookLoan
+  BookLoan,
+  BookReservation,
+  BookMovement,
+  ReadingCornerBook
 } from '../types';
 
 export interface BackupMetadata {
@@ -22,6 +34,10 @@ export interface BackupMetadata {
   exportedAt: string;
   timestamp: number;
   exportedByUid?: string;
+  /** 'completo' só quando quem exportou é administrador e nenhuma leitura falhou. */
+  escopo?: 'completo' | 'parcial';
+  /** Nós que NÃO puderam ser lidos na exportação (permissão ou rede). O que está aqui não consta no arquivo. */
+  leiturasIncompletas?: string[];
   exportedByName?: string;
   exportedByEmail?: string;
   system: string;
@@ -41,6 +57,14 @@ export interface BackupMetadata {
     events: number;
     books?: number;
     loans?: number;
+    holdings?: number;
+    reservations?: number;
+    movements?: number;
+    readingCorners?: number;
+    settings?: number;
+    permissions?: number;
+    /** Horários cadastrados na grade semanal das turmas */
+    schedule?: number;
     totalRecords: number;
   };
 }
@@ -56,6 +80,18 @@ export interface BackupDataPayload {
   eventTypes?: Record<string, EventType>;
   books?: Record<string, Book>;
   loans?: Record<string, BookLoan>;
+  /** biblioteca/acervos: estoque físico por escola -> livro */
+  libraryHoldings?: Record<string, Record<string, any>>;
+  libraryReservations?: Record<string, BookReservation>;
+  libraryMovements?: Record<string, BookMovement>;
+  readingCorners?: Record<string, ReadingCornerBook>;
+  /** diario-classe/config */
+  settings?: Record<string, any>;
+  /** Listas de permissão (uid -> true). Restauradas só por opção explícita. */
+  admins?: Record<string, boolean>;
+  librarians?: Record<string, boolean>;
+  /** BNCC, categorias e tipos de ocorrência do nó pessoal de quem exportou */
+  ownUserExtras?: { bncc?: Record<string, any>; categorias?: Record<string, any>; 'tipos-evento'?: Record<string, any> };
   // Dados pedagógicos do usuário autenticado
   attendances?: Record<string, AttendanceRecord>;
   grades?: Record<string, GradeRecord>;
@@ -67,6 +103,9 @@ export interface BackupDataPayload {
     notas?: Record<string, GradeRecord>;
     'planos-aula'?: Record<string, LessonPlan>;
     eventos?: Record<string, EventOccurrence>;
+    bncc?: Record<string, any>;
+    categorias?: Record<string, any>;
+    'tipos-evento'?: Record<string, any>;
   }>;
 }
 
@@ -100,6 +139,10 @@ export interface RestoreOptions {
   includeLessonPlans: boolean;
   includeEvents: boolean;
   includeLibrary?: boolean;
+  /** Configurações do sistema (diario-classe/config). Padrão: marcado. */
+  includeSettings?: boolean;
+  /** Listas de administradores e bibliotecários. Padrão: DESMARCADO (concede acesso). */
+  includePermissions?: boolean;
   mode: 'merge' | 'overwrite_selected';
 }
 
@@ -122,6 +165,25 @@ export async function generateFullBackup(userProfile?: {
   const name = userProfile?.name || auth.currentUser?.displayName || localStorage.getItem('dc_teacher_name') || 'Professor / Administrador';
   const email = userProfile?.email || auth.currentUser?.email || '';
 
+  // Leitura que falha NÃO pode passar em silêncio: fica registrada no próprio arquivo de backup.
+  const leiturasIncompletas: string[] = [];
+  const lerSeguro = async (rotulo: string, path: string) => {
+    try {
+      return await get(ref(rtdb, path));
+    } catch (e) {
+      console.warn(`[backup] Não foi possível ler "${rotulo}" (${path}):`, e);
+      leiturasIncompletas.push(rotulo);
+      return null;
+    }
+  };
+
+  let isAdmin = false;
+  try {
+    isAdmin = await verificarIsAdmin(uid);
+  } catch {
+    isAdmin = false;
+  }
+
   // 1. Carregar Coleções Compartilhadas
   const [
     escolasSnap,
@@ -133,18 +195,32 @@ export async function generateFullBackup(userProfile?: {
     categoriasSnap,
     tiposEventoSnap,
     livrosSnap,
-    emprestimosSnap
+    emprestimosSnap,
+    acervosSnap,
+    reservasSnap,
+    movimentacoesSnap,
+    cantinhosSnap,
+    configSnap,
+    adminsSnap,
+    bibliotecariosSnap
   ] = await Promise.all([
-    get(ref(rtdb, 'diario-classe/escolas')).catch(() => null),
-    get(ref(rtdb, 'diario-classe/turmas')).catch(() => null),
-    get(ref(rtdb, 'diario-classe/professores')).catch(() => null),
-    get(ref(rtdb, 'diario-classe/atribuicoes')).catch(() => null),
-    get(ref(rtdb, 'diario-classe/disciplinas')).catch(() => null),
-    get(ref(rtdb, 'diario-classe/bncc')).catch(() => null),
-    get(ref(rtdb, 'diario-classe/categorias')).catch(() => null),
-    get(ref(rtdb, 'diario-classe/tipos-evento')).catch(() => null),
-    get(ref(rtdb, 'diario-classe/biblioteca/livros')).catch(() => null),
-    get(ref(rtdb, 'diario-classe/biblioteca/emprestimos')).catch(() => null)
+    lerSeguro('Escolas', 'diario-classe/escolas'),
+    lerSeguro('Turmas e alunos', 'diario-classe/turmas'),
+    lerSeguro('Professores', 'diario-classe/professores'),
+    lerSeguro('Atribuições de turmas', 'diario-classe/atribuicoes'),
+    lerSeguro('Disciplinas', 'diario-classe/disciplinas'),
+    lerSeguro('BNCC', 'diario-classe/bncc'),
+    lerSeguro('Categorias', 'diario-classe/categorias'),
+    lerSeguro('Tipos de ocorrência', 'diario-classe/tipos-evento'),
+    lerSeguro('Livros da biblioteca', 'diario-classe/biblioteca/livros'),
+    lerSeguro('Empréstimos da biblioteca', 'diario-classe/biblioteca/emprestimos'),
+    lerSeguro('Acervo físico por escola', 'diario-classe/biblioteca/acervos'),
+    lerSeguro('Reservas da biblioteca', 'diario-classe/biblioteca/reservas'),
+    lerSeguro('Movimentações da biblioteca', 'diario-classe/biblioteca/movimentacoes'),
+    lerSeguro('Cantinho da Leitura', 'diario-classe/biblioteca/cantinhos'),
+    lerSeguro('Configurações do sistema', 'diario-classe/config'),
+    lerSeguro('Administradores', 'diario-classe/admins'),
+    lerSeguro('Bibliotecários', 'diario-classe/bibliotecarios')
   ]);
 
   const schools = (escolasSnap?.val() || {}) as Record<string, School>;
@@ -157,6 +233,13 @@ export async function generateFullBackup(userProfile?: {
   const eventTypes = (tiposEventoSnap?.val() || {}) as Record<string, EventType>;
   const books = (livrosSnap?.val() || {}) as Record<string, Book>;
   const loans = (emprestimosSnap?.val() || {}) as Record<string, BookLoan>;
+  const libraryHoldings = (acervosSnap?.val() || {}) as Record<string, Record<string, any>>;
+  const libraryReservations = (reservasSnap?.val() || {}) as Record<string, BookReservation>;
+  const libraryMovements = (movimentacoesSnap?.val() || {}) as Record<string, BookMovement>;
+  const readingCorners = (cantinhosSnap?.val() || {}) as Record<string, ReadingCornerBook>;
+  const settings = (configSnap?.val() || {}) as Record<string, any>;
+  const admins = (adminsSnap?.val() || {}) as Record<string, boolean>;
+  const librarians = (bibliotecariosSnap?.val() || {}) as Record<string, boolean>;
 
   // 2. Contabilizar alunos dentro das turmas
   let totalStudents = 0;
@@ -172,33 +255,49 @@ export async function generateFullBackup(userProfile?: {
   let lessonPlans: Record<string, LessonPlan> = {};
   let events: Record<string, EventOccurrence> = {};
   let allUsersPedagogical: Record<string, any> | undefined = undefined;
+  let ownUserExtras: BackupDataPayload['ownUserExtras'] = undefined;
 
   if (uid && uid !== 'anon') {
     try {
-      const [chamadaSnap, notasSnap, planosSnap, eventosSnap] = await Promise.all([
-        get(ref(rtdb, dc('chamada'))).catch(() => null),
-        get(ref(rtdb, dc('notas'))).catch(() => null),
-        get(ref(rtdb, dc('planos-aula'))).catch(() => null),
-        get(ref(rtdb, dc('eventos'))).catch(() => null)
-      ]);
+      const [chamadaSnap, notasSnap, planosSnap, eventosSnap, bnccPessoalSnap, categoriasPessoaisSnap, tiposPessoaisSnap] =
+        await Promise.all([
+          lerSeguro('Chamadas (seu perfil)', dc('chamada')),
+          lerSeguro('Notas (seu perfil)', dc('notas')),
+          lerSeguro('Planos de aula (seu perfil)', dc('planos-aula')),
+          lerSeguro('Ocorrências (seu perfil)', dc('eventos')),
+          lerSeguro('BNCC pessoal (seu perfil)', dc('bncc')),
+          lerSeguro('Categorias pessoais (seu perfil)', dc('categorias')),
+          lerSeguro('Tipos de ocorrência pessoais (seu perfil)', dc('tipos-evento'))
+        ]);
 
       attendances = (chamadaSnap?.val() || {}) as Record<string, AttendanceRecord>;
       grades = (notasSnap?.val() || {}) as Record<string, GradeRecord>;
       lessonPlans = (planosSnap?.val() || {}) as Record<string, LessonPlan>;
       events = (eventosSnap?.val() || {}) as Record<string, EventOccurrence>;
+
+      const extras = {
+        bncc: bnccPessoalSnap?.val() || undefined,
+        categorias: categoriasPessoaisSnap?.val() || undefined,
+        'tipos-evento': tiposPessoaisSnap?.val() || undefined
+      };
+      if (Object.values(extras).some((v) => v && Object.keys(v).length > 0)) ownUserExtras = extras;
     } catch (e) {
       console.warn('Erro ao carregar dados pedagógicos pessoais para backup:', e);
+      leiturasIncompletas.push('Dados pedagógicos do seu perfil');
     }
 
-    // Se for administrador, tenta ler o nó global diario-classe/dados
-    try {
-      const globalDadosSnap = await get(ref(rtdb, 'diario-classe/dados')).catch(() => null);
+    // Só administrador lê o nó global de todos os professores
+    if (isAdmin) {
+      const globalDadosSnap = await lerSeguro('Dados pedagógicos de todos os professores', 'diario-classe/dados');
       if (globalDadosSnap && globalDadosSnap.exists()) {
         allUsersPedagogical = globalDadosSnap.val();
       }
-    } catch {
-      // Ignora se não tiver permissão global
     }
+  }
+
+  const escopo: 'completo' | 'parcial' = isAdmin && leiturasIncompletas.length === 0 ? 'completo' : 'parcial';
+  if (!isAdmin) {
+    leiturasIncompletas.push('Dados pedagógicos dos demais professores (só administradores leem)');
   }
 
   // 4. Calcular Estatísticas
@@ -236,6 +335,16 @@ export async function generateFullBackup(userProfile?: {
   const eventTypesCount = Object.keys(eventTypes).length;
   const booksCount = Object.keys(books).length;
   const loansCount = Object.keys(loans).length;
+  const holdingsCount = Object.values(libraryHoldings).reduce((acc, porEscola) => acc + Object.keys(porEscola || {}).length, 0);
+  const reservationsCount = Object.keys(libraryReservations).length;
+  const movementsCount = Object.keys(libraryMovements).length;
+  const readingCornersCount = Object.keys(readingCorners).length;
+  const settingsCount = Object.keys(settings).length;
+  const scheduleCount = Object.values(classes).reduce(
+    (acc, turma) => acc + Object.keys((turma as any).gradeHoraria || {}).length,
+    0
+  );
+  const permissionsCount = Object.keys(admins).length + Object.keys(librarians).length;
 
   const totalRecords =
     schoolsCount +
@@ -252,7 +361,14 @@ export async function generateFullBackup(userProfile?: {
     totalAttendancesCount +
     totalGradesCount +
     totalLessonPlansCount +
-    totalEventsCount;
+    totalEventsCount +
+    holdingsCount +
+    reservationsCount +
+    movementsCount +
+    readingCornersCount +
+    settingsCount +
+    permissionsCount +
+    scheduleCount;
 
   const now = new Date();
   const dateStr = now.toISOString().replace(/T/, '_').replace(/:/g, '-').slice(0, 16);
@@ -261,12 +377,14 @@ export async function generateFullBackup(userProfile?: {
   const backupPkg: BackupPackage = {
     metadata: {
       appName: 'Diário de Classe Digital',
-      version: '2.0',
+      version: '2.1',
       exportedAt: now.toISOString(),
       timestamp: now.getTime(),
       exportedByUid: uid,
       exportedByName: name,
       exportedByEmail: email,
+      escopo,
+      leiturasIncompletas,
       system: 'Firebase Realtime Database',
       recordCounts: {
         schools: schoolsCount,
@@ -284,6 +402,13 @@ export async function generateFullBackup(userProfile?: {
         events: totalEventsCount,
         books: booksCount,
         loans: loansCount,
+        holdings: holdingsCount,
+        reservations: reservationsCount,
+        movements: movementsCount,
+        readingCorners: readingCornersCount,
+        settings: settingsCount,
+        permissions: permissionsCount,
+        schedule: scheduleCount,
         totalRecords
       }
     },
@@ -302,6 +427,14 @@ export async function generateFullBackup(userProfile?: {
       grades,
       lessonPlans,
       events,
+      libraryHoldings,
+      libraryReservations,
+      libraryMovements,
+      readingCorners,
+      settings,
+      admins,
+      librarians,
+      ownUserExtras,
       allUsersPedagogical
     }
   };
@@ -425,6 +558,14 @@ export function validateBackupFile(jsonString: string): {
           grades,
           lessonPlans,
           events,
+          libraryHoldings: data.libraryHoldings || data.acervos,
+          libraryReservations: data.libraryReservations || data.reservas,
+          libraryMovements: data.libraryMovements || data.movimentacoes,
+          readingCorners: data.readingCorners || data.cantinhos,
+          settings: data.settings || data.config,
+          admins: data.admins,
+          librarians: data.librarians || data.bibliotecarios,
+          ownUserExtras: data.ownUserExtras,
           allUsersPedagogical: data.allUsersPedagogical || data.dados
         }
       };
@@ -445,6 +586,286 @@ export function validateBackupFile(jsonString: string): {
 }
 
 // 3. Restauração Segura dos Dados no Firebase
+//
+// A restauração é PLANEJADA antes de gravar (lógica em restauracaoPlano.ts): lê o estado atual do
+// banco, compara registro a registro e só então grava, em lotes e por categoria.
+//  - Nada é apagado: o que existe no banco e não está no backup permanece.
+//  - Nunca troca um nó inteiro (turma, nó de um professor, mapa de atribuições): grava por registro.
+//  - Modo "Mesclar" (merge): cria o que falta e só atualiza com prova de que o backup é mais recente.
+//  - Modo "Substituição" (overwrite_selected): sobrescreve os registros de mesmo ID dos módulos
+//    marcados, informando quantos eram mais recentes que o backup.
+//  - Dados pedagógicos (chamada, notas, planos, ocorrências) voltam para o professor DONO, e só
+//    para os módulos marcados.
+
+export interface RelatorioCategoria extends EstatisticaGrupo {
+  rotulo: string;
+}
+
+export interface AnaliseRestauracao {
+  categorias: Record<string, RelatorioCategoria>;
+  avisos: string[];
+  totais: EstatisticaGrupo;
+}
+
+interface GrupoRestauracao {
+  rotulo: string;
+  /** Chaves de `categorias` cujas contagens dependem deste grupo ter sido gravado. */
+  categorias: string[];
+  updates: Record<string, any>;
+}
+
+async function lerNo(path: string): Promise<Record<string, any>> {
+  const snap = await get(ref(rtdb, path));
+  return (snap.exists() ? snap.val() : {}) || {};
+}
+
+async function montarPlanoDeRestauracao(
+  backupPkg: BackupPackage,
+  options: RestoreOptions
+): Promise<{ grupos: GrupoRestauracao[]; categorias: Record<string, RelatorioCategoria>; avisos: string[] }> {
+  const currentUid = getCurrentAuthUid() || auth.currentUser?.uid;
+  if (!currentUid) {
+    throw new Error('Você precisa estar autenticado no sistema para restaurar um backup.');
+  }
+  if (!(await verificarIsAdmin(currentUid))) {
+    throw new Error('Apenas administradores podem restaurar backups ou importar dados.');
+  }
+
+  const modo = options.mode === 'overwrite_selected' ? 'overwrite_selected' : 'merge';
+  const referenciaBackup = Number(backupPkg.metadata?.timestamp) || undefined;
+  const data = backupPkg.data || {};
+  const categorias: Record<string, RelatorioCategoria> = {};
+  const grupos: GrupoRestauracao[] = [];
+  const avisos: string[] = [];
+
+  const categoria = (chave: string, rotulo: string): RelatorioCategoria => {
+    if (!categorias[chave]) categorias[chave] = { ...novaEstatistica(), rotulo };
+    return categorias[chave];
+  };
+  const temItens = (o: any) => !!o && Object.keys(o).length > 0;
+
+  // Coleções simples: um registro por ID em um nó compartilhado
+  const colecao = async (chave: string, rotulo: string, basePath: string, lista: Record<string, any> | undefined) => {
+    if (!temItens(lista)) return;
+    const stats = categoria(chave, rotulo);
+    const updates: Record<string, any> = {};
+    planejarRegistros({
+      basePath,
+      backup: lista,
+      atual: await lerNo(basePath),
+      modo,
+      updates,
+      stats,
+      referenciaBackup
+    });
+    grupos.push({ rotulo, categorias: [chave], updates });
+  };
+
+  // Nós de dois níveis (ex.: acervos/{escola}/{livro}): cada registro do 2º nível é tratado
+  // individualmente, para nunca trocar o conjunto inteiro de uma escola.
+  const colecaoAninhada = async (
+    chave: string,
+    rotulo: string,
+    basePath: string,
+    lista: Record<string, Record<string, any>> | undefined
+  ) => {
+    if (!temItens(lista)) return;
+    const stats = categoria(chave, rotulo);
+    const atuais = await lerNo(basePath);
+    const updates: Record<string, any> = {};
+    Object.keys(lista || {}).forEach((primeiro) => {
+      planejarRegistros({
+        basePath: `${basePath}/${primeiro}`,
+        backup: (lista as any)[primeiro],
+        atual: atuais[primeiro],
+        modo,
+        updates,
+        stats,
+        referenciaBackup
+      });
+    });
+    grupos.push({ rotulo, categorias: [chave], updates });
+  };
+
+  if (options.includeSchools) {
+    await colecao('schools', 'Unidades escolares', 'diario-classe/escolas', data.schools);
+  }
+
+  if (options.includeClassesAndStudents && temItens(data.classes)) {
+    const statsTurmas = categoria('classes', 'Turmas');
+    const statsAlunos = categoria('students', 'Alunos');
+    const temGrade = Object.values(data.classes || {}).some((t: any) => temItens(t?.gradeHoraria));
+    const statsGrade = temGrade ? categoria('schedule', 'Grade de horários') : undefined;
+    const updates: Record<string, any> = {};
+    planejarTurmas({
+      backup: data.classes,
+      atuais: await lerNo('diario-classe/turmas'),
+      modo,
+      updates,
+      statsTurmas,
+      statsAlunos,
+      statsGrade,
+      referenciaBackup
+    });
+    grupos.push({
+      rotulo: 'Turmas, alunos e grade de horários',
+      categorias: ['classes', 'students', ...(temGrade ? ['schedule'] : [])],
+      updates
+    });
+  }
+
+  if (options.includeTeachers) {
+    await colecao('teachers', 'Professores', 'diario-classe/professores', data.teachers);
+  }
+
+  if (options.includeAssignments && temItens(data.assignments)) {
+    const stats = categoria('assignments', 'Atribuições de turmas');
+    const atuais = await lerNo('diario-classe/atribuicoes');
+    const updates: Record<string, any> = {};
+    Object.keys(data.assignments || {}).forEach((tId) => {
+      planejarRegistros({
+        basePath: `diario-classe/atribuicoes/${tId}`,
+        backup: (data.assignments as any)[tId],
+        atual: atuais[tId],
+        modo,
+        updates,
+        stats,
+        referenciaBackup
+      });
+    });
+    grupos.push({ rotulo: 'Atribuições de turmas', categorias: ['assignments'], updates });
+  }
+
+  if (options.includeSubjects) {
+    await colecao('subjects', 'Disciplinas', 'diario-classe/disciplinas', data.subjects);
+  }
+  if (options.includeBNCC) {
+    await colecao('bncc', 'Habilidades BNCC', 'diario-classe/bncc', data.bncc);
+  }
+  if (options.includeCategories) {
+    await colecao('categories', 'Categorias', 'diario-classe/categorias', data.categories);
+  }
+  if (options.includeEventTypes) {
+    await colecao('eventTypes', 'Tipos de ocorrência', 'diario-classe/tipos-evento', data.eventTypes);
+  }
+  if (options.includeLibrary !== false) {
+    await colecao('books', 'Livros da biblioteca', 'diario-classe/biblioteca/livros', data.books);
+    await colecao('loans', 'Empréstimos da biblioteca', 'diario-classe/biblioteca/emprestimos', data.loans);
+    await colecaoAninhada('holdings', 'Acervo físico por escola', 'diario-classe/biblioteca/acervos', data.libraryHoldings);
+    await colecao('reservations', 'Reservas da biblioteca', 'diario-classe/biblioteca/reservas', data.libraryReservations);
+    await colecao('movements', 'Movimentações da biblioteca', 'diario-classe/biblioteca/movimentacoes', data.libraryMovements);
+    await colecao('readingCorners', 'Cantinho da Leitura', 'diario-classe/biblioteca/cantinhos', data.readingCorners);
+  }
+
+  if (options.includeSettings !== false) {
+    await colecao('settings', 'Configurações do sistema', 'diario-classe/config', data.settings);
+  }
+
+  // Permissões CONCEDEM acesso: só entram por opção explícita. Nunca removem ninguém, mas podem
+  // devolver acesso a quem o perdeu depois do backup, por isso o aviso.
+  if (options.includePermissions === true) {
+    const qtdAdmins = Object.keys(data.admins || {}).length;
+    const qtdBibliotecarios = Object.keys(data.librarians || {}).length;
+    await colecao('admins', 'Administradores', 'diario-classe/admins', data.admins);
+    await colecao('librarians', 'Bibliotecários', 'diario-classe/bibliotecarios', data.librarians);
+    if (qtdAdmins + qtdBibliotecarios > 0) {
+      avisos.push(
+        `Permissões: ${qtdAdmins} administrador(es) e ${qtdBibliotecarios} bibliotecário(s) do backup serão (re)concedidos se ainda não tiverem o acesso. ` +
+          'Quem teve o acesso revogado depois do backup voltaria a tê-lo; revise a lista antes de confirmar.'
+      );
+    }
+  }
+
+  // Backup gerado de forma parcial: o que não foi lido na época não está no arquivo
+  const meta = backupPkg.metadata;
+  if (meta?.escopo === 'parcial' || (meta?.leiturasIncompletas && meta.leiturasIncompletas.length > 0)) {
+    avisos.push(
+      'Este backup foi gerado de forma PARCIAL' +
+        (meta.leiturasIncompletas && meta.leiturasIncompletas.length > 0
+          ? ` (não constam: ${meta.leiturasIncompletas.join('; ')}).`
+          : '.') +
+        ' Use um backup completo de administrador sempre que possível.'
+    );
+  }
+
+  // Dados pedagógicos: voltam para o professor DONO, só nos módulos marcados
+  const autorUid = backupPkg.metadata?.exportedByUid;
+  if (autorUid && autorUid !== currentUid) {
+    avisos.push(
+      `Este backup foi gerado por outro usuário (${backupPkg.metadata.exportedByName || autorUid}). ` +
+        'As chamadas, notas, planos e ocorrências serão restaurados no perfil dele, não no seu.'
+    );
+  }
+  const listasDoTopo = [data.attendances, data.grades, data.lessonPlans, data.events];
+  const querDadosPedagogicos =
+    options.includeAttendance || options.includeGrades || options.includeLessonPlans || options.includeEvents;
+  if (!autorUid && querDadosPedagogicos && listasDoTopo.some((l) => temItens(l))) {
+    avisos.push(
+      'Este backup não identifica quem o gerou: as chamadas, notas, planos e ocorrências dele serão restaurados no SEU perfil.'
+    );
+  }
+  const porUsuario = extrairDadosPorUsuario(data as any, autorUid || currentUid);
+  const modulos: { no: NoUsuario; inclui: boolean; chave: string; rotulo: string }[] = [
+    { no: 'chamada', inclui: !!options.includeAttendance, chave: 'attendances', rotulo: 'Chamadas' },
+    { no: 'notas', inclui: !!options.includeGrades, chave: 'grades', rotulo: 'Notas' },
+    { no: 'planos-aula', inclui: !!options.includeLessonPlans, chave: 'lessonPlans', rotulo: 'Planos de aula' },
+    { no: 'eventos', inclui: !!options.includeEvents, chave: 'events', rotulo: 'Ocorrências' },
+    { no: 'bncc', inclui: !!options.includeBNCC, chave: 'userBncc', rotulo: 'BNCC pessoal dos professores' },
+    { no: 'categorias', inclui: !!options.includeCategories, chave: 'userCategories', rotulo: 'Categorias pessoais dos professores' },
+    { no: 'tipos-evento', inclui: !!options.includeEventTypes, chave: 'userEventTypes', rotulo: 'Tipos de ocorrência pessoais dos professores' }
+  ];
+  const outrosUsuarios = new Set<string>();
+  for (const uid of Object.keys(porUsuario)) {
+    for (const m of modulos) {
+      const lista = porUsuario[uid][m.no];
+      if (!m.inclui || !temItens(lista)) continue;
+      const stats = categoria(m.chave, m.rotulo);
+      const updates: Record<string, any> = {};
+      planejarRegistros({
+        basePath: `diario-classe/dados/${uid}/${m.no}`,
+        backup: lista,
+        atual: await lerNo(`diario-classe/dados/${uid}/${m.no}`),
+        modo,
+        updates,
+        stats,
+        referenciaBackup
+      });
+      grupos.push({
+        rotulo: uid === currentUid ? m.rotulo : `${m.rotulo} (professor ${uid.slice(0, 6)}…)`,
+        categorias: [m.chave],
+        updates
+      });
+      if (uid !== currentUid) outrosUsuarios.add(uid);
+    }
+  }
+  if (outrosUsuarios.size > 0 && !(autorUid && autorUid !== currentUid && outrosUsuarios.size === 1)) {
+    avisos.push(
+      `Também serão restaurados dados pedagógicos de ${outrosUsuarios.size} outro(s) professor(es), registro a registro. ` +
+        'O que eles lançaram depois do backup não é apagado.'
+    );
+  }
+
+  return { grupos, categorias, avisos };
+}
+
+/** Simula a restauração sem gravar nada: diz quantos registros serão criados, atualizados ou mantidos. */
+export async function analisarRestauracao(
+  backupPkg: BackupPackage,
+  options: RestoreOptions
+): Promise<AnaliseRestauracao> {
+  const { categorias, avisos } = await montarPlanoDeRestauracao(backupPkg, options);
+  const totais = novaEstatistica();
+  Object.values(categorias).forEach((c) => {
+    totais.novos += c.novos;
+    totais.atualizados += c.atualizados;
+    totais.mantidos += c.mantidos;
+    totais.maisRecentesSobrescritos += c.maisRecentesSobrescritos;
+    totais.mantidosSemData += c.mantidosSemData;
+    totais.mantidosBancoMaisNovo += c.mantidosBancoMaisNovo;
+  });
+  return { categorias, avisos, totais };
+}
+
 export async function restoreBackup(
   backupPkg: BackupPackage,
   options: RestoreOptions,
@@ -452,265 +873,61 @@ export async function restoreBackup(
 ): Promise<{
   success: boolean;
   importedCounts: Record<string, number>;
+  keptCounts: Record<string, number>;
   errors: string[];
+  avisos: string[];
 }> {
-  const currentUid = getCurrentAuthUid() || auth.currentUser?.uid;
-  if (!currentUid) {
-    throw new Error('Você precisa estar autenticado no sistema para restaurar um backup.');
-  }
-
+  const chaves = [
+    'schools', 'classes', 'students', 'teachers', 'assignments', 'subjects', 'bncc', 'categories',
+    'eventTypes', 'attendances', 'grades', 'lessonPlans', 'events', 'books', 'loans',
+    'holdings', 'reservations', 'movements', 'readingCorners', 'settings', 'admins', 'librarians',
+    'userBncc', 'userCategories', 'userEventTypes', 'schedule'
+  ];
+  const importedCounts: Record<string, number> = {};
+  const keptCounts: Record<string, number> = {};
+  chaves.forEach((c) => {
+    importedCounts[c] = 0;
+    keptCounts[c] = 0;
+  });
   const errors: string[] = [];
-  const importedCounts: Record<string, number> = {
-    schools: 0,
-    classes: 0,
-    students: 0,
-    teachers: 0,
-    assignments: 0,
-    subjects: 0,
-    bncc: 0,
-    categories: 0,
-    eventTypes: 0,
-    attendances: 0,
-    grades: 0,
-    lessonPlans: 0,
-    events: 0,
-    books: 0,
-    loans: 0
+
+  const report = (msg: string, percent: number) => {
+    if (onProgress) onProgress(msg, Math.max(0, Math.min(100, Math.round(percent))));
   };
 
-  const totalSteps = 11;
-  let currentStep = 0;
-
-  const report = (msg: string) => {
-    currentStep++;
-    const percent = Math.min(100, Math.round((currentStep / totalSteps) * 100));
-    if (onProgress) onProgress(msg, percent);
-  };
-
+  let plano: Awaited<ReturnType<typeof montarPlanoDeRestauracao>>;
   try {
-    const rootUpdates: Record<string, any> = {};
-
-    // 1. Restaurar Escolas
-    if (options.includeSchools && backupPkg.data.schools) {
-      report('Restaurando unidades escolares...');
-      const schools = backupPkg.data.schools;
-      Object.keys(schools).forEach((id) => {
-        if (schools[id]) {
-          rootUpdates[`diario-classe/escolas/${id}`] = schools[id];
-          importedCounts.schools++;
-        }
-      });
-    }
-
-    // 2. Restaurar Turmas & Alunos
-    if (options.includeClassesAndStudents && backupPkg.data.classes) {
-      report('Restaurando turmas e cadastros de alunos...');
-      const classes = backupPkg.data.classes;
-      Object.keys(classes).forEach((id) => {
-        const turma = classes[id];
-        if (turma) {
-          rootUpdates[`diario-classe/turmas/${id}`] = turma;
-          importedCounts.classes++;
-          if (turma.alunos) {
-            importedCounts.students += Object.keys(turma.alunos).length;
-          }
-        }
-      });
-    }
-
-    // 3. Restaurar Professores
-    if (options.includeTeachers && backupPkg.data.teachers) {
-      report('Restaurando corpo docente e professores...');
-      const teachers = backupPkg.data.teachers;
-      Object.keys(teachers).forEach((id) => {
-        if (teachers[id]) {
-          rootUpdates[`diario-classe/professores/${id}`] = teachers[id];
-          importedCounts.teachers++;
-        }
-      });
-    }
-
-    // 4. Restaurar Atribuições
-    if (options.includeAssignments && backupPkg.data.assignments) {
-      report('Restaurando mapa de atribuições...');
-      const assignments = backupPkg.data.assignments;
-      Object.keys(assignments).forEach((tId) => {
-        const map = assignments[tId];
-        if (map) {
-          rootUpdates[`diario-classe/atribuicoes/${tId}`] = map;
-          importedCounts.assignments += Object.keys(map).length;
-        }
-      });
-    }
-
-    // 5. Restaurar Disciplinas
-    if (options.includeSubjects && backupPkg.data.subjects) {
-      report('Restaurando disciplinas curriculares...');
-      const subjects = backupPkg.data.subjects;
-      Object.keys(subjects).forEach((id) => {
-        if (subjects[id]) {
-          rootUpdates[`diario-classe/disciplinas/${id}`] = subjects[id];
-          importedCounts.subjects++;
-        }
-      });
-    }
-
-    // 6. Restaurar BNCC
-    if (options.includeBNCC && backupPkg.data.bncc) {
-      report('Restaurando matriz de habilidades BNCC...');
-      const bncc = backupPkg.data.bncc;
-      Object.keys(bncc).forEach((id) => {
-        if (bncc[id]) {
-          rootUpdates[`diario-classe/bncc/${id}`] = bncc[id];
-          importedCounts.bncc++;
-        }
-      });
-    }
-
-    // 7. Restaurar Categorias e Tipos de Evento
-    if (options.includeCategories && backupPkg.data.categories) {
-      report('Restaurando categorias pedagógicas...');
-      const categories = backupPkg.data.categories;
-      Object.keys(categories).forEach((id) => {
-        if (categories[id]) {
-          rootUpdates[`diario-classe/categorias/${id}`] = categories[id];
-          importedCounts.categories++;
-        }
-      });
-    }
-
-    if (options.includeEventTypes && backupPkg.data.eventTypes) {
-      report('Restaurando tipos de ocorrências...');
-      const eventTypes = backupPkg.data.eventTypes;
-      Object.keys(eventTypes).forEach((id) => {
-        if (eventTypes[id]) {
-          rootUpdates[`diario-classe/tipos-evento/${id}`] = eventTypes[id];
-          importedCounts.eventTypes++;
-        }
-      });
-    }
-
-    // 8. Restaurar Biblioteca Escolar (Livros e Empréstimos)
-    if (options.includeLibrary !== false && (backupPkg.data.books || backupPkg.data.loans)) {
-      report('Restaurando acervo e empréstimos da biblioteca...');
-      const books = backupPkg.data.books || {};
-      Object.keys(books).forEach((id) => {
-        if (books[id]) {
-          rootUpdates[`diario-classe/biblioteca/livros/${id}`] = books[id];
-          importedCounts.books++;
-        }
-      });
-
-      const loans = backupPkg.data.loans || {};
-      Object.keys(loans).forEach((id) => {
-        if (loans[id]) {
-          rootUpdates[`diario-classe/biblioteca/emprestimos/${id}`] = loans[id];
-          importedCounts.loans++;
-        }
-      });
-    }
-
-    // Aplica alterações nas coleções globais
-    if (Object.keys(rootUpdates).length > 0) {
-      try {
-        await update(ref(rtdb), rootUpdates);
-      } catch (err: any) {
-        console.error('Erro ao atualizar coleções compartilhadas:', err);
-        errors.push(`Coleções compartilhadas: ${err.message}`);
-      }
-    }
-
-    // 8. Restaurar Dados Pedagógicos (Chamadas, Notas, Planos de Aula, Ocorrências)
-    report('Gravando registros pedagógicos no diário...');
-    const userUpdates: Record<string, any> = {};
-
-    // Chamadas
-    if (options.includeAttendance) {
-      const atts = backupPkg.data.attendances || {};
-      Object.keys(atts).forEach((id) => {
-        if (atts[id]) {
-          userUpdates[`chamada/${id}`] = atts[id];
-          importedCounts.attendances++;
-        }
-      });
-    }
-
-    // Notas
-    if (options.includeGrades) {
-      const notas = backupPkg.data.grades || {};
-      Object.keys(notas).forEach((id) => {
-        if (notas[id]) {
-          userUpdates[`notas/${id}`] = notas[id];
-          importedCounts.grades++;
-        }
-      });
-    }
-
-    // Planos de Aula
-    if (options.includeLessonPlans) {
-      const planos = backupPkg.data.lessonPlans || {};
-      Object.keys(planos).forEach((id) => {
-        if (planos[id]) {
-          userUpdates[`planos-aula/${id}`] = planos[id];
-          importedCounts.lessonPlans++;
-        }
-      });
-    }
-
-    // Ocorrências
-    if (options.includeEvents) {
-      const evs = backupPkg.data.events || {};
-      Object.keys(evs).forEach((id) => {
-        if (evs[id]) {
-          userUpdates[`eventos/${id}`] = evs[id];
-          importedCounts.events++;
-        }
-      });
-    }
-
-    // Grava dados pedagógicos do usuário atual
-    if (Object.keys(userUpdates).length > 0) {
-      try {
-        await update(ref(rtdb, `diario-classe/dados/${currentUid}`), userUpdates);
-      } catch (err: any) {
-        console.error('Erro ao atualizar dados pedagógicos do usuário:', err);
-        errors.push(`Dados pedagógicos: ${err.message}`);
-      }
-    }
-
-    // Se houver dados globais de outros professores no backup e o usuário tiver permissão
-    if (backupPkg.data.allUsersPedagogical) {
-      report('Sincronizando dados pedagógicos estendidos...');
-      const allPed = backupPkg.data.allUsersPedagogical;
-      const multiUserUpdates: Record<string, any> = {};
-      Object.keys(allPed).forEach((otherUid) => {
-        if (otherUid !== currentUid && allPed[otherUid]) {
-          multiUserUpdates[`diario-classe/dados/${otherUid}`] = allPed[otherUid];
-        }
-      });
-      if (Object.keys(multiUserUpdates).length > 0) {
-        try {
-          await update(ref(rtdb), multiUserUpdates);
-        } catch {
-          // Normal se não for admin master
-        }
-      }
-    }
-
-    report('Restauração concluída com sucesso!');
-    return {
-      success: errors.length === 0,
-      importedCounts,
-      errors
-    };
+    report('Analisando o banco de dados atual...', 5);
+    plano = await montarPlanoDeRestauracao(backupPkg, options);
   } catch (err: any) {
-    errors.push(err.message || 'Erro inesperado durante a restauração');
-    return {
-      success: false,
-      importedCounts,
-      errors
-    };
+    errors.push(err.message || 'Erro inesperado ao preparar a restauração');
+    return { success: false, importedCounts, keptCounts, errors, avisos: [] };
   }
+
+  const categoriasComFalha = new Set<string>();
+  const total = Math.max(1, plano.grupos.length);
+  for (let i = 0; i < plano.grupos.length; i++) {
+    const grupo = plano.grupos[i];
+    report(`Gravando ${grupo.rotulo.toLowerCase()}...`, 10 + (80 * i) / total);
+    try {
+      for (const lote of dividirEmLotes(grupo.updates)) {
+        await update(ref(rtdb), lote);
+      }
+    } catch (err: any) {
+      console.error(`Erro ao restaurar ${grupo.rotulo}:`, err);
+      errors.push(`${grupo.rotulo}: ${err?.message || 'falha ao gravar'}`);
+      grupo.categorias.forEach((c) => categoriasComFalha.add(c));
+    }
+  }
+
+  Object.keys(plano.categorias).forEach((chave) => {
+    const c = plano.categorias[chave];
+    if (!categoriasComFalha.has(chave)) importedCounts[chave] = c.novos + c.atualizados;
+    keptCounts[chave] = c.mantidos;
+  });
+
+  report('Restauração concluída!', 100);
+  return { success: errors.length === 0, importedCounts, keptCounts, errors, avisos: plano.avisos };
 }
 
 // 4. Rotinas de Verificação e Lembretes de Backup

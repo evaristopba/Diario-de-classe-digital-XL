@@ -13,18 +13,20 @@ import {
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
 import { checkClassDeleteIntegrity } from '../lib/referentialIntegrity';
-import { Users, Plus, Edit2, Trash2, Download, Upload, X, UserPlus } from 'lucide-react';
+import { Users, Plus, Edit2, Trash2, Download, Upload, X, UserPlus, Clock } from 'lucide-react';
 
 interface ClassesScreenProps {
   currentYear: string;
   setModal: (config: ModalConfig) => void;
   onNavigateToStudents?: (classId: string) => void;
+  onNavigateToSchedule?: (classId: string) => void;
 }
 
 export const ClassesScreen: React.FC<ClassesScreenProps> = ({
   currentYear,
   setModal,
-  onNavigateToStudents
+  onNavigateToStudents,
+  onNavigateToSchedule
 }) => {
   const [classes, setClasses] = useState<{ id: string; val: ClassRoom }[]>([]);
   const [schools, setSchools] = useState<School[]>([]);
@@ -32,6 +34,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
   const [year, setYear] = useState('');
   const [shift, setShift] = useState('');
   const [letter, setLetter] = useState('');
+  const [intervaloGrupo, setIntervaloGrupo] = useState<'A' | 'B'>('A');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -100,6 +103,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
       year,
       shift,
       letter: letter.trim().toUpperCase(),
+      intervaloGrupo: shift === 'Manhã' ? (intervaloGrupo || (year === '4' || year === '5' ? 'B' : 'A')) : undefined,
       anoLetivo: currentYear
     };
 
@@ -137,6 +141,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
       setYear('');
       setShift('');
       setLetter('');
+      setIntervaloGrupo('A');
       setEditingId(null);
       loadClasses();
     } catch (err: any) {
@@ -155,6 +160,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     setYear(item.val.year);
     setShift(item.val.shift);
     setLetter(item.val.letter);
+    setIntervaloGrupo(item.val.intervaloGrupo || (item.val.year === '4' || item.val.year === '5' ? 'B' : 'A'));
     setEditingId(item.id);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -163,6 +169,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     setYear('');
     setShift('');
     setLetter('');
+    setIntervaloGrupo('A');
     setEditingId(null);
   };
 
@@ -364,7 +371,15 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
               <select
                 id="class-year-select"
                 value={year}
-                onChange={(e) => setYear(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setYear(val);
+                  if (val === '4' || val === '5') {
+                    setIntervaloGrupo('B');
+                  } else if (val) {
+                    setIntervaloGrupo('A');
+                  }
+                }}
                 className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
                 required
               >
@@ -411,6 +426,39 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                 required
               />
             </div>
+
+            {shift === 'Manhã' && (
+              <div className="sm:col-span-2 md:col-span-4 bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div>
+                  <span className="text-xs font-bold text-indigo-950 block">Grupo de Intervalo (Matutino)</span>
+                  <span className="text-[11px] text-indigo-700">Duração das aulas de 50 min com início pontual às 07:00</span>
+                </div>
+                <div className="flex items-center gap-4 text-xs">
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
+                    <input
+                      type="radio"
+                      name="intervaloGrupo"
+                      value="A"
+                      checked={intervaloGrupo === 'A'}
+                      onChange={() => setIntervaloGrupo('A')}
+                      className="text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <span>Grupo A (09:30 - 09:50)</span>
+                  </label>
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
+                    <input
+                      type="radio"
+                      name="intervaloGrupo"
+                      value="B"
+                      checked={intervaloGrupo === 'B'}
+                      onChange={() => setIntervaloGrupo('B')}
+                      className="text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <span>Grupo B (10:00 - 10:20)</span>
+                  </label>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
@@ -454,12 +502,35 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                       <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-700">
                         {alunosCount} {alunosCount === 1 ? 'aluno' : 'alunos'}
                       </span>
+                      {val.shift === 'Manhã' && (
+                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                          (val.intervaloGrupo || (val.year === '4' || val.year === '5' ? 'B' : 'A')) === 'B'
+                            ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                            : 'bg-sky-100 text-sky-800 border border-sky-200'
+                        }`}>
+                          Intervalo: Grupo {val.intervaloGrupo || (val.year === '4' || val.year === '5' ? 'B' : 'A')} (
+                          {(val.intervaloGrupo || (val.year === '4' || val.year === '5' ? 'B' : 'A')) === 'B' ? '10:00 - 10:20' : '09:30 - 09:50'}
+                          )
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-slate-500 mt-1">
                       {val.schoolName} | Ano Letivo: {val.anoLetivo || currentYear}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
+                    {onNavigateToSchedule && (
+                      <button
+                        id={`class-schedule-${id}`}
+                        type="button"
+                        onClick={() => onNavigateToSchedule(id)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-violet-700 bg-violet-50 hover:bg-violet-100 hover:text-violet-800 rounded-lg border border-violet-200 transition-colors shadow-2xs cursor-pointer"
+                        title="Ver e editar horários e especialistas desta turma"
+                      >
+                        <Clock className="w-3.5 h-3.5 text-violet-600" />
+                        <span>Horários</span>
+                      </button>
+                    )}
                     {onNavigateToStudents && (
                       <button
                         id={`class-manage-students-${id}`}
