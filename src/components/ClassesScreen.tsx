@@ -34,7 +34,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
   const [year, setYear] = useState('');
   const [shift, setShift] = useState('');
   const [letter, setLetter] = useState('');
-  const [intervaloGrupo, setIntervaloGrupo] = useState<'A' | 'B'>('A');
+  const [intervaloGrupo, setIntervaloGrupo] = useState<'1' | 'A' | 'B'>('A');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -103,7 +103,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
       year,
       shift,
       letter: letter.trim().toUpperCase(),
-      intervaloGrupo: shift === 'Manhã' ? (intervaloGrupo || (year === '4' || year === '5' ? 'B' : 'A')) : undefined,
+      intervaloGrupo: shift === 'Manhã' ? (intervaloGrupo || (year === '1' ? '1' : year === '4' || year === '5' ? 'B' : 'A')) : undefined,
       anoLetivo: currentYear
     };
 
@@ -160,7 +160,9 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     setYear(item.val.year);
     setShift(item.val.shift);
     setLetter(item.val.letter);
-    setIntervaloGrupo(item.val.intervaloGrupo || (item.val.year === '4' || item.val.year === '5' ? 'B' : 'A'));
+    const rawG = item.val.intervaloGrupo || (item.val.year === '1' ? '1' : item.val.year === '4' || item.val.year === '5' ? 'B' : 'A');
+    const g = rawG === '1' || rawG === 'ano1' ? '1' : rawG === 'B' || rawG === 'ano45' ? 'B' : 'A';
+    setIntervaloGrupo(g);
     setEditingId(item.id);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -374,7 +376,9 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                 onChange={(e) => {
                   const val = e.target.value;
                   setYear(val);
-                  if (val === '4' || val === '5') {
+                  if (val === '1') {
+                    setIntervaloGrupo('1');
+                  } else if (val === '4' || val === '5') {
                     setIntervaloGrupo('B');
                   } else if (val) {
                     setIntervaloGrupo('A');
@@ -421,19 +425,30 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                 value={letter}
                 onChange={(e) => setLetter(e.target.value)}
                 placeholder="Ex: A, B, C"
-                maxLength={4}
+                maxLength={5}
                 className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
                 required
               />
             </div>
 
             {shift === 'Manhã' && (
-              <div className="sm:col-span-2 md:col-span-4 bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+              <div className="sm:col-span-2 md:col-span-4 bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-100 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
                 <div>
-                  <span className="text-xs font-bold text-indigo-950 block">Grupo de Intervalo (Matutino)</span>
-                  <span className="text-[11px] text-indigo-700">Duração das aulas de 50 min com início pontual às 07:00</span>
+                  <span className="text-xs font-bold text-indigo-950 block">Padrão de Sino / Intervalo (Matutino)</span>
+                  <span className="text-[11px] text-indigo-700">Início às 07:00 • 50 min/aula • Seleção ajustável para flexibilidade na grade</span>
                 </div>
-                <div className="flex items-center gap-4 text-xs">
+                <div className="flex items-center gap-3 text-xs flex-wrap">
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
+                    <input
+                      type="radio"
+                      name="intervaloGrupo"
+                      value="1"
+                      checked={intervaloGrupo === '1'}
+                      onChange={() => setIntervaloGrupo('1')}
+                      className="text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span>1º Ano (Recreio 09:10 – 09:30)</span>
+                  </label>
                   <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
                     <input
                       type="radio"
@@ -441,9 +456,9 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                       value="A"
                       checked={intervaloGrupo === 'A'}
                       onChange={() => setIntervaloGrupo('A')}
-                      className="text-indigo-600 focus:ring-indigo-500"
+                      className="text-sky-600 focus:ring-sky-500"
                     />
-                    <span>Grupo A (09:30 - 09:50)</span>
+                    <span>2º e 3º Anos (09:30 – 09:50)</span>
                   </label>
                   <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
                     <input
@@ -454,7 +469,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                       onChange={() => setIntervaloGrupo('B')}
                       className="text-indigo-600 focus:ring-indigo-500"
                     />
-                    <span>Grupo B (10:00 - 10:20)</span>
+                    <span>4º e 5º Anos (09:55 – 10:15)</span>
                   </label>
                 </div>
               </div>
@@ -502,17 +517,29 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                       <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-700">
                         {alunosCount} {alunosCount === 1 ? 'aluno' : 'alunos'}
                       </span>
-                      {val.shift === 'Manhã' && (
-                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${
-                          (val.intervaloGrupo || (val.year === '4' || val.year === '5' ? 'B' : 'A')) === 'B'
-                            ? 'bg-amber-100 text-amber-800 border border-amber-200'
-                            : 'bg-sky-100 text-sky-800 border border-sky-200'
-                        }`}>
-                          Intervalo: Grupo {val.intervaloGrupo || (val.year === '4' || val.year === '5' ? 'B' : 'A')} (
-                          {(val.intervaloGrupo || (val.year === '4' || val.year === '5' ? 'B' : 'A')) === 'B' ? '10:00 - 10:20' : '09:30 - 09:50'}
-                          )
-                        </span>
-                      )}
+                      {val.shift === 'Manhã' && (() => {
+                        const rawG = val.intervaloGrupo || (val.year === '1' ? '1' : val.year === '4' || val.year === '5' ? 'B' : 'A');
+                        const g = rawG === '1' || rawG === 'ano1' ? '1' : rawG === 'B' || rawG === 'ano45' ? 'B' : 'A';
+                        if (g === '1') {
+                          return (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                              Sino: 1º Ano (Recreio 09:10 – 09:30)
+                            </span>
+                          );
+                        }
+                        if (g === 'B') {
+                          return (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                              Sino: 4º/5º Anos (Recreio 09:55 – 10:15)
+                            </span>
+                          );
+                        }
+                        return (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-800 border border-sky-200">
+                            Sino: 2º/3º Anos (Recreio 09:30 – 09:50)
+                          </span>
+                        );
+                      })()}
                     </div>
                     <p className="text-xs text-slate-500 mt-1">
                       {val.schoolName} | Ano Letivo: {val.anoLetivo || currentYear}

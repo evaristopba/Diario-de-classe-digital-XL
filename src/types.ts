@@ -37,7 +37,7 @@ export interface ClassRoom {
   criadoPor?: string;
   teacherId?: string;
   alunos?: Record<string, Student>;
-  intervaloGrupo?: 'A' | 'B'; // 'A': 09:30-09:50 (Infantil/1º-3º), 'B': 10:00-10:20 (4º e 5º anos)
+  intervaloGrupo?: '1' | 'A' | 'B' | 'ano1' | 'ano23' | 'ano45' | string; // '1': 1º Ano, 'A': 2º/3º Anos, 'B': 4º/5º Anos
   gradeHoraria?: Record<string, HorarioSlot>; // Chave: `${diaSemana}_${ordemAula}` ex: "1_1" = Segunda 1ª aula
 }
 
@@ -50,6 +50,7 @@ export interface HorarioSlot {
   teacherId?: string; // ID do professor especialista ou regente
   teacherNome?: string;
   isEspecialista?: boolean;
+  isHA?: boolean; // Define se este horário é uma Hora-Atividade (H.A.) / Planejamento
   horarioCustomInicio?: string; // Ex: '09:30' (ajuste pontual de horário)
   horarioCustomFim?: string; // Ex: '10:20'
   observacao?: string; // Ex: 'Aula adiantada/subida', 'Permuta com Ed. Física'
@@ -63,12 +64,29 @@ export const GRADE_DIAS_SEMANA = [
   { id: 5 as DiaSemana, nome: 'Sexta-feira', sigla: 'SEX', curto: 'Sex' }
 ];
 
+export type IntervaloGrupo = '1' | 'A' | 'B' | 'ano1' | 'ano23' | 'ano45' | string;
+
 export const HORARIOS_SINO = {
   matutino: {
-    A: {
+    // 1º Ano: Leitura/Lanche antes do recreio, recreio das 09:10 às 09:30, e 3ª aula das 09:30 às 10:20
+    ano1: {
+      grupo: '1' as const,
+      nome: '1º Ano',
+      lanche: { inicio: '08:40', fim: '09:10', duracaoMin: 30, rotulo: 'Leitura / Lanche (08:40 – 09:10)' },
+      intervalo: { inicio: '09:10', fim: '09:30', duracaoMin: 20, rotulo: 'Recreio (09:10 – 09:30)' },
+      aulas: [
+        { ordem: 1, nome: '1ª Aula', inicio: '07:00', fim: '07:50', duracaoMin: 50 },
+        { ordem: 2, nome: '2ª Aula', inicio: '07:50', fim: '08:40', duracaoMin: 50 },
+        { ordem: 3, nome: '3ª Aula', inicio: '09:30', fim: '10:20', duracaoMin: 50 },
+        { ordem: 4, nome: '4ª Aula', inicio: '10:20', fim: '11:10', duracaoMin: 50 },
+        { ordem: 5, nome: '5ª Aula', inicio: '11:10', fim: '12:00', duracaoMin: 50 }
+      ]
+    },
+    // 2º e 3º Anos (antigo Grupo A): Recreio 09:30 às 09:50 e Refeição/Saída 11:30 às 12:00
+    ano23: {
       grupo: 'A' as const,
-      nome: 'Grupo A (Infantil / 1º ao 3º Ano)',
-      intervalo: { inicio: '09:30', fim: '09:50', duracaoMin: 20, rotulo: 'Intervalo / Recreio (09:30 – 09:50)' },
+      nome: '2º e 3º Anos',
+      intervalo: { inicio: '09:30', fim: '09:50', duracaoMin: 20, rotulo: 'Recreio (09:30 – 09:50)' },
       refeicaoFinal: { inicio: '11:30', fim: '12:00', duracaoMin: 30, rotulo: 'Refeição e Saída (11:30 – 12:00)' },
       aulas: [
         { ordem: 1, nome: '1ª Aula', inicio: '07:00', fim: '07:50', duracaoMin: 50 },
@@ -78,11 +96,12 @@ export const HORARIOS_SINO = {
         { ordem: 5, nome: '5ª Aula', inicio: '10:40', fim: '11:30', duracaoMin: 50 }
       ]
     },
-    B: {
+    // 4º e 5º Anos (antigo Grupo B): Leitura/Lanche 09:30 às 09:55 e Recreio 09:55 às 10:15
+    ano45: {
       grupo: 'B' as const,
-      nome: 'Grupo B (4º e 5º Anos)',
-      intervalo: { inicio: '10:00', fim: '10:20', duracaoMin: 20, rotulo: 'Intervalo / Recreio (10:00 – 10:20)' },
-      complementar: { inicio: '09:30', fim: '10:00', duracaoMin: 30, rotulo: 'Leitura / Lanche dos Maiores (09:30 – 10:00)' },
+      nome: '4º e 5º Anos',
+      lanche: { inicio: '09:30', fim: '09:55', duracaoMin: 25, rotulo: 'Leitura / Lanche (09:30 – 09:55)' },
+      intervalo: { inicio: '09:55', fim: '10:15', duracaoMin: 20, rotulo: 'Recreio (09:55 – 10:15)' },
       aulas: [
         { ordem: 1, nome: '1ª Aula', inicio: '07:00', fim: '07:50', duracaoMin: 50 },
         { ordem: 2, nome: '2ª Aula', inicio: '07:50', fim: '08:40', duracaoMin: 50 },
@@ -90,7 +109,11 @@ export const HORARIOS_SINO = {
         { ordem: 4, nome: '4ª Aula', inicio: '10:20', fim: '11:10', duracaoMin: 50 },
         { ordem: 5, nome: '5ª Aula', inicio: '11:10', fim: '12:00', duracaoMin: 50 }
       ]
-    }
+    },
+    // Aliases compatíveis para chamadas existentes:
+    get A() { return this.ano23; },
+    get B() { return this.ano45; },
+    get '1'() { return this.ano1; }
   },
   vespertino: {
     padrao: {
@@ -108,13 +131,37 @@ export const HORARIOS_SINO = {
   }
 };
 
-export function getHorariosTurma(shift?: string, intervaloGrupo?: 'A' | 'B', year?: string) {
+export function getHorariosTurma(
+  shift?: string,
+  intervaloGrupo?: '1' | 'A' | 'B' | 'ano1' | 'ano23' | 'ano45' | string,
+  year?: string
+) {
   const isVespertino = (shift || '').toLowerCase().includes('vesp') || (shift || '').toLowerCase().includes('tarde');
   if (isVespertino) {
     return HORARIOS_SINO.vespertino.padrao;
   }
-  const grupo = intervaloGrupo || (year === '4' || year === '5' ? 'B' : 'A');
-  return HORARIOS_SINO.matutino[grupo] || HORARIOS_SINO.matutino.A;
+
+  // 1. Prioriza configuração explícita de sino da turma
+  if (intervaloGrupo === '1' || intervaloGrupo === 'ano1') {
+    return HORARIOS_SINO.matutino.ano1;
+  }
+  if (intervaloGrupo === 'A' || intervaloGrupo === 'ano23') {
+    return HORARIOS_SINO.matutino.ano23;
+  }
+  if (intervaloGrupo === 'B' || intervaloGrupo === 'ano45') {
+    return HORARIOS_SINO.matutino.ano45;
+  }
+
+  // 2. Se não houver configuração explícita, determina pelo ano escolar da rede
+  const yClean = (year || '').trim();
+  if (yClean === '1') {
+    return HORARIOS_SINO.matutino.ano1;
+  }
+  if (yClean === '4' || yClean === '5') {
+    return HORARIOS_SINO.matutino.ano45;
+  }
+  // 2º e 3º Anos (ou padrão matutino)
+  return HORARIOS_SINO.matutino.ano23;
 }
 
 export function getTurnoCanonical(shift?: string): 'manha' | 'tarde' | 'noite' | 'outro' {
@@ -133,7 +180,7 @@ export function timeToMinutes(timeStr?: string): number | null {
 }
 
 export function getSlotTimeRange(
-  classItem: { shift?: string; intervaloGrupo?: 'A' | 'B'; year?: string },
+  classItem: { shift?: string; intervaloGrupo?: IntervaloGrupo; year?: string },
   ordem: number,
   customInicio?: string,
   customFim?: string
@@ -304,6 +351,11 @@ export interface Teacher {
   canManageLibrary?: boolean; // Permissão configurável para gerenciar acervo e empréstimos da biblioteca
   exibirApresentacaoAdmin?: boolean; // Checkbox para exibir atalho da Apresentação Municipal/Pitch no painel principal
   diasDisponiveis?: number[]; // [1, 2, 3, 4, 5] (1: Seg ... 5: Sex). Se vazio ou ausente, todos os 5 dias são úteis/disponíveis
+  schoolId?: string; // Escola principal
+  schools?: string[]; // Escolas vinculadas
+  metaHA?: number; // Quantidade de H.A. (aulas atividades) semanais estipuladas pela coordenação/secretaria
+  tipoDocente?: 'regente' | 'especialista'; // Classificação docente (regente polivalente ou especialista de disciplina)
+  haHorariosFixos?: string[]; // Para especialistas: slots de H.A. fixos pré-definidos (ex: ['1_3', '3_4'])
   createdAt?: number;
   updatedAt?: number;
 }

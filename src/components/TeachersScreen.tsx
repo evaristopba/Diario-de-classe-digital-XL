@@ -33,7 +33,9 @@ import {
   ShieldCheck,
   Eye,
   EyeOff,
-  Layers
+  Layers,
+  Sparkles,
+  Clock
 } from 'lucide-react';
 
 interface TeachersScreenProps {
@@ -64,6 +66,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
   const [canManageLibrary, setCanManageLibrary] = useState(false);
   const [exibirApresentacaoAdmin, setExibirApresentacaoAdmin] = useState(false);
   const [diasDisponiveis, setDiasDisponiveis] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [metaHA, setMetaHA] = useState<number>(0);
   const [isAdmin, setIsAdmin] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -166,6 +169,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
       setCanManageLibrary(!!t.val.canManageLibrary);
       setExibirApresentacaoAdmin(!!t.val.exibirApresentacaoAdmin);
       setDiasDisponiveis(Array.isArray(t.val.diasDisponiveis) && t.val.diasDisponiveis.length > 0 ? t.val.diasDisponiveis : [1, 2, 3, 4, 5]);
+      setMetaHA(Number(t.val.metaHA) || 0);
     } else {
       setEditingId(null);
       setName('');
@@ -178,6 +182,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
       setCanManageLibrary(false);
       setExibirApresentacaoAdmin(false);
       setDiasDisponiveis([1, 2, 3, 4, 5]);
+      setMetaHA(0);
     }
     setIsFormOpen(true);
   };
@@ -290,6 +295,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
         canManageLibrary: !!canManageLibrary,
         exibirApresentacaoAdmin: !!exibirApresentacaoAdmin,
         diasDisponiveis: diasDisponiveis.length === 5 ? [1, 2, 3, 4, 5] : diasDisponiveis,
+        metaHA: Math.max(0, Number(metaHA) || 0),
         ...(preservedAuthUid ? { authUid: preservedAuthUid } : {}),
         ...(effectiveAuthEmail ? { authEmail: effectiveAuthEmail } : {}),
         ...(effectivePassword ? { password: effectivePassword, tempPassword: effectivePassword } : {})
@@ -567,6 +573,11 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
                     {Array.isArray(t.val.diasDisponiveis) && t.val.diasDisponiveis.length > 0 && t.val.diasDisponiveis.length < 5 && (
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200" title={`Atua em ${t.val.diasDisponiveis.length} dias na semana`}>
                         🗓️ Folga: {[1, 2, 3, 4, 5].filter((d) => !t.val.diasDisponiveis!.includes(d)).map((d) => ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'][d - 1]).join(', ')}
+                      </span>
+                    )}
+                    {Number(t.val.metaHA) > 0 && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200" title={`Meta de ${t.val.metaHA} aulas atividades (H.A.) semanais definidas pela coordenação`}>
+                        ⭐ Meta: {t.val.metaHA} H.A.
                       </span>
                     )}
                     <span
@@ -881,6 +892,52 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
                       .join(', ')}. O sistema previne conflitos ao montar a grade.
                   </p>
                 )}
+              </div>
+
+              {/* Meta de H.A. (Hora-Atividade / Aulas Atividades) */}
+              <div className="p-3.5 bg-gradient-to-br from-purple-50/80 to-indigo-50/50 border border-purple-200 rounded-2xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-purple-900 flex items-center gap-1.5">
+                    <Sparkles className="w-4 h-4 text-purple-600" />
+                    Meta de H.A. Semanal (Definida pela Coordenação / Secretaria)
+                  </label>
+                  <span className="text-[11px] font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full border border-purple-200">
+                    {metaHA > 0 ? `${metaHA} aulas/semana` : 'Não definida (0)'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-purple-900/80 leading-relaxed">
+                  Quantidade de aulas atividades (H.A.) semanais estipuladas para este docente (ex: 5, 8, 10 aulas).
+                  Para professores polivalentes/regentes, cada aula ministrada por um especialista na sua sala gera automaticamente 1 H.A. no horário correspondente.
+                </p>
+                <div className="flex items-center gap-2 pt-1 flex-wrap">
+                  <input
+                    id="teacher-meta-ha"
+                    type="number"
+                    min="0"
+                    max="40"
+                    value={metaHA || ''}
+                    onChange={(e) => setMetaHA(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                    placeholder="Ex: 8"
+                    className="w-24 px-3 py-1.5 bg-white border border-purple-300 rounded-xl text-xs font-bold text-purple-950 focus:ring-2 focus:ring-purple-500 outline-none"
+                  />
+                  <span className="text-xs text-purple-800 font-medium">aulas de H.A. / semana</span>
+                  <div className="flex items-center gap-1 ml-auto">
+                    {[4, 6, 8, 10, 13].map((val) => (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setMetaHA(val)}
+                        className={`px-2 py-1 text-[10px] font-bold rounded-lg border transition cursor-pointer ${
+                          metaHA === val
+                            ? 'bg-purple-600 text-white border-purple-700 shadow-2xs'
+                            : 'bg-white text-purple-700 border-purple-200 hover:bg-purple-100/60'
+                        }`}
+                      >
+                        {val} H.A.
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
 
               {/* Permissão de Biblioteca Escolar */}

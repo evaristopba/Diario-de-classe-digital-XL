@@ -9,7 +9,12 @@ import { scanBook } from './api/_lib/scan.js';
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  
+  // Lê porta do ambiente ou argumentos da linha de comando (--port)
+  const args = process.argv.slice(2);
+  const portArgIdx = args.indexOf('--port');
+  const portArg = portArgIdx !== -1 && args[portArgIdx + 1] ? Number(args[portArgIdx + 1]) : null;
+  const PORT = Number(process.env.PORT) || portArg || 3000;
 
   // Suporte a payloads JSON maiores para envio de fotos da capa/contracapa em base64
   app.use(express.json({ limit: '50mb' }));
@@ -25,9 +30,6 @@ async function startServer() {
     }
     next();
   });
-
-  // As rotas de API compartilham a mesma lógica das funções serverless da Vercel (pasta /api),
-  // então o comportamento é idêntico no AI Studio / servidor Node e no deploy da Vercel.
 
   // API de Verificação de Saúde
   app.get('/api/health', (_req, res) => {
@@ -75,15 +77,22 @@ async function startServer() {
 
   // Configuração do Vite middleware em desenvolvimento e arquivos estáticos em produção
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
+    const vitePromise = createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR !== 'true',
-        watch: process.env.DISABLE_HMR === 'true' ? null : {}
+        hmr: false,
       },
       appType: 'spa',
     });
-    app.use(vite.middlewares);
+
+    app.use(async (req, res, next) => {
+      try {
+        const vite = await vitePromise;
+        vite.middlewares(req, res, next);
+      } catch (err) {
+        next(err);
+      }
+    });
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
@@ -92,9 +101,17 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Servidor Diário de Classe rodando em http://0.0.0.0:${PORT}`);
   });
+
+  const shutdown = () => {
+    server.close(() => {
+      process.exit(0);
+    });
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 startServer();

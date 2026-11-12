@@ -24,6 +24,7 @@ import {
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
 import { definirAula, removerAula, trocarAulas } from '../lib/gradeHoraria';
+import { exportToExcelJS, ExcelColumnDef } from '../lib/excelExport';
 import {
   Calendar,
   Clock,
@@ -48,7 +49,14 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowUpDown,
-  RefreshCw
+  RefreshCw,
+  FileSpreadsheet,
+  Download,
+  Target,
+  Award,
+  Check,
+  Sliders,
+  Eye
 } from 'lucide-react';
 
 interface ScheduleScreenProps {
@@ -58,7 +66,7 @@ interface ScheduleScreenProps {
   initialClassId?: string;
 }
 
-type ScheduleViewMode = 'class' | 'specialist' | 'overview';
+type ScheduleViewMode = 'class' | 'specialist' | 'overview' | 'ha';
 
 export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
   currentYear,
@@ -97,6 +105,16 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
   const [horarioCustomFim, setHorarioCustomFim] = useState<string>('');
   const [slotObservacao, setSlotObservacao] = useState<string>('');
   const [isCustomHorarioOpen, setIsCustomHorarioOpen] = useState(false);
+
+  // Estados para Controle de H.A. (Horas-Atividades)
+  const [selectedTeacherForHAModal, setSelectedTeacherForHAModal] = useState<string | null>(null);
+  const [haFilterSchool, setHaFilterSchool] = useState<string>('all');
+  const [haFilterType, setHaFilterType] = useState<'todos' | 'regente' | 'especialista'>('todos');
+  const [haFilterStatus, setHaFilterStatus] = useState<'todos' | 'conforme' | 'pendente' | 'sem_meta'>('todos');
+  const [haSearchQuery, setHaSearchQuery] = useState<string>('');
+  const [editingMetaTeacherId, setEditingMetaTeacherId] = useState<string | null>(null);
+  const [editingMetaValue, setEditingMetaValue] = useState<number>(0);
+  const [savingMeta, setSavingMeta] = useState(false);
 
   useEffect(() => {
     const uid = getCurrentAuthUid();
@@ -488,8 +506,8 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
     }
   };
 
-  // Alternar grupo de intervalo da turma (Grupo A: 09:30 vs Grupo B: 10:00)
-  const handleToggleIntervaloGrupo = async (novoGrupo: 'A' | 'B') => {
+  // Alternar grupo de intervalo/sino da turma (1º Ano: 09:10 vs 2º/3º Anos: 09:30 vs 4º/5º Anos: 09:55)
+  const handleToggleIntervaloGrupo = async (novoGrupo: '1' | 'A' | 'B') => {
     if (!canEditClass || !selectedClassId || !selectedClass) return;
     try {
       await update(ref(rtdb, `diario-classe/turmas/${selectedClassId}`), {
@@ -525,7 +543,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
     let especialista = 0;
     const porMateria: Record<string, number> = {};
 
-    Object.values(grade).forEach((slot) => {
+    Object.values(grade).forEach((slot: any) => {
       total++;
       if (slot.isEspecialista) {
         especialista++;
@@ -571,9 +589,423 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
   // Turnos em que o docente possui aulas registradas
   const specialistActiveTurnos = useMemo(() => {
     const s = new Set<'manha' | 'tarde' | 'noite' | 'outro'>();
-    Object.values(specialistWeeklyGrid).forEach((item) => s.add(item.turno));
+    Object.values(specialistWeeklyGrid).forEach((item: any) => s.add(item.turno));
     return s;
   }, [specialistWeeklyGrid]);
+
+  // Atualizar Meta de H.A. do professor no banco de dados
+  const handleUpdateTeacherMetaHA = async (teacherId: string, novaMeta: number) => {
+    setSavingMeta(true);
+    try {
+      const metaLimpa = Math.max(0, Number(novaMeta) || 0);
+      await update(ref(rtdb, `diario-classe/professores/${teacherId}`), {
+        metaHA: metaLimpa,
+        updatedAt: new Date().toISOString()
+      });
+      setTeachers((prev) =>
+        prev.map((t) => (t.id === teacherId ? { ...t, val: { ...t.val, metaHA: metaLimpa } } : t))
+      );
+      setEditingMetaTeacherId(null);
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Meta Atualizada',
+        message: `A meta semanal de Horas-Atividades (H.A.) foi definida para ${metaLimpa} aula(s).`,
+        icon: '✅'
+      });
+    } catch (err: any) {
+      console.error('Erro ao atualizar meta de H.A.:', err);
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Erro ao Salvar Meta',
+        message: `Não foi possível atualizar a meta de H.A.: ${err?.message || 'Erro desconhecido'}`,
+        icon: '❌'
+      });
+    } finally {
+      setSavingMeta(false);
+    }
+  };
+
+  // Lançar ou remover horário de H.A. manualmente para o professor especialista
+  const handleToggleSpecialistHASlot = async (teacherId: string, slotId: string) => {
+    if (!canEditClass) {
+      return setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Acesso Restrito',
+        message: 'Apenas a coordenação pedagógica ou administradores podem lançar ou alterar as H.A. dos especialistas.',
+        icon: '🔒'
+      });
+    }
+    const teacherObj = teachers.find((t) => t.id === teacherId);
+    if (!teacherObj) return;
+
+    const currentSlots: string[] = Array.isArray(teacherObj.val.haHorariosFixos)
+      ? [...teacherObj.val.haHorariosFixos]
+      : [];
+
+    const exists = currentSlots.includes(slotId);
+    const updatedSlots = exists
+      ? currentSlots.filter((s) => s !== slotId)
+      : [...currentSlots, slotId];
+
+    setSaving(true);
+    try {
+      await update(ref(rtdb, `diario-classe/professores/${teacherId}`), {
+        haHorariosFixos: updatedSlots,
+        updatedAt: new Date().toISOString()
+      });
+
+      setTeachers((prev) =>
+        prev.map((t) =>
+          t.id === teacherId
+            ? { ...t, val: { ...t.val, haHorariosFixos: updatedSlots } }
+            : t
+        )
+      );
+
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: exists ? 'H.A. Desmarcada' : 'H.A. Lançada com Sucesso',
+        message: exists
+          ? `O horário de H.A. foi desmarcado da grade de ${teacherObj.val.name}.`
+          : `Horário de Hora-Atividade (H.A.) lançado com sucesso para ${teacherObj.val.name}!`,
+        icon: '✅'
+      });
+    } catch (err: any) {
+      console.error('Erro ao salvar H.A. do especialista:', err);
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Erro ao Salvar H.A.',
+        message: `Não foi possível atualizar o horário de H.A.: ${err?.message || 'Erro desconhecido'}`,
+        icon: '❌'
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Consolidação detalhada de Horas-Atividades (H.A.) de todos os professores (regentes e especialistas)
+  const teachersHAData = useMemo(() => {
+    return teachers.map((t) => {
+      const teacherId = t.id;
+      const teacherVal = t.val;
+      const isSpec = isSpecialistTeacher(teacherVal);
+
+      // Turmas onde este professor é o regente
+      const regenteClasses = classes.filter((c) => c.val.teacherId === teacherId);
+      const classesAsRegente = regenteClasses.map((c) => ({
+        id: c.id,
+        name: `${c.val.year}º ${c.val.letter}`,
+        shift: c.val.shift || 'matutino'
+      }));
+
+      const haSlots: {
+        dia: DiaSemana;
+        diaNome: string;
+        ordem: number;
+        classId: string;
+        className: string;
+        schoolName: string;
+        especialistaNome: string;
+        disciplinaNome: string;
+        horarioInicio: string;
+        horarioFim: string;
+        origem: string;
+      }[] = [];
+
+      const studentSlots: {
+        dia: DiaSemana;
+        diaNome: string;
+        ordem: number;
+        classId: string;
+        className: string;
+        schoolName: string;
+        disciplinaNome: string;
+        horarioInicio: string;
+        horarioFim: string;
+      }[] = [];
+
+      const schoolIdsSet = new Set<string>();
+      if (teacherVal.schoolId) schoolIdsSet.add(teacherVal.schoolId);
+      if (Array.isArray(teacherVal.schools)) {
+        teacherVal.schools.forEach((s) => s && schoolIdsSet.add(s));
+      }
+      regenteClasses.forEach((c) => {
+        if (c.val.schoolId) schoolIdsSet.add(c.val.schoolId);
+      });
+
+      // 1. Processa todas as turmas do sistema
+      classes.forEach((c) => {
+        const cGrade = c.val.gradeHoraria;
+        if (!cGrade) return;
+        const isRegenteOfClass = c.val.teacherId === teacherId;
+        const schoolName = schools[c.val.schoolId]?.name || c.val.schoolName || 'Escola';
+        const bell = getHorariosTurma(c.val.shift, c.val.intervaloGrupo, c.val.year);
+
+        for (let dia = 1; dia <= 5; dia++) {
+          const diaNome = GRADE_DIAS_SEMANA.find((d) => d.id === dia)?.nome || `Dia ${dia}`;
+          for (let ordem = 1; ordem <= 5; ordem++) {
+            const slotKey = `${dia}_${ordem}`;
+            const slot = cGrade[slotKey];
+            if (!slot) continue;
+
+            const defaultTime = bell.aulas.find((b) => b.ordem === ordem);
+            const horarioInicio = slot.horarioCustomInicio || defaultTime?.inicio || '';
+            const horarioFim = slot.horarioCustomFim || defaultTime?.fim || '';
+
+            // REGRA PEDAGÓGICA:
+            // Apenas o professor REGENTE POLIVALENTE (!isSpec) tem sua Hora-Atividade (H.A.) vinculada
+            // automaticamente quando um especialista leciona na sua sala.
+            // Para professores ESPECIALISTAS (isSpec), as H.A. NÃO são automáticas: elas são lançadas
+            // manualmente pela coordenação na Agenda do Especialista ou no painel de H.A.
+            if (!isSpec && isRegenteOfClass && slot.isEspecialista) {
+              haSlots.push({
+                dia: dia as DiaSemana,
+                diaNome,
+                ordem,
+                classId: c.id,
+                className: `${c.val.year}º ${c.val.letter} (${c.val.shift})`,
+                schoolName,
+                especialistaNome: slot.teacherNome || 'Especialista',
+                disciplinaNome: slot.disciplinaNome || 'Especialidade',
+                horarioInicio,
+                horarioFim,
+                origem: `Especialista em sala (${slot.teacherNome || 'Especialista'})`
+              });
+            }
+
+            // Aulas com Alunos (docência direta em sala):
+            // - Especialista: qualquer aula alocada para ele (slot.teacherId === teacherId)
+            // - Regente: aulas alocadas para ele ou aulas regulares na sua turma regente sem especialista
+            if (slot.teacherId === teacherId || (isRegenteOfClass && !slot.isEspecialista)) {
+              if (c.val.schoolId) schoolIdsSet.add(c.val.schoolId);
+              studentSlots.push({
+                dia: dia as DiaSemana,
+                diaNome,
+                ordem,
+                classId: c.id,
+                className: `${c.val.year}º ${c.val.letter} (${c.val.shift})`,
+                schoolName,
+                disciplinaNome: slot.disciplinaNome || 'Aula Regular',
+                horarioInicio,
+                horarioFim
+              });
+            }
+          }
+        }
+      });
+
+      // 2. Horários de H.A. lançados manualmente pela coordenação (especialistas ou fixos)
+      if (Array.isArray(teacherVal.haHorariosFixos)) {
+        teacherVal.haHorariosFixos.forEach((hStr) => {
+          let d: DiaSemana = 1;
+          let o: number = 1;
+          let turnoLabel = '';
+
+          const parts = hStr.split('_');
+          if (parts.length >= 3) {
+            // Formato 'manha_1_2' ou 'tarde_3_4'
+            const turno = parts[0];
+            d = Number(parts[1]) as DiaSemana;
+            o = Number(parts[2]);
+            turnoLabel = turno === 'tarde' ? 'Tarde' : 'Manhã';
+          } else if (parts.length === 2) {
+            // Formato '1_2'
+            d = Number(parts[0]) as DiaSemana;
+            o = Number(parts[1]);
+          } else {
+            return;
+          }
+
+          if (d < 1 || d > 5 || o < 1 || o > 5) return;
+          const diaNome = GRADE_DIAS_SEMANA.find((dia) => dia.id === d)?.nome || `Dia ${d}`;
+
+          const turnoCanonical = turnoLabel === 'Tarde' ? 'vespertino' : 'matutino';
+          const bellTurno = getHorariosTurma(turnoCanonical, 'A', '1');
+          const defaultTime = bellTurno.aulas.find((b) => b.ordem === o);
+
+          if (!haSlots.some((s) => s.dia === d && s.ordem === o)) {
+            haSlots.push({
+              dia: d,
+              diaNome,
+              ordem: o,
+              classId: 'ha-lancada',
+              className: turnoLabel ? `H.A. Lançada (${turnoLabel})` : 'H.A. Lançada (Planejamento)',
+              schoolName: 'Extraclasse / Planejamento',
+              especialistaNome: teacherVal.name,
+              disciplinaNome: `Hora-Atividade (${teacherVal.subject || (isSpec ? 'Especialista' : 'Docente')})`,
+              horarioInicio: defaultTime?.inicio || '',
+              horarioFim: defaultTime?.fim || '',
+              origem: 'Lançado pela Coordenação'
+            });
+          }
+        });
+      }
+
+      haSlots.sort((a, b) => (a.dia !== b.dia ? a.dia - b.dia : a.ordem - b.ordem));
+      studentSlots.sort((a, b) => (a.dia !== b.dia ? a.dia - b.dia : a.ordem - b.ordem));
+
+      const haCount = haSlots.length;
+      const metaHA = Number(teacherVal.metaHA) || 0;
+      const saldoHA = haCount - metaHA;
+
+      let situacao: 'conforme' | 'pendente' | 'excedente' | 'sem_meta' = 'sem_meta';
+      if (metaHA > 0) {
+        if (haCount === metaHA) situacao = 'conforme';
+        else if (haCount > metaHA) situacao = 'excedente';
+        else situacao = 'pendente';
+      }
+
+      const schoolNames = Array.from(schoolIdsSet)
+        .map((sid) => schools[sid]?.name)
+        .filter(Boolean) as string[];
+
+      return {
+        id: teacherId,
+        teacher: teacherVal,
+        isSpecialist: isSpec,
+        schoolIds: Array.from(schoolIdsSet),
+        schoolNames,
+        classesAsRegente,
+        totalAulasComAlunos: studentSlots.length,
+        haSlots,
+        studentSlots,
+        haCount,
+        metaHA,
+        saldoHA,
+        situacao
+      };
+    });
+  }, [teachers, classes, schools, subjects]);
+
+  // Informações de H.A. consolidadas do especialista atualmente selecionado
+  const activeSpecialistHAInfo = useMemo(() => {
+    if (!selectedSpecialistId) return null;
+    return teachersHAData.find((t) => t.id === selectedSpecialistId) || null;
+  }, [teachersHAData, selectedSpecialistId]);
+
+  // Lista filtrada de H.A. dos docentes
+  const filteredTeachersHA = useMemo(() => {
+    return teachersHAData.filter((item) => {
+      if (haFilterSchool !== 'all') {
+        const matchSchool =
+          item.schoolIds.includes(haFilterSchool) ||
+          item.teacher.schoolId === haFilterSchool ||
+          (Array.isArray(item.teacher.schools) && item.teacher.schools.includes(haFilterSchool));
+        if (!matchSchool) return false;
+      }
+
+      if (haFilterType === 'regente' && item.isSpecialist) return false;
+      if (haFilterType === 'especialista' && !item.isSpecialist) return false;
+
+      if (haFilterStatus === 'conforme' && item.situacao !== 'conforme' && item.situacao !== 'excedente') return false;
+      if (haFilterStatus === 'pendente' && item.situacao !== 'pendente') return false;
+      if (haFilterStatus === 'sem_meta' && item.situacao !== 'sem_meta') return false;
+
+      if (haSearchQuery.trim()) {
+        const q = haSearchQuery.toLowerCase();
+        const matchName = (item.teacher.name || '').toLowerCase().includes(q);
+        const matchSub = (item.teacher.subject || '').toLowerCase().includes(q);
+        const matchSchool = item.schoolNames.some((sn) => sn.toLowerCase().includes(q));
+        if (!matchName && !matchSub && !matchSchool) return false;
+      }
+
+      return true;
+    });
+  }, [teachersHAData, haFilterSchool, haFilterType, haFilterStatus, haSearchQuery]);
+
+  // Indicadores (KPIs) de H.A. para a Secretaria / Coordenação
+  const haKPIs = useMemo(() => {
+    const totalProfessores = teachersHAData.length;
+    const regentes = teachersHAData.filter((t) => !t.isSpecialist).length;
+    const especialistas = teachersHAData.filter((t) => t.isSpecialist).length;
+    const comMetaDefinida = teachersHAData.filter((t) => t.metaHA > 0).length;
+    const conformes = teachersHAData.filter((t) => t.situacao === 'conforme' || t.situacao === 'excedente').length;
+    const pendentes = teachersHAData.filter((t) => t.situacao === 'pendente').length;
+    const semMeta = teachersHAData.filter((t) => t.situacao === 'sem_meta').length;
+    const totalHAGeradas = teachersHAData.reduce((acc, t) => acc + t.haCount, 0);
+    const totalAulasAlunos = teachersHAData.reduce((acc, t) => acc + t.totalAulasComAlunos, 0);
+
+    return {
+      totalProfessores,
+      regentes,
+      especialistas,
+      comMetaDefinida,
+      conformes,
+      pendentes,
+      semMeta,
+      totalHAGeradas,
+      totalAulasAlunos
+    };
+  }, [teachersHAData]);
+
+  // Exportar Relatório de H.A. em Excel para a Secretaria de Educação
+  const handleExportHAExcel = async () => {
+    try {
+      const columns: ExcelColumnDef[] = [
+        { header: 'Docente', key: 'docente', width: 28, align: 'left' },
+        { header: 'Tipo Docente', key: 'tipo', width: 20, align: 'left' },
+        { header: 'Componente / Matéria', key: 'disciplina', width: 22, align: 'left' },
+        { header: 'Escola(s)', key: 'escolas', width: 26, align: 'left' },
+        { header: 'Turmas Atendidas', key: 'turmas', width: 24, align: 'left' },
+        { header: 'Aulas c/ Alunos', key: 'aulasAlunos', width: 16, align: 'center' },
+        { header: 'H.A. Atual Semanal', key: 'haAtual', width: 18, align: 'center' },
+        { header: 'Meta H.A. (Coord.)', key: 'metaHA', width: 18, align: 'center' },
+        { header: 'Saldo H.A.', key: 'saldo', width: 14, align: 'center' },
+        { header: 'Situação de Cumprimento', key: 'situacao', width: 24, align: 'center' }
+      ];
+
+      const rows = filteredTeachersHA.map((item) => {
+        let situacaoLabel = 'Sem Meta Definida';
+        if (item.situacao === 'conforme') situacaoLabel = 'Conforme (Meta Atingida)';
+        else if (item.situacao === 'excedente') situacaoLabel = `Excedente (+${item.saldoHA} H.A.)`;
+        else if (item.situacao === 'pendente') situacaoLabel = `Pendente (Faltam ${Math.abs(item.saldoHA)} H.A.)`;
+
+        const turmasStr = item.isSpecialist
+          ? `${new Set(item.studentSlots.map((s) => s.className)).size} turma(s) na grade`
+          : item.classesAsRegente.map((c) => c.name).join(', ') || 'Sem regência direta';
+
+        return {
+          docente: item.teacher.name || 'Docente',
+          tipo: item.isSpecialist ? 'Especialista' : 'Regente Polivalente',
+          disciplina: item.teacher.subject || (item.isSpecialist ? 'Especialidade' : 'Polivalente'),
+          escolas: item.schoolNames.join('; ') || 'Todas / Rede',
+          turmas: turmasStr,
+          aulasAlunos: item.totalAulasComAlunos,
+          haAtual: item.haCount,
+          metaHA: item.metaHA > 0 ? item.metaHA : 'Não Definida',
+          saldo: item.metaHA > 0 ? (item.saldoHA > 0 ? `+${item.saldoHA}` : item.saldoHA) : '-',
+          situacao: situacaoLabel
+        };
+      });
+
+      await exportToExcelJS({
+        title: 'Secretaria Municipal de Educação - Relatório de Cumprimento de Horas-Atividades (H.A.)',
+        year: String(currentYear),
+        sheetName: 'Controle H.A.',
+        columns,
+        rows,
+        filename: `Relatorio_Controle_HA_${currentYear}.xlsx`,
+        footerNotes: [
+          '* Horas-Atividades (H.A.) de regentes polivalentes geradas automaticamente quando especialista assume aula na sala.',
+          '* Metas de H.A. semanais parametrizadas pela Secretaria de Educação e Coordenação Pedagógica conforme Lei Federal 11.738/2008.'
+        ]
+      });
+    } catch (err: any) {
+      console.error('Erro ao exportar H.A. para Excel:', err);
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Erro ao Gerar Excel',
+        message: `Não foi possível exportar a planilha de H.A.: ${err?.message || 'Erro desconhecido'}`,
+        icon: '❌'
+      });
+    }
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
@@ -599,10 +1031,10 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
         </div>
 
         {/* Alternância de Modo de Visão */}
-        <div className="flex items-center gap-2 bg-slate-100 p-1 rounded-xl border border-slate-200 self-stretch sm:self-auto justify-center">
+        <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-200 self-stretch sm:self-auto justify-center flex-wrap">
           <button
             onClick={() => setViewMode('class')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               viewMode === 'class'
                 ? 'bg-white text-indigo-700 shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
@@ -612,7 +1044,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
           </button>
           <button
             onClick={() => setViewMode('specialist')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               viewMode === 'specialist'
                 ? 'bg-white text-indigo-700 shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
@@ -622,13 +1054,24 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
           </button>
           <button
             onClick={() => setViewMode('overview')}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
               viewMode === 'overview'
                 ? 'bg-white text-indigo-700 shadow-xs'
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             📊 Escala Semanal
+          </button>
+          <button
+            onClick={() => setViewMode('ha')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+              viewMode === 'ha'
+                ? 'bg-amber-500 text-white shadow-xs'
+                : 'text-slate-700 hover:text-amber-700 hover:bg-amber-50/60'
+            }`}
+          >
+            <Award className="w-3.5 h-3.5" />
+            <span>Controle de H.A.</span>
           </button>
         </div>
       </div>
@@ -684,37 +1127,56 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
             </div>
 
             {/* Alternador de Grupo de Intervalo (apenas para Matutino / Manhã) */}
-            {selectedClass && getTurnoCanonical(selectedClass.shift) === 'manha' && (
-              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl">
-                <span className="text-xs font-semibold text-slate-600">Intervalo Matutino:</span>
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => handleToggleIntervaloGrupo('A')}
-                    disabled={!canEditClass}
-                    className={`px-2.5 py-1 text-xs font-bold rounded-md transition cursor-pointer ${
-                      (selectedClass.intervaloGrupo || 'A') === 'A'
-                        ? 'bg-amber-500 text-white shadow-2xs'
-                        : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                    }`}
-                    title="Grupo A: Recreio das 09:30 às 09:50 (Infantil / 1º ao 3º Ano)"
-                  >
-                    Grupo A (09:30)
-                  </button>
-                  <button
-                    onClick={() => handleToggleIntervaloGrupo('B')}
-                    disabled={!canEditClass}
-                    className={`px-2.5 py-1 text-xs font-bold rounded-md transition cursor-pointer ${
-                      selectedClass.intervaloGrupo === 'B'
-                        ? 'bg-indigo-600 text-white shadow-2xs'
-                        : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                    }`}
-                    title="Grupo B: Recreio das 10:00 às 10:20 (4º e 5º Anos)"
-                  >
-                    Grupo B (10:00)
-                  </button>
+            {selectedClass && getTurnoCanonical(selectedClass.shift) === 'manha' && (() => {
+              const rawG = selectedClass.intervaloGrupo || (selectedClass.year === '1' ? '1' : selectedClass.year === '4' || selectedClass.year === '5' ? 'B' : 'A');
+              const activeG = rawG === '1' || rawG === 'ano1' ? '1' : rawG === 'B' || rawG === 'ano45' ? 'B' : 'A';
+              return (
+                <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl flex-wrap">
+                  <span className="text-xs font-semibold text-slate-600 flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5 text-indigo-600" />
+                    Sino / Intervalo:
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => handleToggleIntervaloGrupo('1')}
+                      disabled={!canEditClass}
+                      className={`px-2.5 py-1 text-xs font-bold rounded-md transition cursor-pointer ${
+                        activeG === '1'
+                          ? 'bg-emerald-600 text-white shadow-2xs'
+                          : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                      }`}
+                      title="1º Ano: Leitura/Lanche 08:40–09:10, Recreio 09:10–09:30, 3ª Aula 09:30–10:20"
+                    >
+                      1º Ano (09:10)
+                    </button>
+                    <button
+                      onClick={() => handleToggleIntervaloGrupo('A')}
+                      disabled={!canEditClass}
+                      className={`px-2.5 py-1 text-xs font-bold rounded-md transition cursor-pointer ${
+                        activeG === 'A'
+                          ? 'bg-sky-600 text-white shadow-2xs'
+                          : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                      }`}
+                      title="2º e 3º Anos: Recreio 09:30–09:50, Refeição e Saída 11:30–12:00"
+                    >
+                      2º/3º Anos (09:30)
+                    </button>
+                    <button
+                      onClick={() => handleToggleIntervaloGrupo('B')}
+                      disabled={!canEditClass}
+                      className={`px-2.5 py-1 text-xs font-bold rounded-md transition cursor-pointer ${
+                        activeG === 'B'
+                          ? 'bg-indigo-600 text-white shadow-2xs'
+                          : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                      }`}
+                      title="4º e 5º Anos: Leitura/Lanche 09:30–09:55, Recreio 09:55–10:15, 4ª Aula 10:20–11:10"
+                    >
+                      4º/5º Anos (09:55)
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Indicador Informativo de Recreio para Vespertino / Tarde */}
             {selectedClass && getTurnoCanonical(selectedClass.shift) === 'tarde' && (
@@ -850,9 +1312,17 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                         {slot.disciplinaNome}
                                       </span>
                                       {slot.isEspecialista && (
-                                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-indigo-600 text-white">
-                                          Especialista
-                                        </span>
+                                        <div className="flex items-center gap-1 flex-wrap justify-end">
+                                          <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-indigo-600 text-white">
+                                            Especialista
+                                          </span>
+                                          <span
+                                            className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-amber-500 text-white shadow-2xs"
+                                            title={`Hora-Atividade (H.A.) assegurada para o professor regente (${regenteTeacher?.name ? regenteTeacher.name.split(' ')[0] : 'Regente'})`}
+                                          >
+                                            ⭐ H.A. Regente
+                                          </span>
+                                        </div>
                                       )}
                                     </div>
                                     <p className="text-[11px] text-slate-600 truncate font-medium">
@@ -934,7 +1404,19 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                         </span>
                       </td>
                       <td colSpan={5} className="py-2.5 px-4 text-center text-xs tracking-wide">
-                        🍎 {bellSchedule.intervalo.rotulo}
+                        <div className="flex items-center justify-center gap-2 flex-wrap">
+                          <span>🍎 {bellSchedule.intervalo.rotulo}</span>
+                          {(bellSchedule as any).lanche && (
+                            <span className="text-[11px] font-normal text-amber-800 bg-amber-100/90 px-2 py-0.5 rounded-md border border-amber-300">
+                              {(bellSchedule as any).lanche.rotulo}
+                            </span>
+                          )}
+                          {(bellSchedule as any).refeicaoFinal && (
+                            <span className="text-[11px] font-normal text-amber-800 bg-amber-100/90 px-2 py-0.5 rounded-md border border-amber-300">
+                              {(bellSchedule as any).refeicaoFinal.rotulo}
+                            </span>
+                          )}
+                        </div>
                       </td>
                     </tr>
 
@@ -973,9 +1455,17 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                         {slot.disciplinaNome}
                                       </span>
                                       {slot.isEspecialista && (
-                                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-indigo-600 text-white">
-                                          Especialista
-                                        </span>
+                                        <div className="flex items-center gap-1 flex-wrap justify-end">
+                                          <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-indigo-600 text-white">
+                                            Especialista
+                                          </span>
+                                          <span
+                                            className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-amber-500 text-white shadow-2xs"
+                                            title={`Hora-Atividade (H.A.) assegurada para o professor regente (${regenteTeacher?.name ? regenteTeacher.name.split(' ')[0] : 'Regente'})`}
+                                          >
+                                            ⭐ H.A. Regente
+                                          </span>
+                                        </div>
                                       )}
                                     </div>
                                     <p className="text-[11px] text-slate-600 truncate font-medium">
@@ -1132,11 +1622,11 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
             )}
           </div>
 
-          {/* Cartões de Carga Horária do Especialista */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+          {/* Cartões de Carga Horária e H.A. do Especialista */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between shadow-2xs">
               <div>
-                <span className="text-[10px] font-bold uppercase text-slate-400">Total de Aulas Semanais</span>
+                <span className="text-[10px] font-bold uppercase text-slate-400">Aulas Semanais c/ Alunos</span>
                 <p className="text-xl font-extrabold text-indigo-700">{totalAulasEspecialista} aulas</p>
                 <span className="text-[11px] text-slate-500 font-medium">
                   {Math.round((totalAulasEspecialista * 50) / 60)}h {(totalAulasEspecialista * 50) % 60}min de regência
@@ -1147,31 +1637,80 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
               </div>
             </div>
 
-            <div className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+            <div className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between shadow-2xs">
               <div>
                 <span className="text-[10px] font-bold uppercase text-slate-400">Turmas Atendidas</span>
                 <p className="text-xl font-extrabold text-slate-800">
-                  {new Set(Object.values(specialistWeeklyGrid).map((item) => item.turmaId)).size} turmas
+                  {new Set(Object.values(specialistWeeklyGrid).map((item: any) => item.turmaId)).size} turmas
                 </p>
-                <span className="text-[11px] text-slate-500 font-medium">Blocos de 2 aulas por turma</span>
+                <span className="text-[11px] text-slate-500 font-medium">Na rede municipal</span>
               </div>
               <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl">
                 <Users className="w-6 h-6" />
               </div>
             </div>
 
-            <div className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between">
+            {/* Cartão de Horas-Atividades (H.A.) do Especialista */}
+            <div className="bg-amber-50/70 p-4 rounded-xl border border-amber-200 flex items-center justify-between shadow-2xs">
+              <div>
+                <span className="text-[10px] font-bold uppercase text-amber-700">⭐ H.A. Lançadas</span>
+                <div className="flex items-baseline gap-1.5">
+                  <p className="text-xl font-extrabold text-amber-900">
+                    {activeSpecialistHAInfo?.haCount || 0}
+                  </p>
+                  <span className="text-xs text-amber-700 font-semibold">
+                    de {activeSpecialist?.val.metaHA || 0} (Meta)
+                  </span>
+                </div>
+                <span className="text-[11px] text-amber-800 font-medium block mt-0.5">
+                  {activeSpecialistHAInfo?.situacao === 'conforme'
+                    ? '✅ Cota Conforme'
+                    : activeSpecialistHAInfo?.situacao === 'excedente'
+                    ? `⭐ Excedente (+${activeSpecialistHAInfo?.saldoHA})`
+                    : (activeSpecialist?.val.metaHA || 0) > 0
+                    ? `⚠️ Faltam ${Math.abs(activeSpecialistHAInfo?.saldoHA || 0)} H.A.`
+                    : 'Meta não definida'}
+                </span>
+              </div>
+              <div className="p-2.5 bg-amber-500 text-white rounded-xl shadow-xs">
+                <Award className="w-6 h-6" />
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between shadow-2xs">
               <div>
                 <span className="text-[10px] font-bold uppercase text-slate-400">Disciplina Principal</span>
                 <p className="text-base font-bold text-slate-800 truncate">
                   {activeSpecialist?.val.subject || 'Especialista'}
                 </p>
-                <span className="text-[11px] text-slate-500 font-medium">Base Nacional Comum Curricular</span>
+                <span className="text-[11px] text-slate-500 font-medium">Base Curricular</span>
               </div>
-              <div className="p-2.5 bg-amber-50 text-amber-600 rounded-xl">
+              <div className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl">
                 <Sparkles className="w-6 h-6" />
               </div>
             </div>
+          </div>
+
+          {/* Banner com instrução de como lançar H.A. do especialista */}
+          <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-start gap-2.5 text-amber-950">
+              <div className="p-1.5 bg-amber-500 text-white rounded-lg shrink-0 mt-0.5">
+                <Award className="w-4 h-4" />
+              </div>
+              <div>
+                <p className="font-extrabold text-amber-900 text-xs sm:text-sm">
+                  Como lançar as H.A. dos Especialistas:
+                </p>
+                <p className="text-[11px] text-amber-800 leading-snug mt-0.5">
+                  Para os especialistas, as H.A. <strong>não são automáticas</strong>. Clique nos horários livres com tracejado (<code>+ Lançar H.A.</code>) na grade abaixo para alocar os horários de planejamento e atividades extraclasse deste docente.
+                </p>
+              </div>
+            </div>
+            {canEditClass && (
+              <span className="px-2.5 py-1 bg-white border border-amber-300 rounded-lg text-amber-900 text-[11px] font-bold shrink-0 shadow-2xs">
+                ✍️ Clique nos horários livres para lançar
+              </span>
+            )}
           </div>
 
           {/* Grade Semanal do Especialista com Divisão por Turno */}
@@ -1244,13 +1783,13 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                   ? 'bg-amber-100 text-amber-900 border-amber-300'
                   : 'bg-indigo-100 text-indigo-900 border-indigo-300';
 
-                const aulasDef = isManha
+                const aulasDef: { ordem: number; label: string; sub?: string }[] = isManha
                   ? [
-                      { ordem: 1, label: '07:00 – 07:50' },
-                      { ordem: 2, label: '07:50 – 08:40' },
-                      { ordem: 3, label: '08:40 – 09:30' },
-                      { ordem: 4, label: '09:50 / 10:20' },
-                      { ordem: 5, label: '10:40 / 11:10' }
+                      { ordem: 1, label: '07:00 – 07:50', sub: 'Padrão da rede' },
+                      { ordem: 2, label: '07:50 – 08:40', sub: 'Padrão da rede' },
+                      { ordem: 3, label: '08:40 / 09:30', sub: '2º-5º: 08:40 | 1º: 09:30' },
+                      { ordem: 4, label: '09:50 / 10:20', sub: '2º/3º: 09:50 | 1º/4º/5º: 10:20' },
+                      { ordem: 5, label: '10:40 / 11:10', sub: '2º/3º: 10:40 | 1º/4º/5º: 11:10' }
                     ]
                   : [
                       { ordem: 1, label: '12:30 – 13:20' },
@@ -1316,6 +1855,11 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                 <td className="py-3 px-2 text-center bg-slate-50/50 font-bold border-r border-slate-200 text-slate-800">
                                   {ordem}ª Aula
                                   <span className="block text-[10px] text-slate-400 font-normal">{def?.label}</span>
+                                  {def?.sub && (
+                                    <span className="block text-[9px] text-indigo-600 font-medium leading-tight mt-0.5">
+                                      {def.sub}
+                                    </span>
+                                  )}
                                 </td>
                                 {GRADE_DIAS_SEMANA.map((dia) => {
                                   const dias =
@@ -1326,6 +1870,12 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                   const folga = !dias.includes(dia.id);
                                   const slotKey = `${turnoKey}_${dia.id}_${ordem}`;
                                   const item = specialistWeeklyGrid[slotKey];
+                                  const specialistHAFixos = Array.isArray(activeSpecialist?.val.haHorariosFixos)
+                                    ? activeSpecialist!.val.haHorariosFixos
+                                    : [];
+                                  const isSpecialistHA =
+                                    specialistHAFixos.includes(slotKey) ||
+                                    specialistHAFixos.includes(`${dia.id}_${ordem}`);
 
                                   if (folga) {
                                     return (
@@ -1338,9 +1888,18 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                     );
                                   }
 
+                                  const slotTime = item
+                                    ? getSlotTimeRange(
+                                        item.turma,
+                                        ordem,
+                                        item.slot.horarioCustomInicio,
+                                        item.slot.horarioCustomFim
+                                      )
+                                    : null;
+
                                   return (
                                     <td key={dia.id} className="p-2 border-r border-slate-100 last:border-r-0 align-top">
-                                      {item ? (
+                                      {item && slotTime ? (
                                         <div className="p-2.5 rounded-xl border bg-gradient-to-br from-indigo-50 to-indigo-100/70 border-indigo-200 text-indigo-950 shadow-2xs">
                                           <div className="flex items-center justify-between mb-1">
                                             <span className="font-extrabold text-xs text-indigo-900">
@@ -1353,26 +1912,85 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                           <p className="text-[11px] font-semibold text-slate-700 truncate">
                                             {item.slot.disciplinaNome}
                                           </p>
-                                          {item.slot.horarioCustomInicio ? (
-                                            <span className="text-[10px] text-amber-700 font-bold block mt-0.5">
-                                              ⏱️ {item.slot.horarioCustomInicio} – {item.slot.horarioCustomFim}
+
+                                          <div className="flex items-center gap-1 mt-1 flex-wrap">
+                                            <span className="text-[10px] text-indigo-900 font-bold bg-white/90 px-1.5 py-0.2 rounded border border-indigo-200/80 flex items-center gap-1">
+                                              <Clock className="w-2.5 h-2.5 text-indigo-600 shrink-0" />
+                                              {slotTime.inicioStr} – {slotTime.fimStr}
                                             </span>
-                                          ) : null}
+                                            {item.slot.horarioCustomInicio ? (
+                                              <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1 py-0.2 rounded border border-amber-200">
+                                                Ajustado
+                                              </span>
+                                            ) : isManha && (item.turma.year === '1' || item.turma.intervaloGrupo === '1') ? (
+                                              <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1 py-0.2 rounded border border-emerald-200">
+                                                1º Ano
+                                              </span>
+                                            ) : null}
+                                          </div>
+
                                           {item.slot.observacao ? (
                                             <span
-                                              className="text-[10px] text-indigo-700 italic block mt-0.5 truncate"
+                                              className="text-[10px] text-indigo-700 italic block mt-1 truncate"
                                               title={item.slot.observacao}
                                             >
                                               📝 {item.slot.observacao}
                                             </span>
                                           ) : null}
-                                          <p className="text-[10px] text-slate-500 truncate mt-0.5">
+                                          <p className="text-[10px] text-slate-500 truncate mt-1">
                                             {schools[item.turma.schoolId]?.name || item.turma.schoolName}
                                           </p>
                                         </div>
+                                      ) : isSpecialistHA ? (
+                                        <div className="p-2.5 rounded-xl border border-amber-300 bg-gradient-to-br from-amber-50 to-amber-100/80 text-amber-950 shadow-2xs space-y-1">
+                                          <div className="flex items-center justify-between">
+                                            <span className="font-extrabold text-[11px] text-amber-900 flex items-center gap-1">
+                                              <Award className="w-3.5 h-3.5 text-amber-600" />
+                                              ⭐ H.A. Lançada
+                                            </span>
+                                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-200 text-amber-900">
+                                              Extraclasse
+                                            </span>
+                                          </div>
+                                          <p className="text-[11px] font-bold text-amber-800 leading-tight">
+                                            Planejamento Pedagógico
+                                          </p>
+                                          <span className="text-[10px] text-amber-700 block">
+                                            Hora-Atividade do Especialista
+                                          </span>
+                                          {canEditClass && activeSpecialist && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleToggleSpecialistHASlot(activeSpecialist.id, slotKey)}
+                                              disabled={saving}
+                                              className="mt-1 inline-flex items-center gap-1 text-[10px] text-rose-600 hover:text-rose-800 font-bold hover:underline cursor-pointer"
+                                              title="Remover este horário de H.A."
+                                            >
+                                              <X className="w-3 h-3" />
+                                              Desmarcar H.A.
+                                            </button>
+                                          )}
+                                        </div>
                                       ) : (
-                                        <div className="h-14 rounded-xl border border-dashed border-slate-200 flex items-center justify-center text-slate-300 text-[11px]">
-                                          —
+                                        <div className="min-h-[56px] rounded-xl border border-dashed border-slate-200 hover:border-amber-400 hover:bg-amber-50/40 transition p-1.5 flex flex-col items-center justify-center text-center group">
+                                          {canEditClass && activeSpecialist ? (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleToggleSpecialistHASlot(activeSpecialist.id, slotKey)}
+                                              disabled={saving}
+                                              className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-bold text-slate-400 group-hover:text-amber-700 transition cursor-pointer"
+                                              title={`Lançar a ${ordem}ª aula da ${dia.nome} como H.A. de ${activeSpecialist.val.name}`}
+                                            >
+                                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 group-hover:bg-amber-500 group-hover:text-white transition text-[10px]">
+                                                + Lançar H.A.
+                                              </span>
+                                              <span className="text-[9px] text-slate-400 font-normal group-hover:text-amber-800">
+                                                Horário Livre
+                                              </span>
+                                            </button>
+                                          ) : (
+                                            <span className="text-[11px] text-slate-300">—</span>
+                                          )}
                                         </div>
                                       )}
                                     </td>
@@ -1382,22 +2000,31 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                             );
                           })}
 
-                          {/* Linha de Intervalo */}
+                          {/* Linha de Intervalo com os 3 Sinos da Rede */}
                           <tr className="bg-amber-50/50 border-y border-amber-200 text-amber-900 font-semibold text-[11px]">
-                            <td className="py-2 px-2 text-center border-r border-amber-200 font-bold bg-amber-100/50">
+                            <td className="py-2.5 px-2 text-center border-r border-amber-200 font-bold bg-amber-100/60">
                               <Coffee className="w-3.5 h-3.5 mx-auto mb-0.5 text-amber-700" />
-                              Intervalo
+                              <span className="text-[10px] uppercase tracking-wider block">Intervalos</span>
                             </td>
-                            <td colSpan={5} className="py-2 px-4 text-center">
+                            <td colSpan={5} className="py-2.5 px-3 text-center">
                               {isManha ? (
-                                <span>
-                                  🥪 Recreio Matutino: <strong>Grupo A (09:30 – 09:50)</strong> •{' '}
-                                  <strong>Grupo B (10:00 – 10:20)</strong>
-                                </span>
+                                <div className="flex items-center justify-center gap-2 md:gap-3 flex-wrap text-[11px]">
+                                  <span className="inline-flex items-center gap-1 bg-white text-emerald-900 px-2 py-0.5 rounded-md border border-emerald-300 shadow-2xs">
+                                    🥪 <strong>1º Ano:</strong> Lanche 08:40–09:10 • Recreio <strong>09:10–09:30</strong> (3ª aula 09:30–10:20)
+                                  </span>
+                                  <span className="inline-flex items-center gap-1 bg-white text-sky-900 px-2 py-0.5 rounded-md border border-sky-300 shadow-2xs">
+                                    🥪 <strong>2º e 3º Anos:</strong> Recreio <strong>09:30–09:50</strong> • Refeição 11:30–12:00
+                                  </span>
+                                  <span className="inline-flex items-center gap-1 bg-white text-indigo-900 px-2 py-0.5 rounded-md border border-indigo-300 shadow-2xs">
+                                    🥪 <strong>4º e 5º Anos:</strong> Lanche 09:30–09:55 • Recreio <strong>09:55–10:15</strong>
+                                  </span>
+                                </div>
                               ) : (
-                                <span>
-                                  🥪 Recreio Vespertino: <strong>15:00 às 15:20 (20 min)</strong>
-                                </span>
+                                <div className="flex items-center justify-center gap-2 text-[11px]">
+                                  <span className="inline-flex items-center gap-1 bg-white text-amber-900 px-3 py-1 rounded-md border border-amber-300 shadow-2xs">
+                                    🥪 <strong>Recreio Vespertino:</strong> 15:00 às 15:20 (20 min)
+                                  </span>
+                                </div>
                               )}
                             </td>
                           </tr>
@@ -1410,6 +2037,11 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                 <td className="py-3 px-2 text-center bg-slate-50/50 font-bold border-r border-slate-200 text-slate-800">
                                   {ordem}ª Aula
                                   <span className="block text-[10px] text-slate-400 font-normal">{def?.label}</span>
+                                  {def?.sub && (
+                                    <span className="block text-[9px] text-indigo-600 font-medium leading-tight mt-0.5">
+                                      {def.sub}
+                                    </span>
+                                  )}
                                 </td>
                                 {GRADE_DIAS_SEMANA.map((dia) => {
                                   const dias =
@@ -1420,6 +2052,12 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                   const folga = !dias.includes(dia.id);
                                   const slotKey = `${turnoKey}_${dia.id}_${ordem}`;
                                   const item = specialistWeeklyGrid[slotKey];
+                                  const specialistHAFixos = Array.isArray(activeSpecialist?.val.haHorariosFixos)
+                                    ? activeSpecialist!.val.haHorariosFixos
+                                    : [];
+                                  const isSpecialistHA =
+                                    specialistHAFixos.includes(slotKey) ||
+                                    specialistHAFixos.includes(`${dia.id}_${ordem}`);
 
                                   if (folga) {
                                     return (
@@ -1432,9 +2070,18 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                     );
                                   }
 
+                                  const slotTime = item
+                                    ? getSlotTimeRange(
+                                        item.turma,
+                                        ordem,
+                                        item.slot.horarioCustomInicio,
+                                        item.slot.horarioCustomFim
+                                      )
+                                    : null;
+
                                   return (
                                     <td key={dia.id} className="p-2 border-r border-slate-100 last:border-r-0 align-top">
-                                      {item ? (
+                                      {item && slotTime ? (
                                         <div className="p-2.5 rounded-xl border bg-gradient-to-br from-indigo-50 to-indigo-100/70 border-indigo-200 text-indigo-950 shadow-2xs">
                                           <div className="flex items-center justify-between mb-1">
                                             <span className="font-extrabold text-xs text-indigo-900">
@@ -1447,26 +2094,85 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                           <p className="text-[11px] font-semibold text-slate-700 truncate">
                                             {item.slot.disciplinaNome}
                                           </p>
-                                          {item.slot.horarioCustomInicio ? (
-                                            <span className="text-[10px] text-amber-700 font-bold block mt-0.5">
-                                              ⏱️ {item.slot.horarioCustomInicio} – {item.slot.horarioCustomFim}
+
+                                          <div className="flex items-center gap-1 mt-1 flex-wrap">
+                                            <span className="text-[10px] text-indigo-900 font-bold bg-white/90 px-1.5 py-0.2 rounded border border-indigo-200/80 flex items-center gap-1">
+                                              <Clock className="w-2.5 h-2.5 text-indigo-600 shrink-0" />
+                                              {slotTime.inicioStr} – {slotTime.fimStr}
                                             </span>
-                                          ) : null}
+                                            {item.slot.horarioCustomInicio ? (
+                                              <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1 py-0.2 rounded border border-amber-200">
+                                                Ajustado
+                                              </span>
+                                            ) : isManha && (item.turma.year === '1' || item.turma.intervaloGrupo === '1') ? (
+                                              <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1 py-0.2 rounded border border-emerald-200">
+                                                1º Ano
+                                              </span>
+                                            ) : null}
+                                          </div>
+
                                           {item.slot.observacao ? (
                                             <span
-                                              className="text-[10px] text-indigo-700 italic block mt-0.5 truncate"
+                                              className="text-[10px] text-indigo-700 italic block mt-1 truncate"
                                               title={item.slot.observacao}
                                             >
                                               📝 {item.slot.observacao}
                                             </span>
                                           ) : null}
-                                          <p className="text-[10px] text-slate-500 truncate mt-0.5">
+                                          <p className="text-[10px] text-slate-500 truncate mt-1">
                                             {schools[item.turma.schoolId]?.name || item.turma.schoolName}
                                           </p>
                                         </div>
+                                      ) : isSpecialistHA ? (
+                                        <div className="p-2.5 rounded-xl border border-amber-300 bg-gradient-to-br from-amber-50 to-amber-100/80 text-amber-950 shadow-2xs space-y-1">
+                                          <div className="flex items-center justify-between">
+                                            <span className="font-extrabold text-[11px] text-amber-900 flex items-center gap-1">
+                                              <Award className="w-3.5 h-3.5 text-amber-600" />
+                                              ⭐ H.A. Lançada
+                                            </span>
+                                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-200 text-amber-900">
+                                              Extraclasse
+                                            </span>
+                                          </div>
+                                          <p className="text-[11px] font-bold text-amber-800 leading-tight">
+                                            Planejamento Pedagógico
+                                          </p>
+                                          <span className="text-[10px] text-amber-700 block">
+                                            Hora-Atividade do Especialista
+                                          </span>
+                                          {canEditClass && activeSpecialist && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleToggleSpecialistHASlot(activeSpecialist.id, slotKey)}
+                                              disabled={saving}
+                                              className="mt-1 inline-flex items-center gap-1 text-[10px] text-rose-600 hover:text-rose-800 font-bold hover:underline cursor-pointer"
+                                              title="Remover este horário de H.A."
+                                            >
+                                              <X className="w-3 h-3" />
+                                              Desmarcar H.A.
+                                            </button>
+                                          )}
+                                        </div>
                                       ) : (
-                                        <div className="h-14 rounded-xl border border-dashed border-slate-200 flex items-center justify-center text-slate-300 text-[11px]">
-                                          —
+                                        <div className="min-h-[56px] rounded-xl border border-dashed border-slate-200 hover:border-amber-400 hover:bg-amber-50/40 transition p-1.5 flex flex-col items-center justify-center text-center group">
+                                          {canEditClass && activeSpecialist ? (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleToggleSpecialistHASlot(activeSpecialist.id, slotKey)}
+                                              disabled={saving}
+                                              className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-bold text-slate-400 group-hover:text-amber-700 transition cursor-pointer"
+                                              title={`Lançar a ${ordem}ª aula da ${dia.nome} como H.A. de ${activeSpecialist.val.name}`}
+                                            >
+                                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 group-hover:bg-amber-500 group-hover:text-white transition text-[10px]">
+                                                + Lançar H.A.
+                                              </span>
+                                              <span className="text-[9px] text-slate-400 font-normal group-hover:text-amber-800">
+                                                Horário Livre
+                                              </span>
+                                            </button>
+                                          ) : (
+                                            <span className="text-[11px] text-slate-300">—</span>
+                                          )}
                                         </div>
                                       )}
                                     </td>
@@ -1573,6 +2279,695 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
           </div>
         </div>
       )}
+
+      {/* ========================================================================= */}
+      {/* MODO 4: CONTROLE DE H.A. (HORAS-ATIVIDADES) - COORDENAÇÃO & REGENTES      */}
+      {/* ========================================================================= */}
+      {viewMode === 'ha' && (
+        <div className="space-y-6">
+          {/* Banner Informativo da Regra Pedagógica Oficial */}
+          <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-orange-600 rounded-2xl p-5 sm:p-6 text-white shadow-md relative overflow-hidden">
+            <div className="absolute right-0 top-0 translate-x-8 -translate-y-6 w-44 h-44 bg-white/10 rounded-full blur-2xl pointer-events-none" />
+            <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+              <div className="space-y-1.5 max-w-3xl">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/20 backdrop-blur-xs text-xs font-bold text-amber-100">
+                  <Award className="w-3.5 h-3.5" />
+                  <span>Diretriz Oficial da Secretaria de Educação</span>
+                </div>
+                <h3 className="text-xl sm:text-2xl font-black tracking-tight">
+                  Painel de Horas-Atividades (H.A.) e Alocação Docente
+                </h3>
+                <p className="text-xs sm:text-sm text-amber-100 leading-relaxed">
+                  <strong>Regra de Regência Polivalente:</strong> Sempre que um professor especialista leciona em qualquer uma das salas,
+                  o professor regente daquela turma tem sua Hora-Atividade (H.A.) assegurada no mesmo horário. As metas semanais são
+                  definidas e acompanhadas pela coordenação pedagógica.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 self-stretch sm:self-auto flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleExportHAExcel}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-white text-amber-900 font-bold text-xs rounded-xl hover:bg-amber-50 transition shadow-sm cursor-pointer flex-1 sm:flex-none"
+                  title="Exportar planilha consolidada de cumprimento de H.A. em Excel"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                  <span>Exportar Excel</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-amber-700/60 hover:bg-amber-700 text-white font-bold text-xs rounded-xl border border-white/20 transition cursor-pointer flex-1 sm:flex-none"
+                  title="Imprimir relatório de cumprimento de H.A."
+                >
+                  <Printer className="w-4 h-4" />
+                  <span>Imprimir Painel</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Cards de Indicadores (KPIs) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs space-y-2">
+              <div className="flex items-center justify-between text-slate-500">
+                <span className="text-xs font-bold uppercase tracking-wider">Corpo Docente</span>
+                <Users className="w-4 h-4 text-indigo-500" />
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-black text-slate-800">{haKPIs.totalProfessores}</span>
+                <span className="text-xs text-slate-500">professores</span>
+              </div>
+              <p className="text-[11px] text-slate-500 pt-1 border-t border-slate-100">
+                <span className="font-bold text-slate-700">{haKPIs.regentes}</span> regentes •{' '}
+                <span className="font-bold text-slate-700">{haKPIs.especialistas}</span> especialistas
+              </p>
+            </div>
+
+            <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs space-y-2">
+              <div className="flex items-center justify-between text-slate-500">
+                <span className="text-xs font-bold uppercase tracking-wider">H.A. Geradas / Semana</span>
+                <Award className="w-4 h-4 text-amber-500" />
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-black text-amber-600">{haKPIs.totalHAGeradas}</span>
+                <span className="text-xs text-slate-500">aulas H.A.</span>
+              </div>
+              <p className="text-[11px] text-slate-500 pt-1 border-t border-slate-100">
+                Liberadas por especialistas em sala de aula
+              </p>
+            </div>
+
+            <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs space-y-2">
+              <div className="flex items-center justify-between text-slate-500">
+                <span className="text-xs font-bold uppercase tracking-wider">Metas Conformes</span>
+                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-black text-emerald-600">{haKPIs.conformes}</span>
+                <span className="text-xs text-slate-500">
+                  de {haKPIs.comMetaDefinida} com meta
+                </span>
+              </div>
+              <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className="bg-emerald-500 h-1.5 rounded-full transition-all"
+                  style={{
+                    width: `${
+                      haKPIs.comMetaDefinida > 0
+                        ? Math.min(100, Math.round((haKPIs.conformes / haKPIs.comMetaDefinida) * 100))
+                        : 0
+                    }%`
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs space-y-2">
+              <div className="flex items-center justify-between text-slate-500">
+                <span className="text-xs font-bold uppercase tracking-wider">Pendências de H.A.</span>
+                <AlertTriangle className={`w-4 h-4 ${haKPIs.pendentes > 0 ? 'text-amber-500' : 'text-slate-400'}`} />
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className={`text-2xl font-black ${haKPIs.pendentes > 0 ? 'text-amber-600' : 'text-slate-700'}`}>
+                  {haKPIs.pendentes}
+                </span>
+                <span className="text-xs text-slate-500">docentes com déficit</span>
+              </div>
+              <p className="text-[11px] text-slate-500 pt-1 border-t border-slate-100">
+                {haKPIs.semMeta > 0 ? `${haKPIs.semMeta} docentes sem meta definida` : 'Todas metas parametrizadas'}
+              </p>
+            </div>
+          </div>
+
+          {/* Barra de Filtros e Busca */}
+          <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* Filtro Escola */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  Escola
+                </label>
+                <select
+                  value={haFilterSchool}
+                  onChange={(e) => setHaFilterSchool(e.target.value)}
+                  className="w-full text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                >
+                  <option value="all">Todas as Escolas</option>
+                  {Object.entries(schools).map(([id, s]) => (
+                    <option key={id} value={id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Filtro Tipo Docente */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  Perfil Docente
+                </label>
+                <select
+                  value={haFilterType}
+                  onChange={(e) => setHaFilterType(e.target.value as any)}
+                  className="w-full text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                >
+                  <option value="todos">Todos os Professores</option>
+                  <option value="regente">Regentes Polivalentes</option>
+                  <option value="especialista">Especialistas</option>
+                </select>
+              </div>
+
+              {/* Filtro Situação de H.A. */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  Situação da Meta
+                </label>
+                <select
+                  value={haFilterStatus}
+                  onChange={(e) => setHaFilterStatus(e.target.value as any)}
+                  className="w-full text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                >
+                  <option value="todos">Todas as Situações</option>
+                  <option value="conforme">Conformes (Meta Atingida / Excedente)</option>
+                  <option value="pendente">Pendentes (Faltam H.A.)</option>
+                  <option value="sem_meta">Sem Meta Definida</option>
+                </select>
+              </div>
+
+              {/* Busca por Nome */}
+              <div>
+                <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  Buscar Professor
+                </label>
+                <input
+                  type="text"
+                  placeholder="Nome do professor ou matéria..."
+                  value={haSearchQuery}
+                  onChange={(e) => setHaSearchQuery(e.target.value)}
+                  className="w-full text-xs font-semibold bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-100 flex-wrap gap-2">
+              <span>
+                Mostrando <strong>{filteredTeachersHA.length}</strong> de <strong>{teachersHAData.length}</strong> professores
+              </span>
+              <span className="text-[11px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md font-medium">
+                💡 Clique no lápis ao lado da meta para ajustar a cota de H.A. definida pela coordenação
+              </span>
+            </div>
+          </div>
+
+          {/* Lista de Professores e Quadro de H.A. */}
+          {filteredTeachersHA.length === 0 ? (
+            <div className="bg-white rounded-2xl p-10 border border-slate-200 text-center space-y-3">
+              <Award className="w-10 h-10 text-slate-300 mx-auto" />
+              <h4 className="text-base font-bold text-slate-700">Nenhum professor encontrado com os filtros atuais</h4>
+              <p className="text-xs text-slate-500 max-w-md mx-auto">
+                Tente ajustar os filtros de escola, perfil docente ou o termo de busca para visualizar o quadro de H.A.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3.5">
+              {filteredTeachersHA.map((item) => {
+                const isEditingThis = editingMetaTeacherId === item.id;
+                const statusBadge = (() => {
+                  if (item.situacao === 'conforme') {
+                    return (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Meta Atingida ({item.haCount}/{item.metaHA})</span>
+                      </span>
+                    );
+                  }
+                  if (item.situacao === 'excedente') {
+                    return (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                        <Award className="w-3.5 h-3.5" />
+                        <span>Excedente (+{item.saldoHA} H.A.)</span>
+                      </span>
+                    );
+                  }
+                  if (item.situacao === 'pendente') {
+                    return (
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                        <span>Faltam {Math.abs(item.saldoHA)} H.A. ({item.haCount}/{item.metaHA})</span>
+                      </span>
+                    );
+                  }
+                  return (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                      <span>Sem Meta Definida</span>
+                    </span>
+                  );
+                })();
+
+                return (
+                  <div
+                    key={item.id}
+                    className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs hover:shadow-xs transition space-y-4"
+                  >
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                      {/* Identificação do Professor */}
+                      <div className="flex items-start gap-3">
+                        <div
+                          className={`w-11 h-11 rounded-xl flex items-center justify-center font-black text-sm shrink-0 ${
+                            item.isSpecialist
+                              ? 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                              : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                          }`}
+                        >
+                          {item.teacher.name ? item.teacher.name.substring(0, 2).toUpperCase() : 'PR'}
+                        </div>
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h4 className="font-extrabold text-base text-slate-800">
+                              {item.teacher.name || 'Professor sem nome'}
+                            </h4>
+                            <span
+                              className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full ${
+                                item.isSpecialist
+                                  ? 'bg-indigo-100 text-indigo-800'
+                                  : 'bg-emerald-100 text-emerald-800'
+                              }`}
+                            >
+                              {item.isSpecialist ? '🎨 Especialista' : '🏫 Regente Polivalente'}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500 flex items-center gap-2 flex-wrap">
+                            <span>
+                              <strong>Disciplina:</strong> {item.teacher.subject || (item.isSpecialist ? 'Especialidade' : 'Polivalente Geral')}
+                            </span>
+                            <span>•</span>
+                            <span>
+                              <strong>Escola:</strong> {item.schoolNames.join(', ') || 'Rede Municipal'}
+                            </span>
+                            {item.classesAsRegente.length > 0 && (
+                              <>
+                                <span>•</span>
+                                <span>
+                                  <strong>Turma Regente:</strong>{' '}
+                                  {item.classesAsRegente.map((c) => `${c.name} (${c.shift})`).join(', ')}
+                                </span>
+                              </>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Status de Cumprimento e Botão do Espelho */}
+                      <div className="flex items-center gap-2.5 self-start lg:self-center flex-wrap">
+                        {statusBadge}
+                        {item.isSpecialist && canEditClass && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedSpecialistId(item.id);
+                              setViewMode('specialist');
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold shadow-2xs transition cursor-pointer"
+                            title="Abrir a agenda do especialista para lançar ou desmarcar horários de H.A."
+                          >
+                            <Award className="w-3.5 h-3.5" />
+                            <span>Lançar H.A. na Agenda</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedTeacherForHAModal(item.id)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-bold border border-indigo-200 transition cursor-pointer"
+                          title="Visualizar espelho semanal detalhado com horários e especialistas"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>Espelho Semanal</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Grade de Métricas e Configuração Rápida de Meta */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-3 border-t border-slate-100 text-xs">
+                      {/* Aulas com Alunos */}
+                      <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/60">
+                        <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                          Aulas c/ Alunos
+                        </span>
+                        <div className="flex items-baseline gap-1 mt-0.5">
+                          <span className="text-base font-black text-slate-800">
+                            {item.totalAulasComAlunos}
+                          </span>
+                          <span className="text-[11px] text-slate-500">aulas/sem</span>
+                        </div>
+                      </div>
+
+                      {/* H.A. Atual Semanal */}
+                      <div className="bg-amber-50/70 p-2.5 rounded-xl border border-amber-200/70">
+                        <span className="text-[10px] font-bold uppercase text-amber-700 block">
+                          {item.isSpecialist ? '⭐ H.A. Lançadas' : '⭐ H.A. Gerada Semanal'}
+                        </span>
+                        <div className="flex items-baseline gap-1 mt-0.5">
+                          <span className="text-base font-black text-amber-800">
+                            {item.haCount}
+                          </span>
+                          <span className="text-[11px] text-amber-700">aulas H.A.</span>
+                        </div>
+                        <span className="text-[10px] text-amber-600 block mt-0.5 truncate">
+                          {item.isSpecialist
+                            ? (item.haCount > 0 ? `${item.haCount} H.A. lançada(s)` : 'Nenhuma H.A. lançada')
+                            : (item.haSlots.length > 0 ? `${item.haSlots.length} aula(s) c/ especialista` : 'Nenhum especialista na sala')}
+                        </span>
+                      </div>
+
+                      {/* Meta H.A. Definida pela Coordenação (Editável Inline) */}
+                      <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/60">
+                        <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                          Meta Semanal (Coordenação)
+                        </span>
+
+                        {isEditingThis ? (
+                          <div className="flex items-center gap-1.5 mt-1">
+                            <input
+                              type="number"
+                              min="0"
+                              max="30"
+                              value={editingMetaValue}
+                              onChange={(e) => setEditingMetaValue(Number(e.target.value))}
+                              className="w-16 px-2 py-0.5 text-xs font-bold border border-amber-400 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                              autoFocus
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateTeacherMetaHA(item.id, editingMetaValue)}
+                              disabled={savingMeta}
+                              className="p-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition cursor-pointer"
+                              title="Salvar nova meta de H.A."
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingMetaTeacherId(null)}
+                              className="p-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg transition cursor-pointer"
+                              title="Cancelar edição"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between mt-0.5">
+                            <div className="flex items-baseline gap-1">
+                              <span className="text-base font-black text-slate-800">
+                                {item.metaHA > 0 ? item.metaHA : '0'}
+                              </span>
+                              <span className="text-[11px] text-slate-500">H.A./sem</span>
+                            </div>
+                            {canEditClass && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingMetaTeacherId(item.id);
+                                  setEditingMetaValue(item.metaHA || 0);
+                                }}
+                                className="p-1 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition cursor-pointer"
+                                title="Editar meta semanal de H.A. estabelecida pela coordenação"
+                              >
+                                <Sliders className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Saldo de Horas-Atividades */}
+                      <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/60">
+                        <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                          Saldo de H.A.
+                        </span>
+                        <div className="flex items-baseline gap-1 mt-0.5">
+                          <span
+                            className={`text-base font-black ${
+                              item.saldoHA > 0
+                                ? 'text-purple-600'
+                                : item.saldoHA === 0 && item.metaHA > 0
+                                ? 'text-emerald-600'
+                                : item.saldoHA < 0
+                                ? 'text-amber-600'
+                                : 'text-slate-400'
+                            }`}
+                          >
+                            {item.metaHA > 0 ? (item.saldoHA > 0 ? `+${item.saldoHA}` : item.saldoHA) : '-'}
+                          </span>
+                          <span className="text-[11px] text-slate-500">
+                            {item.metaHA === 0
+                              ? 'sem meta'
+                              : item.saldoHA >= 0
+                              ? 'conforme'
+                              : 'a regularizar'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Lista resumida de Horários em que o Regente tem H.A. */}
+                    {item.haSlots.length > 0 && (
+                      <div className="bg-amber-50/50 rounded-xl p-3 border border-amber-200/60 text-xs space-y-1.5">
+                        <span className="font-extrabold text-[11px] text-amber-900 block uppercase tracking-wide">
+                          ⭐ Aulas de H.A. Garantidas nesta Semana:
+                        </span>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {item.haSlots.map((hs, idx) => (
+                            <span
+                              key={idx}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 bg-white border border-amber-200 text-amber-900 rounded-lg text-[11px] font-semibold shadow-2xs"
+                              title={`${hs.origem} na turma ${hs.className}`}
+                            >
+                              <span className="font-bold text-amber-700">{hs.diaNome}</span> ({hs.ordem}ª aula
+                              {hs.horarioInicio ? ` • ${hs.horarioInicio}` : ''}):
+                              <span className="text-slate-700">{hs.disciplinaNome}</span>
+                              <span className="text-slate-500 text-[10px]">({hs.especialistaNome})</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: ESPELHO SEMANAL DE H.A. E AULAS DO PROFESSOR                       */}
+      {/* ========================================================================= */}
+      {selectedTeacherForHAModal && (() => {
+        const item = teachersHAData.find((t) => t.id === selectedTeacherForHAModal);
+        if (!item) return null;
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 my-6">
+              {/* Cabeçalho do Modal */}
+              <div className="p-4 sm:p-5 bg-gradient-to-r from-amber-600 to-orange-600 text-white flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-white/20 text-amber-100">
+                      Espelho Semanal de H.A. & Aulas
+                    </span>
+                    <span className="text-xs font-semibold text-amber-100">
+                      Ano Letivo {currentYear}
+                    </span>
+                  </div>
+                  <h3 className="font-black text-lg sm:text-xl tracking-tight mt-1">
+                    {item.teacher.name || 'Docente'}
+                  </h3>
+                  <p className="text-xs text-amber-100 mt-0.5">
+                    {item.isSpecialist ? '🎨 Especialista' : '🏫 Regente Polivalente'} •{' '}
+                    {item.teacher.subject || 'Polivalente Geral'} • {item.schoolNames.join(', ') || 'Rede Municipal'}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedTeacherForHAModal(null)}
+                  className="p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-xl transition cursor-pointer"
+                  title="Fechar espelho semanal"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Faixa de Métricas Rápidas */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-amber-50/50 border-b border-amber-200/60 text-xs">
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-slate-500">Aulas com Alunos</span>
+                  <p className="text-base font-extrabold text-slate-800">{item.totalAulasComAlunos} aulas</p>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-amber-700">⭐ H.A. Semanais</span>
+                  <p className="text-base font-extrabold text-amber-800">{item.haCount} aulas H.A.</p>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-slate-500">Meta da Coordenação</span>
+                  <p className="text-base font-extrabold text-slate-800">
+                    {item.metaHA > 0 ? `${item.metaHA} H.A./sem` : 'Não definida'}
+                  </p>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold uppercase text-slate-500">Situação</span>
+                  <p className="text-base font-extrabold text-slate-800">
+                    {item.situacao === 'conforme'
+                      ? '✅ Conforme'
+                      : item.situacao === 'excedente'
+                      ? `⭐ +${item.saldoHA} Excedente`
+                      : item.situacao === 'pendente'
+                      ? `⚠️ Faltam ${Math.abs(item.saldoHA)} H.A.`
+                      : 'Sem Meta'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Grade Semanal Completa */}
+              <div className="p-4 sm:p-5 overflow-x-auto space-y-4">
+                <table className="w-full min-w-[640px] text-xs border border-slate-200 rounded-xl overflow-hidden">
+                  <thead>
+                    <tr className="bg-slate-100 text-slate-700 border-b border-slate-200">
+                      <th className="py-2.5 px-3 font-bold text-center w-24">Aula</th>
+                      {GRADE_DIAS_SEMANA.map((dia) => (
+                        <th key={dia.id} className="py-2.5 px-3 font-bold text-center">
+                          {dia.nome}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {[1, 2, 3, 4, 5].map((ordem) => (
+                      <tr key={ordem} className="hover:bg-slate-50/50">
+                        <td className="py-3 px-2 text-center font-extrabold text-slate-700 bg-slate-50 border-r border-slate-200">
+                          {ordem}ª Aula
+                        </td>
+                        {GRADE_DIAS_SEMANA.map((dia) => {
+                          const haSlot = item.haSlots.find((s) => s.dia === dia.id && s.ordem === ordem);
+                          const stSlot = item.studentSlots.find((s) => s.dia === dia.id && s.ordem === ordem);
+
+                          if (haSlot) {
+                            return (
+                              <td
+                                key={dia.id}
+                                className="p-2 border-r border-slate-200 align-top bg-amber-50/80"
+                              >
+                                <div className="p-2 rounded-lg border border-amber-300 bg-white shadow-2xs space-y-1">
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-[10px] font-black uppercase px-1.5 py-0.2 rounded bg-amber-500 text-white">
+                                      ⭐ H.A.
+                                    </span>
+                                  </div>
+                                  <p className="font-extrabold text-[11px] text-amber-900 leading-tight">
+                                    {haSlot.disciplinaNome}
+                                  </p>
+                                  <p className="text-[10px] text-amber-700">
+                                    Especialista: {haSlot.especialistaNome}
+                                  </p>
+                                  <p className="text-[10px] text-slate-500">
+                                    Turma: {haSlot.className}
+                                  </p>
+                                  {haSlot.horarioInicio && (
+                                    <span className="text-[9px] text-slate-600 block">
+                                      ⏱️ {haSlot.horarioInicio}–{haSlot.horarioFim}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                            );
+                          }
+
+                          if (stSlot) {
+                            return (
+                              <td
+                                key={dia.id}
+                                className="p-2 border-r border-slate-200 align-top bg-indigo-50/40"
+                              >
+                                <div className="p-2 rounded-lg border border-indigo-200 bg-white shadow-2xs space-y-1">
+                                  <span className="text-[10px] font-bold uppercase px-1.5 py-0.2 rounded bg-indigo-600 text-white">
+                                    🏫 Aula
+                                  </span>
+                                  <p className="font-extrabold text-[11px] text-indigo-900 leading-tight">
+                                    {stSlot.disciplinaNome}
+                                  </p>
+                                  <p className="text-[10px] text-slate-600">
+                                    Turma: {stSlot.className}
+                                  </p>
+                                  {stSlot.horarioInicio && (
+                                    <span className="text-[9px] text-slate-500 block">
+                                      ⏱️ {stSlot.horarioInicio}–{stSlot.horarioFim}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                            );
+                          }
+
+                          return (
+                            <td key={dia.id} className="p-2 border-r border-slate-200 align-middle text-center">
+                              <span className="text-[11px] text-slate-300 italic">Disponível</span>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {/* Nota de rodapé da regra de H.A. */}
+                <p className="text-[11px] text-slate-500 italic text-center">
+                  * As Horas-Atividades (H.A.) identificadas em dourado (⭐) são computadas no horário em que os professores especialistas
+                  assumem as turmas de regência polivalente, em estrito cumprimento às diretrizes da Secretaria de Educação.
+                </p>
+              </div>
+
+              {/* Rodapé do Modal */}
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 bg-slate-800 hover:bg-slate-900 text-white font-bold text-xs rounded-xl shadow-xs transition cursor-pointer"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Imprimir Espelho Semanal</span>
+                  </button>
+
+                  {item.isSpecialist && canEditClass && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedTeacherForHAModal(null);
+                        setSelectedSpecialistId(item.id);
+                        setViewMode('specialist');
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-xs transition cursor-pointer"
+                    >
+                      <Award className="w-4 h-4" />
+                      <span>Lançar / Alterar H.A. na Agenda</span>
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedTeacherForHAModal(null)}
+                  className="px-5 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ========================================================================= */}
       {/* MODAL: EDITOR DE HORÁRIO / ALOCAÇÃO DE ESPECIALISTA                       */}
