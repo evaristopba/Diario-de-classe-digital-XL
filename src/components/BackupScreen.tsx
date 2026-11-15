@@ -1104,7 +1104,7 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                         }
                         className="rounded text-indigo-600 focus:ring-indigo-500"
                       />
-                      <span>Professores ({parsedBackup.metadata.recordCounts.teachers})</span>
+                      <span>Professores e Hora-Atividade ({parsedBackup.metadata.recordCounts.teachers} professores, {parsedBackup.metadata.recordCounts.horaAtividade || 0} blocos de H.A.)</span>
                     </label>
 
                     <label className="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200">

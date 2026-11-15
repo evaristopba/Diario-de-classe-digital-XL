@@ -817,49 +817,143 @@ export async function salvarProfessor(arg1: any, arg2?: any) {
     id = typeof arg1 === 'string' ? arg1 : null;
   }
 
+  const now = Date.now();
   const updates: Record<string, any> = {};
   let targetId = id;
+  const payloadBase: Record<string, any> = {
+    ...data,
+    updatedAt: now
+  };
+  if (data.diasDisponiveis !== undefined) {
+    payloadBase.diasDisponiveisUpdatedAt = data.diasDisponiveisUpdatedAt || now;
+  }
 
   if (targetId) {
-    updates[`diario-classe/professores/${targetId}`] = {
-      ...data,
-      updatedAt: Date.now()
-    };
+    updates[`diario-classe/professores/${targetId}`] = payloadBase;
   } else {
     const newRef = push(ref(rtdb, 'diario-classe/professores'));
     targetId = newRef.key;
     updates[`diario-classe/professores/${targetId}`] = {
-      ...data,
-      createdAt: Date.now(),
-      updatedAt: Date.now()
+      ...payloadBase,
+      createdAt: now
     };
   }
 
-  // Sincronizar nó dedicado de bibliotecários para as regras de segurança v4
+  // Sincronizar nó dedicado de bibliotecários e espelhar campos em TODOS os registros-espelho do docente (ID manual <-> Auth UID / mesmo e-mail)
   const canManageLibrary = !!data.canManageLibrary;
+  const normMail = (v?: unknown) => (typeof v === 'string' ? v.trim().toLowerCase() : '');
+  const alvoEmail = normMail(data.email);
+  const alvoAuthEmail = normMail(data.authEmail);
   const authUid = data.authUid || (targetId && targetId.length === 28 ? targetId : null);
 
   if (authUid) {
     updates[`diario-classe/bibliotecarios/${authUid}`] = canManageLibrary ? true : null;
-    if (authUid !== targetId) {
-      updates[`diario-classe/professores/${authUid}/canManageLibrary`] = canManageLibrary ? true : null;
-    }
   }
-
   if (targetId) {
     updates[`diario-classe/bibliotecarios/${targetId}`] = canManageLibrary ? true : null;
   }
 
-  // Se o authUid for diferente do targetId, espelha as atribuições de turmas
+  const siblingIds = new Set<string>();
   if (authUid && targetId && authUid !== targetId) {
-    try {
-      const atribSnap = await get(ref(rtdb, `diario-classe/atribuicoes/${targetId}`));
-      if (atribSnap.exists()) {
-        const atribs = atribSnap.val() || {};
-        Object.keys(atribs).forEach((cid) => {
-          if (atribs[cid]) {
-            updates[`diario-classe/atribuicoes/${authUid}/${cid}`] = true;
+    siblingIds.add(authUid);
+  }
+
+  try {
+    const allProfsSnap = await get(ref(rtdb, 'diario-classe/professores'));
+    if (allProfsSnap.exists()) {
+      const profsVal = allProfsSnap.val() || {};
+      const emailsSet = new Set<string>([alvoEmail, alvoAuthEmail].filter(Boolean));
+      const idsSet = new Set<string>([targetId, authUid].filter((v): v is string => !!v));
+
+      let expanded = true;
+      while (expanded) {
+        expanded = false;
+        Object.keys(profsVal).forEach((k) => {
+          const p = profsVal[k];
+          if (!p) return;
+          const pEmail = normMail(p.email);
+          const pAuthMail = normMail(p.authEmail);
+          const pAuthUid = typeof p.authUid === 'string' ? p.authUid : '';
+          const match =
+            idsSet.has(k) ||
+            (pAuthUid && idsSet.has(pAuthUid)) ||
+            (pEmail && emailsSet.has(pEmail)) ||
+            (pAuthMail && emailsSet.has(pAuthMail));
+          if (match) {
+            if (!idsSet.has(k)) {
+              idsSet.add(k);
+              expanded = true;
+            }
+            if (pAuthUid && !idsSet.has(pAuthUid)) {
+              idsSet.add(pAuthUid);
+              expanded = true;
+            }
+            if (pEmail && !emailsSet.has(pEmail)) {
+              emailsSet.add(pEmail);
+              expanded = true;
+            }
+            if (pAuthMail && !emailsSet.has(pAuthMail)) {
+              emailsSet.add(pAuthMail);
+              expanded = true;
+            }
           }
+        });
+      }
+
+      idsSet.forEach((sibId) => {
+        if (sibId === targetId) return;
+        const sib = profsVal[sibId];
+        if (sib && sib.name) {
+          siblingIds.add(sibId);
+          updates[`diario-classe/professores/${sibId}/canManageLibrary`] = canManageLibrary ? true : null;
+          updates[`diario-classe/bibliotecarios/${sibId}`] = canManageLibrary ? true : null;
+          if (data.diasDisponiveis !== undefined) {
+            updates[`diario-classe/professores/${sibId}/diasDisponiveis`] = data.diasDisponiveis;
+            updates[`diario-classe/professores/${sibId}/diasDisponiveisUpdatedAt`] =
+              payloadBase.diasDisponiveisUpdatedAt;
+          }
+          if (data.metaHA !== undefined) {
+            updates[`diario-classe/professores/${sibId}/metaHA`] = data.metaHA;
+          }
+          updates[`diario-classe/professores/${sibId}/updatedAt`] = now;
+        }
+      });
+    }
+  } catch {
+    // Fallback pontual para o nó authUid se a listagem completa não estiver acessível
+    if (authUid && authUid !== targetId) {
+      try {
+        const authProfSnap = await get(ref(rtdb, `diario-classe/professores/${authUid}`));
+        if (authProfSnap.exists() && authProfSnap.val()?.name) {
+          updates[`diario-classe/professores/${authUid}/canManageLibrary`] = canManageLibrary ? true : null;
+          if (data.diasDisponiveis !== undefined) {
+            updates[`diario-classe/professores/${authUid}/diasDisponiveis`] = data.diasDisponiveis;
+            updates[`diario-classe/professores/${authUid}/diasDisponiveisUpdatedAt`] =
+              payloadBase.diasDisponiveisUpdatedAt;
+          }
+          if (data.metaHA !== undefined) {
+            updates[`diario-classe/professores/${authUid}/metaHA`] = data.metaHA;
+          }
+          updates[`diario-classe/professores/${authUid}/updatedAt`] = now;
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  // Se houver registros-espelho, garante sincronia bidirecional das atribuições de turmas
+  if (targetId && siblingIds.size > 0) {
+    try {
+      const targetAtribSnap = await get(ref(rtdb, `diario-classe/atribuicoes/${targetId}`));
+      if (targetAtribSnap.exists()) {
+        const atribs = targetAtribSnap.val() || {};
+        siblingIds.forEach((sibId) => {
+          Object.keys(atribs).forEach((cid) => {
+            if (atribs[cid]) {
+              updates[`diario-classe/atribuicoes/${sibId}/${cid}`] = true;
+            }
+          });
         });
       }
     } catch {

@@ -1,5 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { ClassRoom, School, ModalConfig } from '../types';
+import {
+  ClassRoom,
+  School,
+  ModalConfig,
+  GRADE_DIAS_SEMANA,
+  normalizarIntervaloGrupoPorDia,
+  GrupoSinoId
+} from '../types';
 import {
   get,
   ref,
@@ -35,6 +42,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
   const [shift, setShift] = useState('');
   const [letter, setLetter] = useState('');
   const [intervaloGrupo, setIntervaloGrupo] = useState<'1' | 'A' | 'B'>('A');
+  const [intervaloGrupoPorDia, setIntervaloGrupoPorDia] = useState<Partial<Record<1 | 2 | 3 | 4 | 5, GrupoSinoId>>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -97,6 +105,14 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     const uid = getCurrentAuthUid();
     if (!uid) return;
 
+    const cleanPorDia: Record<string, GrupoSinoId> = {};
+    if (shift === 'Manhã') {
+      ([1, 2, 3, 4, 5] as const).forEach((d) => {
+        const g = intervaloGrupoPorDia[d];
+        if (g) cleanPorDia[`d${d}`] = g;
+      });
+    }
+
     const data: any = {
       schoolId,
       schoolName,
@@ -106,6 +122,12 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
       intervaloGrupo: shift === 'Manhã' ? (intervaloGrupo || (year === '1' ? '1' : year === '4' || year === '5' ? 'B' : 'A')) : undefined,
       anoLetivo: currentYear
     };
+
+    if (shift === 'Manhã' && Object.keys(cleanPorDia).length > 0) {
+      data.intervaloGrupoPorDia = cleanPorDia;
+    } else if (editingId) {
+      data.intervaloGrupoPorDia = null;
+    }
 
     try {
       if (editingId) {
@@ -142,6 +164,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
       setShift('');
       setLetter('');
       setIntervaloGrupo('A');
+      setIntervaloGrupoPorDia({});
       setEditingId(null);
       loadClasses();
     } catch (err: any) {
@@ -163,6 +186,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     const rawG = item.val.intervaloGrupo || (item.val.year === '1' ? '1' : item.val.year === '4' || item.val.year === '5' ? 'B' : 'A');
     const g = rawG === '1' || rawG === 'ano1' ? '1' : rawG === 'B' || rawG === 'ano45' ? 'B' : 'A';
     setIntervaloGrupo(g);
+    setIntervaloGrupoPorDia(normalizarIntervaloGrupoPorDia(item.val.intervaloGrupoPorDia));
     setEditingId(item.id);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -172,6 +196,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     setShift('');
     setLetter('');
     setIntervaloGrupo('A');
+    setIntervaloGrupoPorDia({});
     setEditingId(null);
   };
 
@@ -432,45 +457,92 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
             </div>
 
             {shift === 'Manhã' && (
-              <div className="sm:col-span-2 md:col-span-4 bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-100 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-                <div>
-                  <span className="text-xs font-bold text-indigo-950 block">Padrão de Sino / Intervalo (Matutino)</span>
-                  <span className="text-[11px] text-indigo-700">Início às 07:00 • 50 min/aula • Seleção ajustável para flexibilidade na grade</span>
+              <div className="sm:col-span-2 md:col-span-4 bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-100 space-y-3">
+                <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                  <div>
+                    <span className="text-xs font-bold text-indigo-950 block">Padrão de Sino / Intervalo (Matutino)</span>
+                    <span className="text-[11px] text-indigo-700">Início às 07:00 • 50 min/aula • Padrão da turma (pode variar por dia abaixo)</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs flex-wrap">
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
+                      <input
+                        type="radio"
+                        name="intervaloGrupo"
+                        value="1"
+                        checked={intervaloGrupo === '1'}
+                        onChange={() => setIntervaloGrupo('1')}
+                        className="text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span>1º Ano (Recreio 09:10 • 5ª 11:10)</span>
+                    </label>
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
+                      <input
+                        type="radio"
+                        name="intervaloGrupo"
+                        value="A"
+                        checked={intervaloGrupo === 'A'}
+                        onChange={() => setIntervaloGrupo('A')}
+                        className="text-sky-600 focus:ring-sky-500"
+                      />
+                      <span>2º/3º Anos (Recreio 09:30 • 5ª 10:40)</span>
+                    </label>
+                    <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
+                      <input
+                        type="radio"
+                        name="intervaloGrupo"
+                        value="B"
+                        checked={intervaloGrupo === 'B'}
+                        onChange={() => setIntervaloGrupo('B')}
+                        className="text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>4º/5º Anos (Recreio 09:55 • 5ª 11:10)</span>
+                    </label>
+                  </div>
                 </div>
-                <div className="flex items-center gap-3 text-xs flex-wrap">
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
-                    <input
-                      type="radio"
-                      name="intervaloGrupo"
-                      value="1"
-                      checked={intervaloGrupo === '1'}
-                      onChange={() => setIntervaloGrupo('1')}
-                      className="text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <span>1º Ano (Recreio 09:10 – 09:30)</span>
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
-                    <input
-                      type="radio"
-                      name="intervaloGrupo"
-                      value="A"
-                      checked={intervaloGrupo === 'A'}
-                      onChange={() => setIntervaloGrupo('A')}
-                      className="text-sky-600 focus:ring-sky-500"
-                    />
-                    <span>2º e 3º Anos (09:30 – 09:50)</span>
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
-                    <input
-                      type="radio"
-                      name="intervaloGrupo"
-                      value="B"
-                      checked={intervaloGrupo === 'B'}
-                      onChange={() => setIntervaloGrupo('B')}
-                      className="text-indigo-600 focus:ring-indigo-500"
-                    />
-                    <span>4º e 5º Anos (09:55 – 10:15)</span>
-                  </label>
+
+                <div className="pt-2.5 border-t border-indigo-200/70">
+                  <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                    <span className="text-[11px] font-bold text-indigo-900">
+                      Sino específico por dia da semana (opcional — ex.: Terça com 5ª aula às 10:40):
+                    </span>
+                    {Object.keys(intervaloGrupoPorDia).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setIntervaloGrupoPorDia({})}
+                        className="text-[11px] font-semibold text-indigo-700 hover:underline cursor-pointer"
+                      >
+                        Usar padrão em todos os dias
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    {GRADE_DIAS_SEMANA.map((d) => {
+                      const valDia = intervaloGrupoPorDia[d.id] || '';
+                      return (
+                        <div key={d.id} className="bg-white/90 rounded-lg border border-indigo-200/80 p-2">
+                          <label className="block text-[11px] font-bold text-slate-700 mb-1">{d.nome}</label>
+                          <select
+                            value={valDia}
+                            onChange={(e) => {
+                              const v = e.target.value as GrupoSinoId | '';
+                              setIntervaloGrupoPorDia((prev) => {
+                                const next = { ...prev };
+                                if (!v) delete next[d.id];
+                                else next[d.id] = v;
+                                return next;
+                              });
+                            }}
+                            className="w-full px-2 py-1 text-[11px] bg-slate-50 border border-slate-200 rounded-md outline-none focus:ring-1 focus:ring-indigo-500"
+                          >
+                            <option value="">Padrão da turma</option>
+                            <option value="G1">1º Ano (5ª 11:10)</option>
+                            <option value="G23">2º/3º (5ª 10:40)</option>
+                            <option value="G45">4º/5º (5ª 11:10)</option>
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}
@@ -520,24 +592,36 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                       {val.shift === 'Manhã' && (() => {
                         const rawG = val.intervaloGrupo || (val.year === '1' ? '1' : val.year === '4' || val.year === '5' ? 'B' : 'A');
                         const g = rawG === '1' || rawG === 'ano1' ? '1' : rawG === 'B' || rawG === 'ano45' ? 'B' : 'A';
-                        if (g === '1') {
-                          return (
-                            <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                              Sino: 1º Ano (Recreio 09:10 – 09:30)
-                            </span>
-                          );
-                        }
-                        if (g === 'B') {
-                          return (
-                            <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
-                              Sino: 4º/5º Anos (Recreio 09:55 – 10:15)
-                            </span>
-                          );
-                        }
+                        const porDiaNorm = normalizarIntervaloGrupoPorDia(val.intervaloGrupoPorDia);
+                        const diasCustom = Object.entries(porDiaNorm);
                         return (
-                          <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-800 border border-sky-200">
-                            Sino: 2º/3º Anos (Recreio 09:30 – 09:50)
-                          </span>
+                          <>
+                            {g === '1' ? (
+                              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                Sino: 1º Ano (Recreio 09:10 – 09:30)
+                              </span>
+                            ) : g === 'B' ? (
+                              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                Sino: 4º/5º Anos (Recreio 09:55 – 10:15)
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-800 border border-sky-200">
+                                Sino: 2º/3º Anos (Recreio 09:30 – 09:50)
+                              </span>
+                            )}
+                            {diasCustom.length > 0 && (
+                              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-100 text-amber-900 border border-amber-200">
+                                Por dia:{' '}
+                                {diasCustom
+                                  .map(([dStr, grp]) => {
+                                    const dNome = GRADE_DIAS_SEMANA.find((x) => x.id === Number(dStr))?.curto || dStr;
+                                    const gLabel = grp === 'G1' ? '1º (11:10)' : grp === 'G23' ? '2º/3º (10:40)' : '4º/5º (11:10)';
+                                    return `${dNome}: ${gLabel}`;
+                                  })
+                                  .join(' • ')}
+                              </span>
+                            )}
+                          </>
                         );
                       })()}
                     </div>

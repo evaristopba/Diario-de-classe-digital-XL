@@ -37,6 +37,15 @@
           }
         }
       },
+      "horaAtividade": {
+        ".read": "auth != null",
+        "$professorId": {
+          "$slotKey": {
+            ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true",
+            ".validate": "newData.hasChildren(['dia', 'inicio', 'fim', 'tipo']) && newData.child('dia').isNumber() && newData.child('dia').val() >= 1 && newData.child('dia').val() <= 5 && newData.child('inicio').isString() && newData.child('fim').isString()"
+          }
+        }
+      },
       "professores": {
         ".read": true,
         ".write": "auth != null && root.child('diario-classe/admins/' + auth.uid).val() === true",

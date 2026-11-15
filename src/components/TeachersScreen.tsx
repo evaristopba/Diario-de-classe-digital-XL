@@ -1,5 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Teacher, ModalConfig, SubjectItem, DEFAULT_SUBJECTS } from '../types';
+import {
+  Teacher,
+  ModalConfig,
+  SubjectItem,
+  DEFAULT_SUBJECTS,
+  resolverDiasDisponiveisDocente,
+  obterDiasFolga,
+  formatarDiasFolgaResumo
+} from '../types';
 import {
   carregarProfessores,
   salvarProfessor,
@@ -168,7 +176,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
       setStatus(t.val.status || 'active');
       setCanManageLibrary(!!t.val.canManageLibrary);
       setExibirApresentacaoAdmin(!!t.val.exibirApresentacaoAdmin);
-      setDiasDisponiveis(Array.isArray(t.val.diasDisponiveis) && t.val.diasDisponiveis.length > 0 ? t.val.diasDisponiveis : [1, 2, 3, 4, 5]);
+      setDiasDisponiveis(resolverDiasDisponiveisDocente(t, teachers));
       setMetaHA(Number(t.val.metaHA) || 0);
     } else {
       setEditingId(null);
@@ -295,6 +303,7 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
         canManageLibrary: !!canManageLibrary,
         exibirApresentacaoAdmin: !!exibirApresentacaoAdmin,
         diasDisponiveis: diasDisponiveis.length === 5 ? [1, 2, 3, 4, 5] : diasDisponiveis,
+        diasDisponiveisUpdatedAt: Date.now(),
         metaHA: Math.max(0, Number(metaHA) || 0),
         ...(preservedAuthUid ? { authUid: preservedAuthUid } : {}),
         ...(effectiveAuthEmail ? { authEmail: effectiveAuthEmail } : {}),
@@ -570,11 +579,19 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
                         🔑 Auto-login
                       </span>
                     )}
-                    {Array.isArray(t.val.diasDisponiveis) && t.val.diasDisponiveis.length > 0 && t.val.diasDisponiveis.length < 5 && (
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200" title={`Atua em ${t.val.diasDisponiveis.length} dias na semana`}>
-                        🗓️ Folga: {[1, 2, 3, 4, 5].filter((d) => !t.val.diasDisponiveis!.includes(d)).map((d) => ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'][d - 1]).join(', ')}
-                      </span>
-                    )}
+                    {(() => {
+                      const diasResolvidos = resolverDiasDisponiveisDocente(t, teachers);
+                      const folgas = obterDiasFolga(diasResolvidos);
+                      if (folgas.length === 0) return null;
+                      return (
+                        <span
+                          className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200"
+                          title={`Atua em ${diasResolvidos.length} dia(s) na semana`}
+                        >
+                          🗓️ Folga: {formatarDiasFolgaResumo(diasResolvidos, null, true)}
+                        </span>
+                      );
+                    })()}
                     {Number(t.val.metaHA) > 0 && (
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200" title={`Meta de ${t.val.metaHA} aulas atividades (H.A.) semanais definidas pela coordenação`}>
                         ⭐ Meta: {t.val.metaHA} H.A.
@@ -867,9 +884,13 @@ export const TeachersScreen: React.FC<TeachersScreenProps> = ({
                         key={dia.id}
                         type="button"
                         onClick={() => {
-                          setDiasDisponiveis((prev) =>
-                            isChecked ? prev.filter((d) => d !== dia.id) : [...prev, dia.id].sort()
-                          );
+                          setDiasDisponiveis((prev) => {
+                            if (isChecked) {
+                              if (prev.length <= 1) return prev; // Garante ao menos 1 dia útil marcado
+                              return prev.filter((d) => d !== dia.id);
+                            }
+                            return [...prev, dia.id].sort((a, b) => a - b);
+                          });
                         }}
                         className={`py-1.5 px-2 rounded-xl text-xs font-bold border transition cursor-pointer text-center ${
                           isChecked

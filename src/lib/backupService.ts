@@ -65,6 +65,8 @@ export interface BackupMetadata {
     permissions?: number;
     /** Horários cadastrados na grade semanal das turmas */
     schedule?: number;
+    /** Blocos de Hora-Atividade (H.A.) cadastrados */
+    horaAtividade?: number;
     totalRecords: number;
   };
 }
@@ -90,6 +92,8 @@ export interface BackupDataPayload {
   /** Listas de permissão (uid -> true). Restauradas só por opção explícita. */
   admins?: Record<string, boolean>;
   librarians?: Record<string, boolean>;
+  /** diario-classe/config/horaAtividade: professor -> bloco ({dia}_{HHMM}) -> H.A. */
+  horaAtividade?: Record<string, Record<string, any>>;
   /** BNCC, categorias e tipos de ocorrência do nó pessoal de quem exportou */
   ownUserExtras?: { bncc?: Record<string, any>; categorias?: Record<string, any>; 'tipos-evento'?: Record<string, any> };
   // Dados pedagógicos do usuário autenticado
@@ -202,7 +206,8 @@ export async function generateFullBackup(userProfile?: {
     cantinhosSnap,
     configSnap,
     adminsSnap,
-    bibliotecariosSnap
+    bibliotecariosSnap,
+    horaAtividadeSnap
   ] = await Promise.all([
     lerSeguro('Escolas', 'diario-classe/escolas'),
     lerSeguro('Turmas e alunos', 'diario-classe/turmas'),
@@ -220,7 +225,8 @@ export async function generateFullBackup(userProfile?: {
     lerSeguro('Cantinho da Leitura', 'diario-classe/biblioteca/cantinhos'),
     lerSeguro('Configurações do sistema', 'diario-classe/config'),
     lerSeguro('Administradores', 'diario-classe/admins'),
-    lerSeguro('Bibliotecários', 'diario-classe/bibliotecarios')
+    lerSeguro('Bibliotecários', 'diario-classe/bibliotecarios'),
+    lerSeguro('Hora-Atividade (H.A.)', 'diario-classe/config/horaAtividade')
   ]);
 
   const schools = (escolasSnap?.val() || {}) as Record<string, School>;
@@ -240,6 +246,7 @@ export async function generateFullBackup(userProfile?: {
   const settings = (configSnap?.val() || {}) as Record<string, any>;
   const admins = (adminsSnap?.val() || {}) as Record<string, boolean>;
   const librarians = (bibliotecariosSnap?.val() || {}) as Record<string, boolean>;
+  const horaAtividade = (horaAtividadeSnap?.val() || {}) as Record<string, Record<string, any>>;
 
   // 2. Contabilizar alunos dentro das turmas
   let totalStudents = 0;
@@ -340,6 +347,10 @@ export async function generateFullBackup(userProfile?: {
   const movementsCount = Object.keys(libraryMovements).length;
   const readingCornersCount = Object.keys(readingCorners).length;
   const settingsCount = Object.keys(settings).length;
+  const horaAtividadeCount = Object.values(horaAtividade).reduce(
+    (acc, porProfessor) => acc + Object.keys(porProfessor || {}).length,
+    0
+  );
   const scheduleCount = Object.values(classes).reduce(
     (acc, turma) => acc + Object.keys((turma as any).gradeHoraria || {}).length,
     0
@@ -368,7 +379,8 @@ export async function generateFullBackup(userProfile?: {
     readingCornersCount +
     settingsCount +
     permissionsCount +
-    scheduleCount;
+    scheduleCount +
+    horaAtividadeCount;
 
   const now = new Date();
   const dateStr = now.toISOString().replace(/T/, '_').replace(/:/g, '-').slice(0, 16);
@@ -409,6 +421,7 @@ export async function generateFullBackup(userProfile?: {
         settings: settingsCount,
         permissions: permissionsCount,
         schedule: scheduleCount,
+        horaAtividade: horaAtividadeCount,
         totalRecords
       }
     },
@@ -434,6 +447,7 @@ export async function generateFullBackup(userProfile?: {
       settings,
       admins,
       librarians,
+      horaAtividade,
       ownUserExtras,
       allUsersPedagogical
     }
@@ -565,6 +579,7 @@ export function validateBackupFile(jsonString: string): {
           settings: data.settings || data.config,
           admins: data.admins,
           librarians: data.librarians || data.bibliotecarios,
+          horaAtividade: data.horaAtividade,
           ownUserExtras: data.ownUserExtras,
           allUsersPedagogical: data.allUsersPedagogical || data.dados
         }
@@ -716,6 +731,12 @@ async function montarPlanoDeRestauracao(
 
   if (options.includeTeachers) {
     await colecao('teachers', 'Professores', 'diario-classe/professores', data.teachers);
+    await colecaoAninhada(
+      'horaAtividade',
+      'Hora-Atividade (H.A.)',
+      'diario-classe/config/horaAtividade',
+      data.horaAtividade || (data.settings as any)?.horaAtividade
+    );
   }
 
   if (options.includeAssignments && temItens(data.assignments)) {
@@ -758,7 +779,12 @@ async function montarPlanoDeRestauracao(
   }
 
   if (options.includeSettings !== false) {
-    await colecao('settings', 'Configurações do sistema', 'diario-classe/config', data.settings);
+    // O sino (config/sino) e a H.A. (config/horaAtividade) têm estrutura própria. É planejado
+    // para que restaurar nunca troque o sino inteiro nem apague a H.A. vinculada aos docentes.
+    const { sino, horaAtividade: _haConfig, ...outrasConfiguracoes } = (data.settings || {}) as Record<string, any>;
+    await colecao('settings', 'Configurações do sistema', 'diario-classe/config', outrasConfiguracoes);
+    await colecao('sinoPadrao', 'Sino: padrão da rede', 'diario-classe/config/sino/padrao', sino?.padrao);
+    await colecaoAninhada('sinoEscolas', 'Sino: horários por escola', 'diario-classe/config/sino/escolas', sino?.escolas);
   }
 
   // Permissões CONCEDEM acesso: só entram por opção explícita. Nunca removem ninguém, mas podem
@@ -881,7 +907,7 @@ export async function restoreBackup(
     'schools', 'classes', 'students', 'teachers', 'assignments', 'subjects', 'bncc', 'categories',
     'eventTypes', 'attendances', 'grades', 'lessonPlans', 'events', 'books', 'loans',
     'holdings', 'reservations', 'movements', 'readingCorners', 'settings', 'admins', 'librarians',
-    'userBncc', 'userCategories', 'userEventTypes', 'schedule'
+    'userBncc', 'userCategories', 'userEventTypes', 'schedule', 'horaAtividade', 'sinoPadrao', 'sinoEscolas'
   ];
   const importedCounts: Record<string, number> = {};
   const keptCounts: Record<string, number> = {};
