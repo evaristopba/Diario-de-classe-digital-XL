@@ -121,7 +121,7 @@ Para que o sistema salve os dados corretamente:
 3. Vá em **Realtime Database** > aba **Regras** (Rules).
 4. Copie o conteúdo do arquivo `database.rules.json` (ou visualize diretamente pelo botão no painel de administração do sistema) e clique em **Publicar**.
 
-As regras de segurança (`database.rules.json` - 245 linhas) protegem todas as coleções segundo o princípio do menor privilégio (RBAC e vinculação estrita de turmas):
+As regras de segurança (`database.rules.json` - 279 linhas) protegem todas as coleções segundo o princípio do menor privilégio (RBAC e vinculação estrita de turmas):
 - `escolas`, `turmas`, `disciplinas`, `professores`, `admins`, `bibliotecarios`
 - `chamada`, `notas`, `planos-aula`, `ocorrencias`
 - `biblioteca`:
@@ -138,8 +138,8 @@ As regras de segurança (`database.rules.json` - 245 linhas) protegem todas as c
 | Variável | Obrigatória | Descrição |
 |---|---|---|
 | `GEMINI_API_KEY` | Sim (para IA) | Chave do Google AI Studio. Sem ela, a leitura por fotos e a complementação por IA ficam desativadas. |
-| `GEMINI_SCAN_MODELS` | Não | Modelos da leitura de fotos, do preferido ao último recurso, separados por vírgula. Padrão: `gemini-3.6-flash,gemini-3.8-flash,gemini-3.5-flash,gemini-3.1-flash-lite`. |
-| `GEMINI_TEXT_MODELS` | Não | Modelos usados só para complementar dados por texto (rota de ISBN). |
+| `GEMINI_SCAN_MODELS` | Não | Modelos da leitura de fotos, do preferido ao último recurso, separados por vírgula. Padrão: `gemini-3.6-flash,gemini-3.1-flash-lite,gemini-3.5-flash`. |
+| `GEMINI_TEXT_MODELS` | Não | Modelos usados só para complementar dados por texto (rota de ISBN). Padrão: `gemini-3.6-flash,gemini-3.1-flash-lite`. |
 | `GOOGLE_BOOKS_API_KEY` | Não | Evita limite de requisições na consulta por ISBN em hospedagem compartilhada. |
 | `VITE_CLOUDFLARE_TURNSTILE_SITE_KEY` | Não | Ativa o selo Turnstile no login (lida no build). |
 
@@ -163,5 +163,5 @@ Em desenvolvimento local, copie `.env.example` para `.env` e preencha.
 - `npm run build`: Compila o front-end e o servidor Express (`dist/server.cjs`) para hospedagem Node.
 - `npm run build:web`: Compila apenas o front-end para `dist/` (é o que a Vercel executa).
 - `npm run build:singlefile`: Gera o executável único `public/app-unico.html`.
-- `npm run pack`: Gera os pacotes de distribuição ZIP (`public/diario-de-classe-projeto.zip`) e o HTML único atualizado.
+- `npm run pack`: Gera os pacotes de distribuição ZIP (`public/diario-de-classe-projeto.zip`, `public/diario-de-classe.zip` e `public/diario-classe.zip`) e o HTML único autônomo (`public/app-unico.html` e `public/diario-de-classe.html`).
 - `npm run lint`: Valida tipagens e sintaxe TypeScript.
