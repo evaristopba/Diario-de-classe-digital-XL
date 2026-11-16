@@ -58,9 +58,9 @@ Com o **Lançamento em Lote**, o professor preenche o tipo e a descrição uma �
 
 ### 2.2 Ferramentas de Seleção Rápida
 No topo da área de seleção de alunos, encontram-se três botões de ação imediata:
-- **`Todos`**: Marca instantaneamente todos os alunos ativos da turma (exclui automaticamente transferidos).
+- **`Todos Presentes`**: Marca instantaneamente apenas os alunos presentes na chamada da data (exclui ausentes e transferidos).
 - **`Nenhum`**: Desmarca todos os alunos com um clique.
-- **`Inverter`**: Inverte a seleção atual entre os alunos ativos.
+- **`Inverter`**: Inverte a seleção atual entre os alunos presentes na data.
 
 Ao lado dos botões, um contador dinâmico exibe a contagem em tempo real (ex.: `24 de 28 selecionado(s)`).
 
@@ -79,7 +79,7 @@ Logo abaixo da grade de estudantes, o sistema exibe chips visuais contendo o nú
 
 #### Caso A: Ocorrência Coletiva Positiva (A maioria concluiu a tarefa)
 1. Selecione a Turma, Bimestre, Data e o Tipo (ex.: *Atividade Concluída em Sala*).
-2. Clique no botão **`Todos`** (todos os 28 alunos ficam marcados).
+2. Clique no botão **`Todos Presentes`** (todos os 28 alunos presentes ficam marcados).
 3. Na lista ou nos chips, desmarque apenas os 3 alunos que não terminaram.
 4. Digite a descrição e clique em **`Registrar em Lote para 25 Alunos`**.
 

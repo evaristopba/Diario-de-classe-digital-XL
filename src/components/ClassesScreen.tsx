@@ -32,6 +32,7 @@ import {
   resolverPerfilIdTurma
 } from '../lib/sino';
 import {
+  isBibliotecarioDocente,
   isSpecialistTeacherDocente,
   resolveRegenteForClass
 } from '../lib/regenteHA';
@@ -575,7 +576,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                 >
                   <option value="">Detectar automaticamente pelas atribuições</option>
                   {teachers
-                    .filter((t) => !isSpecialistTeacherDocente(t.val, subjects))
+                    .filter((t) => !isSpecialistTeacherDocente(t.val, subjects) && !isBibliotecarioDocente(t.val))
                     .map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.val.name}{t.val.subject ? ` (${t.val.subject})` : ''}

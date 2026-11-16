@@ -16,6 +16,33 @@
     display: none !important;
   }
 
+  /* Isolate Espelho Semanal de H.A. & Aulas modal when open during print */
+  body.ha-mirror-modal-open #root {
+    display: none !important;
+  }
+
+  body.ha-mirror-modal-open #teacher-ha-mirror-modal-root {
+    position: static !important;
+    display: block !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+    width: 100% !important;
+  }
+
+  body.ha-mirror-modal-open .ha-mirror-modal-card {
+    position: static !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    overflow: visible !important;
+  }
+
   /* Reset fixed positioning and overlays on print */
   .fixed.inset-0,
   .evolution-modal-overlay {

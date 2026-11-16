@@ -24,7 +24,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const isDashboard = currentScreen === 'dashboard';
 
   return (
-    <header className="bg-white/95 backdrop-blur-md border-b border-indigo-100/60 shadow-xs sticky top-0 z-40 px-4 py-3 sm:px-6">
+    <header className="bg-white/95 backdrop-blur-md border-b border-indigo-100/60 shadow-xs sticky top-0 z-40 px-4 py-3 sm:px-6 print:hidden">
       <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
         <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-start">
           {!isDashboard && (

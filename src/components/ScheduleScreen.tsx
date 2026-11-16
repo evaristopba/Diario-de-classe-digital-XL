@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ClassRoom,
   School,
@@ -48,6 +49,7 @@ import { formatFriendlyError } from '../lib/errorHandler';
 import { definirAula, removerAula, trocarAulas } from '../lib/gradeHoraria';
 import { exportToExcelJS, ExcelColumnDef } from '../lib/excelExport';
 import {
+  isBibliotecarioDocente,
   isSpecialistTeacherDocente,
   collectTeacherAliasKeys,
   isSlotEspecialistaEfetivo,
@@ -164,6 +166,17 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
       .catch(() => setIsAdmin(false));
     loadAllData();
   }, [currentYear]);
+
+  useEffect(() => {
+    if (selectedTeacherForHAModal) {
+      document.body.classList.add('ha-mirror-modal-open');
+    } else {
+      document.body.classList.remove('ha-mirror-modal-open');
+    }
+    return () => {
+      document.body.classList.remove('ha-mirror-modal-open');
+    };
+  }, [selectedTeacherForHAModal]);
 
   const loadAllData = async () => {
     setLoading(true);
@@ -1165,9 +1178,11 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
     }
   };
 
-  // Consolidação detalhada de Horas-Atividades (H.A.) de todos os professores (regentes e especialistas)
+  // Consolidação detalhada de Horas-Atividades (H.A.) de todos os professores (regentes e especialistas, excluindo bibliotecários)
   const teachersHAData = useMemo(() => {
-    return teachers.map((t) => {
+    return teachers
+      .filter((t) => !isBibliotecarioDocente(t.val))
+      .map((t) => {
       const teacherId = t.id;
       const teacherVal = t.val;
       const isSpec = isSpecialistTeacher(teacherVal);
@@ -1559,9 +1574,9 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 print:p-0 space-y-6 print:space-y-4">
       {/* Cabeçalho Principal */}
-      <div className="bg-white rounded-2xl shadow-xs border border-indigo-100 p-5 sm:p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="bg-white rounded-2xl shadow-xs border border-indigo-100 p-5 sm:p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 print:hidden">
         <div className="flex items-start gap-3.5">
           <div className="p-3 bg-gradient-to-br from-indigo-500 to-indigo-700 text-white rounded-xl shadow-md">
             <Clock className="w-6 h-6" />
@@ -1644,7 +1659,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
       {viewMode === 'class' && (
         <div className="space-y-5">
           {/* Barra de Filtros da Turma */}
-          <div className="bg-white rounded-2xl shadow-xs border border-slate-200 p-4 flex flex-col sm:flex-row items-center justify-between gap-3 flex-wrap">
+          <div className="bg-white rounded-2xl shadow-xs border border-slate-200 p-4 flex flex-col sm:flex-row items-center justify-between gap-3 flex-wrap print:hidden">
             <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
               {/* Filtro Escola */}
               <div>
@@ -1861,7 +1876,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
 
           {/* Resumo da Turma e Carga Horária */}
           {selectedClass && (
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 print:grid-cols-3 print:gap-2">
               <div className="bg-white p-3.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5 flex-wrap">
@@ -1893,7 +1908,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                       >
                         <option value="">Não atribuído (automático)</option>
                         {teachers
-                          .filter((t) => !isSpecialistTeacher(t.val))
+                          .filter((t) => !isSpecialistTeacher(t.val) && !isBibliotecarioDocente(t.val))
                           .map((t) => (
                             <option key={t.id} value={t.id}>
                               {t.val.name}
@@ -1970,6 +1985,9 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                     Grade Semanal — {selectedClass.year}º Ano {selectedClass.letter} ({selectedClass.shift})
                   </h3>
                   <p className="text-xs text-slate-500">
+                    <span className="hidden print:inline font-semibold text-slate-700">
+                      {schools[selectedClass.schoolId]?.name || selectedClass.schoolName} • Ano Letivo {currentYear} •{' '}
+                    </span>
                     {bellSchedule.nome} • Início: {bellSchedule.aulas[0]?.inicio} • Término: {bellSchedule.aulas[4]?.fim}
                     {hasVaryingBellByDay && (
                       <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold text-[10px]">
@@ -1979,19 +1997,19 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                   </p>
                 </div>
                 {isAdmin && (
-                  <span className="text-[11px] font-semibold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-200">
+                  <span className="text-[11px] font-semibold text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-200 print:hidden">
                     💡 Clique em qualquer aula para editar ou alocar especialista
                   </span>
                 )}
                 {!isAdmin && (
-                  <span className="text-[11px] font-semibold text-slate-600 bg-slate-50 px-2.5 py-1 rounded-md border border-slate-200">
+                  <span className="text-[11px] font-semibold text-slate-600 bg-slate-50 px-2.5 py-1 rounded-md border border-slate-200 print:hidden">
                     👁️ Somente consulta: apenas administradores alteram os horários
                   </span>
                 )}
               </div>
 
               <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse min-w-[700px]">
+                <table className="w-full text-left border-collapse min-w-[700px] print:min-w-0">
                   <thead>
                     <tr className="bg-slate-100 text-slate-700 text-xs font-bold border-b border-slate-200">
                       <th className="py-3 px-3 w-32 text-center border-r border-slate-200">Horário / Aula</th>
@@ -2295,7 +2313,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                       </span>
                                     )}
                                     {canEditClass && (
-                                      <div className="absolute top-1 right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition bg-white/95 rounded-md shadow-xs p-0.5 border border-slate-200">
+                                      <div className="absolute top-1 right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition bg-white/95 rounded-md shadow-xs p-0.5 border border-slate-200 print:hidden">
                                         {ordem > 1 && (
                                           <button
                                             type="button"
@@ -2338,8 +2356,15 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                   </div>
                                   );
                                 })() : (
-                                  <div className="h-16 rounded-xl border border-dashed border-slate-200 flex items-center justify-center text-slate-400 text-[11px] hover:border-indigo-300">
-                                    {canEditClass ? '+ Definir' : 'Livre'}
+                                  <div className="h-16 rounded-xl border border-dashed border-slate-200 flex items-center justify-center text-slate-400 text-[11px] hover:border-indigo-300 print:border-slate-200">
+                                    {canEditClass ? (
+                                      <>
+                                        <span className="print:hidden">+ Definir</span>
+                                        <span className="hidden print:inline">Livre</span>
+                                      </>
+                                    ) : (
+                                      'Livre'
+                                    )}
                                   </div>
                                 )}
                               </td>
@@ -2368,7 +2393,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
       {viewMode === 'specialist' && (
         <div className="space-y-5">
           {/* Barra de Seleção do Especialista */}
-          <div className="bg-white rounded-2xl shadow-xs border border-slate-200 p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="bg-white rounded-2xl shadow-xs border border-slate-200 p-4 flex flex-col sm:flex-row items-center justify-between gap-3 print:hidden">
             <div className="flex items-center gap-3 w-full sm:w-auto">
               <div>
                 <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">
@@ -2390,7 +2415,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                       </optgroup>
                       <optgroup label="Demais Docentes (Regentes)">
                         {teachers
-                          .filter((t) => !isSpecialistTeacher(t.val))
+                          .filter((t) => !isSpecialistTeacher(t.val) && !isBibliotecarioDocente(t.val))
                           .map((t) => (
                             <option key={t.id} value={t.id}>
                               {t.val.name} — {t.val.subject || 'Polivalente'}
@@ -2399,11 +2424,13 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                       </optgroup>
                     </>
                   ) : (
-                    teachers.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.val.name} — {t.val.subject || 'Polivalente'}
-                      </option>
-                    ))
+                    teachers
+                      .filter((t) => !isBibliotecarioDocente(t.val))
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.val.name} — {t.val.subject || 'Polivalente'}
+                        </option>
+                      ))
                   )}
                 </select>
               </div>
@@ -2434,7 +2461,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
           </div>
 
           {/* Cartões de Carga Horária e H.A. do Especialista */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 print:grid-cols-4 print:gap-2">
             <div className="bg-white p-4 rounded-xl border border-slate-200 flex items-center justify-between shadow-2xs">
               <div>
                 <span className="text-[10px] font-bold uppercase text-slate-400">Aulas Semanais c/ Alunos</span>
@@ -2503,7 +2530,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
           </div>
 
           {/* Banner com instrução de como lançar H.A. do especialista */}
-          <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+          <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs print:hidden">
             <div className="flex items-start gap-2.5 text-amber-950">
               <div className="p-1.5 bg-amber-500 text-white rounded-lg shrink-0 mt-0.5">
                 <Award className="w-4 h-4" />
@@ -2532,11 +2559,14 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                   Itinerário Semanal de Aulas — {activeSpecialist?.val.name}
                 </h3>
                 <p className="text-xs text-slate-500">
+                  <span className="hidden print:inline font-semibold text-slate-700">
+                    Ano Letivo {currentYear} • {activeSpecialist?.val.subject || 'Especialista'} •{' '}
+                  </span>
                   Visualização organizada por turno sem sobreposição de horários
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 print:hidden">
                 {/* Seletor de Turno para Especialista */}
                 <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl text-xs font-bold">
                   <button
@@ -2705,7 +2735,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                     </div>
 
                     <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse min-w-[700px]">
+                      <table className="w-full text-left border-collapse min-w-[700px] print:min-w-0">
                         <thead>
                           <tr className="bg-slate-100 text-slate-700 text-xs font-bold border-b border-slate-200">
                             <th className="py-3 px-3 w-32 text-center border-r border-slate-200">Aula / Período</th>
@@ -2888,7 +2918,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                               type="button"
                                               onClick={() => handleToggleSpecialistHASlot(activeSpecialist.id, slotKey)}
                                               disabled={saving}
-                                              className="mt-1 inline-flex items-center gap-1 text-[10px] text-rose-600 hover:text-rose-800 font-bold hover:underline cursor-pointer"
+                                              className="mt-1 inline-flex items-center gap-1 text-[10px] text-rose-600 hover:text-rose-800 font-bold hover:underline cursor-pointer print:hidden"
                                               title="Remover este horário de H.A."
                                             >
                                               <X className="w-3 h-3" />
@@ -2899,20 +2929,23 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                       ) : (
                                         <div className="min-h-[56px] rounded-xl border border-dashed border-slate-200 hover:border-amber-400 hover:bg-amber-50/40 transition p-1.5 flex flex-col items-center justify-center text-center group">
                                           {canEditClass && activeSpecialist ? (
-                                            <button
-                                              type="button"
-                                              onClick={() => handleToggleSpecialistHASlot(activeSpecialist.id, slotKey)}
-                                              disabled={saving}
-                                              className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-bold text-slate-400 group-hover:text-amber-700 transition cursor-pointer"
-                                              title={`Lançar a ${ordem}ª aula da ${dia.nome} como H.A. de ${activeSpecialist.val.name}`}
-                                            >
-                                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 group-hover:bg-amber-500 group-hover:text-white transition text-[10px]">
-                                                + Lançar H.A.
-                                              </span>
-                                              <span className="text-[9px] text-slate-400 font-normal group-hover:text-amber-800">
-                                                Horário Livre
-                                              </span>
-                                            </button>
+                                            <>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleToggleSpecialistHASlot(activeSpecialist.id, slotKey)}
+                                                disabled={saving}
+                                                className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-bold text-slate-400 group-hover:text-amber-700 transition cursor-pointer print:hidden"
+                                                title={`Lançar a ${ordem}ª aula da ${dia.nome} como H.A. de ${activeSpecialist.val.name}`}
+                                              >
+                                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 group-hover:bg-amber-500 group-hover:text-white transition text-[10px]">
+                                                  + Lançar H.A.
+                                                </span>
+                                                <span className="text-[9px] text-slate-400 font-normal group-hover:text-amber-800">
+                                                  Horário Livre
+                                                </span>
+                                              </button>
+                                              <span className="hidden print:inline text-[11px] text-slate-300">—</span>
+                                            </>
                                           ) : (
                                             <span className="text-[11px] text-slate-300">—</span>
                                           )}
@@ -3161,7 +3194,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                               type="button"
                                               onClick={() => handleToggleSpecialistHASlot(activeSpecialist.id, slotKey)}
                                               disabled={saving}
-                                              className="mt-1 inline-flex items-center gap-1 text-[10px] text-rose-600 hover:text-rose-800 font-bold hover:underline cursor-pointer"
+                                              className="mt-1 inline-flex items-center gap-1 text-[10px] text-rose-600 hover:text-rose-800 font-bold hover:underline cursor-pointer print:hidden"
                                               title="Remover este horário de H.A."
                                             >
                                               <X className="w-3 h-3" />
@@ -3172,20 +3205,23 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                       ) : (
                                         <div className="min-h-[56px] rounded-xl border border-dashed border-slate-200 hover:border-amber-400 hover:bg-amber-50/40 transition p-1.5 flex flex-col items-center justify-center text-center group">
                                           {canEditClass && activeSpecialist ? (
-                                            <button
-                                              type="button"
-                                              onClick={() => handleToggleSpecialistHASlot(activeSpecialist.id, slotKey)}
-                                              disabled={saving}
-                                              className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-bold text-slate-400 group-hover:text-amber-700 transition cursor-pointer"
-                                              title={`Lançar a ${ordem}ª aula da ${dia.nome} como H.A. de ${activeSpecialist.val.name}`}
-                                            >
-                                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 group-hover:bg-amber-500 group-hover:text-white transition text-[10px]">
-                                                + Lançar H.A.
-                                              </span>
-                                              <span className="text-[9px] text-slate-400 font-normal group-hover:text-amber-800">
-                                                Horário Livre
-                                              </span>
-                                            </button>
+                                            <>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleToggleSpecialistHASlot(activeSpecialist.id, slotKey)}
+                                                disabled={saving}
+                                                className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-[11px] font-bold text-slate-400 group-hover:text-amber-700 transition cursor-pointer print:hidden"
+                                                title={`Lançar a ${ordem}ª aula da ${dia.nome} como H.A. de ${activeSpecialist.val.name}`}
+                                              >
+                                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 group-hover:bg-amber-500 group-hover:text-white transition text-[10px]">
+                                                  + Lançar H.A.
+                                                </span>
+                                                <span className="text-[9px] text-slate-400 font-normal group-hover:text-amber-800">
+                                                  Horário Livre
+                                                </span>
+                                              </button>
+                                              <span className="hidden print:inline text-[11px] text-slate-300">—</span>
+                                            </>
                                           ) : (
                                             <span className="text-[11px] text-slate-300">—</span>
                                           )}
@@ -3239,7 +3275,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
               Visão consolidada para coordenação pedagógica acompanhar a presença de cada especialista na escola.
             </p>
 
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3 print:grid-cols-5 print:gap-2">
               {GRADE_DIAS_SEMANA.map((dia) => {
                 // Deduplica registros-espelho (ID manual vs Auth UID) na visão da coordenação
                 const especialistasUnicos: typeof teachers = [];
@@ -3267,7 +3303,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                 });
 
                 return (
-                  <div key={dia.id} className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3">
+                  <div key={dia.id} className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-3 print:break-inside-avoid">
                     <div className="border-b border-slate-200 pb-2">
                       <h4 className="font-extrabold text-sm text-slate-800">{dia.nome}</h4>
                       <span className="text-[10px] font-semibold text-emerald-600">
@@ -3333,7 +3369,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 self-stretch sm:self-auto flex-wrap">
+              <div className="flex items-center gap-2 self-stretch sm:self-auto flex-wrap print:hidden">
                 <button
                   type="button"
                   onClick={handleExportHAExcel}
@@ -3357,7 +3393,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
           </div>
 
           {/* Cards de Indicadores (KPIs) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 print:grid-cols-4 print:gap-2">
             <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs space-y-2">
               <div className="flex items-center justify-between text-slate-500">
                 <span className="text-xs font-bold uppercase tracking-wider">Corpo Docente</span>
@@ -3430,7 +3466,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
           </div>
 
           {/* Barra de Filtros e Busca */}
-          <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs space-y-3">
+          <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs space-y-3 print:hidden">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               {/* Filtro Escola */}
               <div>
@@ -3509,6 +3545,28 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
             </div>
           </div>
 
+          {/* Resumo compacto de escopo apenas na impressão do Controle de H.A. */}
+          <div className="hidden print:flex items-center justify-between text-[11px] text-slate-600 border-b border-slate-200 pb-2">
+            <span>
+              <strong>Ano Letivo:</strong> {currentYear}
+              {haFilterSchool !== 'all' && schools[haFilterSchool]?.name ? ` • Escola: ${schools[haFilterSchool].name}` : ''}
+              {haFilterType !== 'todos'
+                ? ` • Perfil: ${haFilterType === 'regente' ? 'Regentes Polivalentes' : 'Especialistas'}`
+                : ''}
+              {haFilterStatus === 'conforme'
+                ? ' • Situação: Conformes'
+                : haFilterStatus === 'pendente'
+                ? ' • Situação: Pendentes'
+                : haFilterStatus === 'sem_meta'
+                ? ' • Situação: Sem Meta'
+                : ''}
+              {haSearchQuery.trim() ? ` • Busca: "${haSearchQuery.trim()}"` : ''}
+            </span>
+            <span>
+              Listando <strong>{filteredTeachersHA.length}</strong> de <strong>{teachersHAData.length}</strong> professores
+            </span>
+          </div>
+
           {/* Lista de Professores e Quadro de H.A. */}
           {filteredTeachersHA.length === 0 ? (
             <div className="bg-white rounded-2xl p-10 border border-slate-200 text-center space-y-3">
@@ -3557,7 +3615,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                 return (
                   <div
                     key={item.id}
-                    className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs hover:shadow-xs transition space-y-4"
+                    className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-2xs hover:shadow-xs transition space-y-4 print:break-inside-avoid"
                   >
                     <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                       {/* Identificação do Professor */}
@@ -3617,7 +3675,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                               setSelectedSpecialistId(item.id);
                               setViewMode('specialist');
                             }}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold shadow-2xs transition cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold shadow-2xs transition cursor-pointer print:hidden"
                             title="Abrir a agenda do especialista para lançar ou desmarcar horários de H.A."
                           >
                             <Award className="w-3.5 h-3.5" />
@@ -3627,7 +3685,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                         <button
                           type="button"
                           onClick={() => setSelectedTeacherForHAModal(item.id)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-bold border border-indigo-200 transition cursor-pointer"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-bold border border-indigo-200 transition cursor-pointer print:hidden"
                           title="Visualizar espelho semanal detalhado com horários e especialistas"
                         >
                           <Eye className="w-3.5 h-3.5" />
@@ -3676,34 +3734,42 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                         </span>
 
                         {isEditingThis ? (
-                          <div className="flex items-center gap-1.5 mt-1">
-                            <input
-                              type="number"
-                              min="0"
-                              max="30"
-                              value={editingMetaValue}
-                              onChange={(e) => setEditingMetaValue(Number(e.target.value))}
-                              className="w-16 px-2 py-0.5 text-xs font-bold border border-amber-400 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-amber-500"
-                              autoFocus
-                            />
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateTeacherMetaHA(item.id, editingMetaValue)}
-                              disabled={savingMeta}
-                              className="p-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition cursor-pointer"
-                              title="Salvar nova meta de H.A."
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditingMetaTeacherId(null)}
-                              className="p-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg transition cursor-pointer"
-                              title="Cancelar edição"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
+                          <>
+                            <div className="flex items-center gap-1.5 mt-1 print:hidden">
+                              <input
+                                type="number"
+                                min="0"
+                                max="30"
+                                value={editingMetaValue}
+                                onChange={(e) => setEditingMetaValue(Number(e.target.value))}
+                                className="w-16 px-2 py-0.5 text-xs font-bold border border-amber-400 rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                                autoFocus
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateTeacherMetaHA(item.id, editingMetaValue)}
+                                disabled={savingMeta}
+                                className="p-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition cursor-pointer"
+                                title="Salvar nova meta de H.A."
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingMetaTeacherId(null)}
+                                className="p-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg transition cursor-pointer"
+                                title="Cancelar edição"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                            <div className="hidden print:flex items-baseline gap-1 mt-0.5">
+                              <span className="text-base font-black text-slate-800">
+                                {item.metaHA > 0 ? item.metaHA : '0'}
+                              </span>
+                              <span className="text-[11px] text-slate-500">H.A./sem</span>
+                            </div>
+                          </>
                         ) : (
                           <div className="flex items-center justify-between mt-0.5">
                             <div className="flex items-baseline gap-1">
@@ -3838,9 +3904,12 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
         const item = teachersHAData.find((t) => t.id === selectedTeacherForHAModal);
         if (!item) return null;
 
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
-            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 my-6">
+        return createPortal(
+          <div
+            id="teacher-ha-mirror-modal-root"
+            className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto"
+          >
+            <div className="ha-mirror-modal-card bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 my-6">
               {/* Cabeçalho do Modal */}
               <div className="p-4 sm:p-5 bg-gradient-to-r from-amber-600 to-orange-600 text-white flex items-center justify-between">
                 <div>
@@ -3864,7 +3933,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                 <button
                   type="button"
                   onClick={() => setSelectedTeacherForHAModal(null)}
-                  className="p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-xl transition cursor-pointer"
+                  className="p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-xl transition cursor-pointer print:hidden"
                   title="Fechar espelho semanal"
                 >
                   <X className="w-5 h-5" />
@@ -3872,7 +3941,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
               </div>
 
               {/* Faixa de Métricas Rápidas */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-amber-50/50 border-b border-amber-200/60 text-xs">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-amber-50/50 border-b border-amber-200/60 text-xs print:grid-cols-4">
                 <div>
                   <span className="text-[10px] font-bold uppercase text-slate-500">Aulas com Alunos</span>
                   <p className="text-base font-extrabold text-slate-800">{item.totalAulasComAlunos} aulas</p>
@@ -3907,7 +3976,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                   const diasEspelho = resolverDiasDisponiveisDocente({ id: item.id, val: item.teacher }, teachers);
                   const folgasEspelho = obterDiasFolga(diasEspelho);
                   return (
-                    <table className="w-full min-w-[640px] text-xs border border-slate-200 rounded-xl overflow-hidden">
+                    <table className="w-full min-w-[640px] print:min-w-0 text-xs border border-slate-200 rounded-xl overflow-hidden">
                       <thead>
                         <tr className="bg-slate-100 text-slate-700 border-b border-slate-200">
                           <th className="py-2.5 px-3 font-bold text-center w-24">Aula</th>
@@ -4026,7 +4095,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
               </div>
 
               {/* Rodapé do Modal */}
-              <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3 flex-wrap">
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3 flex-wrap print:hidden">
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -4062,7 +4131,8 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                 </button>
               </div>
             </div>
-          </div>
+          </div>,
+          document.body
         );
       })()}
 
@@ -4141,11 +4211,13 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                   className="w-full px-3 py-2 border border-slate-300 rounded-xl text-sm font-medium text-slate-800 bg-white outline-none focus:ring-2 focus:ring-indigo-500"
                 >
                   <option value="">Selecione o professor...</option>
-                  {teachers.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.val.name} ({t.val.subject || 'Polivalente'})
-                    </option>
-                  ))}
+                  {teachers
+                    .filter((t) => !isBibliotecarioDocente(t.val) || t.id === slotTeacherId)
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.val.name} ({t.val.subject || 'Polivalente'})
+                      </option>
+                    ))}
                 </select>
               </div>
 

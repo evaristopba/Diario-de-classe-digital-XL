@@ -16,6 +16,26 @@ export function normTextoRegente(val?: string): string {
 }
 
 /**
+ * Identifica se um cadastro atua exclusivamente como bibliotecário(a) / gestão de biblioteca
+ * (não devendo ser classificado como Regente Polivalente nem listado no Controle de H.A.).
+ * Professores regentes ou especialistas que apenas acumulam delegação de biblioteca (`canManageLibrary`)
+ * continuam sendo reconhecidos normalmente por sua disciplina ou `tipoDocente`.
+ */
+export function isBibliotecarioDocente(teacher?: Teacher | null): boolean {
+  if (!teacher) return false;
+  if (teacher.tipoDocente === 'regente' || teacher.tipoDocente === 'especialista') {
+    return false;
+  }
+  const subStr = normTextoRegente(teacher.subject);
+  if (!subStr) return Boolean(teacher.canManageLibrary);
+  return (
+    subStr.includes('biblioteca') ||
+    subStr.includes('bibliotecari') ||
+    subStr === 'leitura'
+  );
+}
+
+/**
  * Identifica se um docente atua como especialista (unificando critério com a Sugestão de Especialistas).
  * Respeita `tipoDocente` explícito e evita falsos positivos em regentes com descrições como
  * "Fundamental I", "Alfabetização", "Polivalente", etc.
@@ -200,9 +220,9 @@ export function resolveRegenteForClass(params: {
     adminIds = {}
   } = params;
 
-  // Coleta docentes não-especialistas atribuídos à turma em `atribuicoes`
+  // Coleta docentes não-especialistas (e não-bibliotecários) atribuídos à turma em `atribuicoes`
   const atribuidosBrutos = teachers.filter((t) => {
-    if (isSpecialistTeacherDocente(t.val, subjects)) return false;
+    if (isBibliotecarioDocente(t.val) || isSpecialistTeacherDocente(t.val, subjects)) return false;
     const aliases = collectTeacherAliasKeys(t.id, teachers);
     for (const key of aliases) {
       if (atribuicoes?.[key]?.[classId] === true) {

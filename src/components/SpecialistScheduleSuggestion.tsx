@@ -1701,6 +1701,11 @@ export const SpecialistScheduleSuggestion: React.FC<SpecialistScheduleSuggestion
     if (acao.tipo === 'imprimir') {
       setModoImpressao(acao.modo);
       setTimeout(() => {
+        const resetAfterPrint = () => {
+          setModoImpressao('atual');
+          window.removeEventListener('afterprint', resetAfterPrint);
+        };
+        window.addEventListener('afterprint', resetAfterPrint);
         window.print();
       }, 120);
       return;
