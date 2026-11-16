@@ -527,10 +527,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
     {
       id: 'backup-screen',
       title: 'Rotina de Backup',
-      desc: 'Cópia de segurança e restauração completa de dados em JSON',
+      desc: isAdmin
+        ? 'Cópia de segurança integral da rede e restauração em JSON'
+        : 'Exportação pessoal dos seus próprios lançamentos (backup integral é exclusivo de Admin)',
       icon: <ShieldCheck className="w-8 h-8" />,
       color: 'bg-emerald-50 text-emerald-600 border-emerald-200 hover:border-emerald-400 group-hover:bg-emerald-600 group-hover:text-white',
-      badge: 'Segurança'
+      badge: isAdmin ? 'Segurança' : 'Cópia Pessoal'
     },
     ...(showPresentationButton
       ? [
@@ -549,8 +551,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
 
   return (
     <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
-      {/* Alerta inteligente de rotina de backup caso o último tenha expirado */}
-      {routineStatus.needsBackup && (
+      {/* Alerta inteligente de rotina de backup completo (apenas para Administradores) */}
+      {isAdmin && routineStatus.needsBackup && (
         <div className="p-4 bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="p-2.5 bg-amber-500 text-white rounded-xl shadow-xs shrink-0">
@@ -558,13 +560,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
             </div>
             <div>
               <h4 className="text-xs sm:text-sm font-bold text-amber-900">
-                Rotina de Cópia de Segurança Recomendada
+                Rotina de Backup Completo Recomendada
               </h4>
               <p className="text-xs text-amber-700 mt-0.5">
                 {routineStatus.lastBackupTime
-                  ? `Seu último backup foi realizado há ${routineStatus.daysSinceLastBackup} dias (${routineStatus.lastBackupDateStr}).`
-                  : 'Nenhum backup foi gerado recentemente neste dispositivo.'}{' '}
-                Recomendamos exportar uma cópia em JSON para manter seus registros seguros.
+                  ? `O último backup completo neste dispositivo foi realizado há ${routineStatus.daysSinceLastBackup} dias (${routineStatus.lastBackupDateStr}).`
+                  : 'Nenhum backup completo de recuperação de desastre foi gerado recentemente neste dispositivo.'}{' '}
+                Recomendamos exportar uma cópia integral em JSON para manter toda a base segura.
               </p>
             </div>
           </div>
@@ -572,7 +574,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigate }) => {
             onClick={() => onNavigate('backup-screen')}
             className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-xl shadow-xs transition shrink-0 cursor-pointer"
           >
-            Fazer Backup Agora
+            Fazer Backup Completo
           </button>
         </div>
       )}

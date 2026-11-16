@@ -67,6 +67,8 @@ export interface BackupMetadata {
     schedule?: number;
     /** Blocos de Hora-Atividade (H.A.) cadastrados */
     horaAtividade?: number;
+    /** Rascunhos salvos da Sugestão de Horários */
+    simulacoesHorarios?: number;
     totalRecords: number;
   };
 }
@@ -127,6 +129,7 @@ export interface BackupHistoryItem {
   sizeBytes?: number;
   exportedBy?: string;
   isAutomatic?: boolean;
+  escopo?: 'completo' | 'parcial';
 }
 
 export interface RestoreOptions {
@@ -155,11 +158,17 @@ const STORAGE_BACKUP_HISTORY_KEY = 'dc_backup_history';
 const STORAGE_REMINDER_FREQ_KEY = 'dc_backup_reminder_frequency_days';
 
 // 1. Gera o Backup Completo do Banco de Dados
-export async function generateFullBackup(userProfile?: {
-  uid?: string;
-  name?: string;
-  email?: string;
-}): Promise<{
+export async function generateFullBackup(
+  userProfile?: {
+    uid?: string;
+    name?: string;
+    email?: string;
+  },
+  options?: {
+    /** Se false (padrão para admin), exige leitura integral de todos os nós para considerar o backup completo. */
+    allowPartial?: boolean;
+  }
+): Promise<{
   jsonString: string;
   jsonBlob: Blob;
   filename: string;
@@ -305,6 +314,11 @@ export async function generateFullBackup(userProfile?: {
   const escopo: 'completo' | 'parcial' = isAdmin && leiturasIncompletas.length === 0 ? 'completo' : 'parcial';
   if (!isAdmin) {
     leiturasIncompletas.push('Dados pedagógicos dos demais professores (só administradores leem)');
+    if (options?.allowPartial !== true) {
+      throw new Error(
+        'Backup completo de recuperação de desastre é exclusivo de Administradores. Apenas administradores conseguem ler os diários de todos os professores.'
+      );
+    }
   }
 
   // 4. Calcular Estatísticas
@@ -355,6 +369,7 @@ export async function generateFullBackup(userProfile?: {
     (acc, turma) => acc + Object.keys((turma as any).gradeHoraria || {}).length,
     0
   );
+  const simulacoesHorariosCount = Object.keys((settings as any)?.simulacoesHorarios || {}).length;
   const permissionsCount = Object.keys(admins).length + Object.keys(librarians).length;
 
   const totalRecords =
@@ -384,12 +399,15 @@ export async function generateFullBackup(userProfile?: {
 
   const now = new Date();
   const dateStr = now.toISOString().replace(/T/, '_').replace(/:/g, '-').slice(0, 16);
-  const filename = `backup-diario-de-classe-${dateStr}.json`;
+  const filename =
+    escopo === 'completo'
+      ? `backup-diario-de-classe-${dateStr}.json`
+      : `backup-PARCIAL-diario-de-classe-${dateStr}.json`;
 
   const backupPkg: BackupPackage = {
     metadata: {
       appName: 'Diário de Classe Digital',
-      version: '2.1',
+      version: '2.2',
       exportedAt: now.toISOString(),
       timestamp: now.getTime(),
       exportedByUid: uid,
@@ -422,6 +440,7 @@ export async function generateFullBackup(userProfile?: {
         permissions: permissionsCount,
         schedule: scheduleCount,
         horaAtividade: horaAtividadeCount,
+        simulacoesHorarios: simulacoesHorariosCount,
         totalRecords
       }
     },
@@ -456,7 +475,7 @@ export async function generateFullBackup(userProfile?: {
   const jsonString = JSON.stringify(backupPkg, null, 2);
   const jsonBlob = new Blob([jsonString], { type: 'application/json;charset=utf-8' });
 
-  // Salva no histórico de backups
+  // Salva no histórico de backups (somente backup completo atualiza o indicador de rotina em dia)
   recordBackupInHistory({
     id: `bkp_${now.getTime()}`,
     timestamp: now.getTime(),
@@ -464,7 +483,8 @@ export async function generateFullBackup(userProfile?: {
     filename,
     totalRecords,
     sizeBytes: jsonBlob.size,
-    exportedBy: name
+    exportedBy: name,
+    escopo
   });
 
   return {
@@ -779,12 +799,23 @@ async function montarPlanoDeRestauracao(
   }
 
   if (options.includeSettings !== false) {
-    // O sino (config/sino) e a H.A. (config/horaAtividade) têm estrutura própria. É planejado
-    // para que restaurar nunca troque o sino inteiro nem apague a H.A. vinculada aos docentes.
-    const { sino, horaAtividade: _haConfig, ...outrasConfiguracoes } = (data.settings || {}) as Record<string, any>;
+    // O sino (config/sino), a H.A. (config/horaAtividade) e os rascunhos (config/simulacoesHorarios)
+    // têm estrutura própria. Restaurar item a item evita sobrescrever o nó inteiro de uma vez.
+    const {
+      sino,
+      horaAtividade: _haConfig,
+      simulacoesHorarios,
+      ...outrasConfiguracoes
+    } = (data.settings || {}) as Record<string, any>;
     await colecao('settings', 'Configurações do sistema', 'diario-classe/config', outrasConfiguracoes);
     await colecao('sinoPadrao', 'Sino: padrão da rede', 'diario-classe/config/sino/padrao', sino?.padrao);
     await colecaoAninhada('sinoEscolas', 'Sino: horários por escola', 'diario-classe/config/sino/escolas', sino?.escolas);
+    await colecao(
+      'simulacoesHorarios',
+      'Rascunhos da Sugestão de Horários',
+      'diario-classe/config/simulacoesHorarios',
+      simulacoesHorarios
+    );
   }
 
   // Permissões CONCEDEM acesso: só entram por opção explícita. Nunca removem ninguém, mas podem
@@ -907,7 +938,8 @@ export async function restoreBackup(
     'schools', 'classes', 'students', 'teachers', 'assignments', 'subjects', 'bncc', 'categories',
     'eventTypes', 'attendances', 'grades', 'lessonPlans', 'events', 'books', 'loans',
     'holdings', 'reservations', 'movements', 'readingCorners', 'settings', 'admins', 'librarians',
-    'userBncc', 'userCategories', 'userEventTypes', 'schedule', 'horaAtividade', 'sinoPadrao', 'sinoEscolas'
+    'userBncc', 'userCategories', 'userEventTypes', 'schedule', 'horaAtividade', 'sinoPadrao', 'sinoEscolas',
+    'simulacoesHorarios'
   ];
   const importedCounts: Record<string, number> = {};
   const keptCounts: Record<string, number> = {};
@@ -1037,7 +1069,10 @@ export function getBackupHistory(): BackupHistoryItem[] {
 
 export function recordBackupInHistory(item: BackupHistoryItem) {
   try {
-    localStorage.setItem(STORAGE_LAST_BACKUP_KEY, String(item.timestamp));
+    // Só um backup COMPLETO coloca o status da rotina de desastre em dia.
+    if (item.escopo !== 'parcial') {
+      localStorage.setItem(STORAGE_LAST_BACKUP_KEY, String(item.timestamp));
+    }
     const history = getBackupHistory();
     const updated = [item, ...history.filter((h) => h.id !== item.id)].slice(0, 15); // Guarda os 15 mais recentes
     localStorage.setItem(STORAGE_BACKUP_HISTORY_KEY, JSON.stringify(updated));

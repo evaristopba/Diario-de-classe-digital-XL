@@ -130,12 +130,34 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
     refreshStatus();
   }, []);
 
-  // Handler para geração do backup
-  const handleExportBackup = async () => {
+  // Handler para geração do backup (allowPartial só para cópia pessoal de professor comum)
+  const handleExportBackup = async (allowPartial: boolean = false) => {
     setIsExporting(true);
     try {
-      const result = await generateFullBackup();
-      
+      const result = await generateFullBackup(undefined, { allowPartial });
+      const meta = result.backupPkg.metadata;
+
+      // Para Administrador, qualquer falha de leitura bloqueia falso positivo de backup completo
+      if (!allowPartial && meta.escopo !== 'completo') {
+        const faltando = meta.leiturasIncompletas?.length
+          ? meta.leiturasIncompletas.join('; ')
+          : 'Alguns nós do banco de dados não responderam';
+        setExportAvisos([
+          `Leitura incompleta: ${faltando}. O arquivo não foi baixado para evitar falsa sensação de segurança em caso de desastre.`
+        ]);
+        refreshStatus();
+        setModal({
+          isOpen: true,
+          type: 'alert',
+          title: 'Backup Incompleto — Tente Novamente',
+          message:
+            `Nem toda a base pôde ser lida (${faltando}).\n\n` +
+            'Um backup parcial não garante recuperação completa em caso de desastre, por isso este arquivo não foi salvo. Verifique sua conexão e clique para gerar novamente.',
+          icon: '⚠️'
+        });
+        return;
+      }
+
       // Cria link para download
       const url = window.URL.createObjectURL(result.jsonBlob);
       const a = document.createElement('a');
@@ -148,12 +170,10 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
 
       refreshStatus();
 
-      // Leitura que falhou ou perfil sem acesso total: o arquivo NÃO contém esses dados
-      const meta = result.backupPkg.metadata;
       const avisosExport: string[] = [];
       if (meta.escopo === 'parcial') {
         avisosExport.push(
-          'Este backup é PARCIAL. Para uma cópia completa do sistema, gere-o com uma conta de administrador.'
+          'Este arquivo é uma CÓPIA PARCIAL (apenas seus diários e dados acessíveis). Para recuperação total de desastre, gere o backup com uma conta de Administrador.'
         );
       }
       if (meta.leiturasIncompletas && meta.leiturasIncompletas.length > 0) {
@@ -162,28 +182,28 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
       setExportAvisos(avisosExport);
 
       setExportStats({
-        schools: result.backupPkg.metadata.recordCounts.schools,
-        classes: result.backupPkg.metadata.recordCounts.classes,
-        students: result.backupPkg.metadata.recordCounts.students,
-        teachers: result.backupPkg.metadata.recordCounts.teachers,
-        assignments: result.backupPkg.metadata.recordCounts.assignments,
-        attendances: result.backupPkg.metadata.recordCounts.attendances,
-        grades: result.backupPkg.metadata.recordCounts.grades,
-        lessonPlans: result.backupPkg.metadata.recordCounts.lessonPlans,
-        events: result.backupPkg.metadata.recordCounts.events,
-        subjects: result.backupPkg.metadata.recordCounts.subjects,
-        bncc: result.backupPkg.metadata.recordCounts.bncc,
-        categories: result.backupPkg.metadata.recordCounts.categories,
-        eventTypes: result.backupPkg.metadata.recordCounts.eventTypes,
-        total: result.backupPkg.metadata.recordCounts.totalRecords
+        schools: meta.recordCounts.schools,
+        classes: meta.recordCounts.classes,
+        students: meta.recordCounts.students,
+        teachers: meta.recordCounts.teachers,
+        assignments: meta.recordCounts.assignments,
+        attendances: meta.recordCounts.attendances,
+        grades: meta.recordCounts.grades,
+        lessonPlans: meta.recordCounts.lessonPlans,
+        events: meta.recordCounts.events,
+        subjects: meta.recordCounts.subjects,
+        bncc: meta.recordCounts.bncc,
+        categories: meta.recordCounts.categories,
+        eventTypes: meta.recordCounts.eventTypes,
+        total: meta.recordCounts.totalRecords
       });
 
       setModal({
         isOpen: true,
         type: 'alert',
-        title: 'Backup Gerado com Sucesso!',
+        title: meta.escopo === 'completo' ? 'Backup Completo Gerado!' : 'Cópia Pessoal Exportada',
         message:
-          `O arquivo "${result.filename}" com ${result.backupPkg.metadata.recordCounts.totalRecords} registros foi baixado com sucesso. Guarde este arquivo em local seguro (ex: Google Drive, OneDrive ou Pendrive).` +
+          `O arquivo "${result.filename}" com ${meta.recordCounts.totalRecords} registros foi baixado com sucesso. Guarde-o em local seguro (ex: Google Drive, OneDrive ou Pendrive).` +
           (avisosExport.length > 0 ? `\n\n⚠️ ${avisosExport.join('\n⚠️ ')}` : ''),
         icon: avisosExport.length > 0 ? '⚠️' : '🛡️'
       });
@@ -530,9 +550,11 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
         {/* Botão de Ação Rápida */}
         <button
           id="btn-quick-full-backup"
-          onClick={handleExportBackup}
+          onClick={() => handleExportBackup(!isAdmin)}
           disabled={isExporting}
-          className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs sm:text-sm font-bold rounded-xl shadow-sm transition-all transform active:scale-95 cursor-pointer shrink-0"
+          className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 disabled:opacity-50 text-white text-xs sm:text-sm font-bold rounded-xl shadow-sm transition-all transform active:scale-95 cursor-pointer shrink-0 ${
+            isAdmin ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-amber-600 hover:bg-amber-700'
+          }`}
         >
           {isExporting ? (
             <>
@@ -542,64 +564,80 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
           ) : (
             <>
               <Download className="w-4 h-4" />
-              <span>Fazer Backup Agora (.JSON)</span>
+              <span>{isAdmin ? 'Fazer Backup Completo (.JSON)' : 'Exportar Meus Diários (Parcial)'}</span>
             </>
           )}
         </button>
       </div>
 
       {/* 2. Card de Status da Rotina Automática */}
-      <div
-        className={`p-4 sm:p-5 rounded-2xl border transition-all ${
-          routineStatus.statusColor === 'emerald'
-            ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
-            : routineStatus.statusColor === 'amber'
-            ? 'bg-amber-50/80 border-amber-200 text-amber-950'
-            : 'bg-red-50/80 border-red-200 text-red-950'
-        }`}
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            {routineStatus.statusColor === 'emerald' ? (
-              <div className="p-2 bg-emerald-600 text-white rounded-lg">
-                <CheckCircle2 className="w-5 h-5" />
-              </div>
-            ) : routineStatus.statusColor === 'amber' ? (
-              <div className="p-2 bg-amber-600 text-white rounded-lg">
-                <AlertTriangle className="w-5 h-5" />
-              </div>
-            ) : (
-              <div className="p-2 bg-red-600 text-white rounded-lg">
-                <AlertCircle className="w-5 h-5" />
-              </div>
-            )}
-            <div>
-              <div className="flex items-center gap-2 font-bold text-sm sm:text-base">
-                <span>Status da Rotina:</span>
-                <span>{routineStatus.statusText}</span>
-              </div>
-              <div className="text-xs opacity-90 mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1">
-                <span>
-                  <strong>Último Backup:</strong> {routineStatus.lastBackupDateStr}
-                </span>
-                <span>
-                  <strong>Frequência Recomendada:</strong> A cada {routineStatus.reminderFrequencyDays} dias
-                </span>
+      {isAdmin ? (
+        <div
+          className={`p-4 sm:p-5 rounded-2xl border transition-all ${
+            routineStatus.statusColor === 'emerald'
+              ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
+              : routineStatus.statusColor === 'amber'
+              ? 'bg-amber-50/80 border-amber-200 text-amber-950'
+              : 'bg-red-50/80 border-red-200 text-red-950'
+          }`}
+        >
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              {routineStatus.statusColor === 'emerald' ? (
+                <div className="p-2 bg-emerald-600 text-white rounded-lg">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+              ) : routineStatus.statusColor === 'amber' ? (
+                <div className="p-2 bg-amber-600 text-white rounded-lg">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+              ) : (
+                <div className="p-2 bg-red-600 text-white rounded-lg">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+              )}
+              <div>
+                <div className="flex items-center gap-2 font-bold text-sm sm:text-base">
+                  <span>Status da Rotina:</span>
+                  <span>{routineStatus.statusText}</span>
+                </div>
+                <div className="text-xs opacity-90 mt-0.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <span>
+                    <strong>Último Backup Completo:</strong> {routineStatus.lastBackupDateStr}
+                  </span>
+                  <span>
+                    <strong>Frequência Recomendada:</strong> A cada {routineStatus.reminderFrequencyDays} dias
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="flex items-center gap-2 self-end sm:self-center">
-            <button
-              onClick={refreshStatus}
-              className="p-2 rounded-lg bg-white/80 hover:bg-white text-slate-700 text-xs font-semibold border border-slate-200/80 transition-colors cursor-pointer"
-              title="Atualizar status"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-2 self-end sm:self-center">
+              <button
+                onClick={refreshStatus}
+                className="p-2 rounded-lg bg-white/80 hover:bg-white text-slate-700 text-xs font-semibold border border-slate-200/80 transition-colors cursor-pointer"
+                title="Atualizar status"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="p-4 sm:p-5 rounded-2xl border bg-amber-50/80 border-amber-300 text-amber-950">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-amber-600 text-white rounded-lg shrink-0">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div className="text-xs sm:text-sm space-y-1">
+              <div className="font-bold">Perfil Docente — Apenas Cópia Pessoal (Parcial)</div>
+              <p className="text-amber-900">
+                Para recuperação de desastre, apenas contas de <strong>Administrador</strong> têm acesso para ler e salvar a base completa de todos os professores. Aqui você pode baixar uma cópia individual apenas dos seus próprios lançamentos (chamadas, notas, planos e ocorrências).
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 3. Navegação por Abas */}
       <div className="flex items-center gap-2 border-b border-slate-200 overflow-x-auto pb-1">
@@ -654,15 +692,25 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
             <div className="flex items-center justify-between border-b border-slate-100 pb-4">
               <div>
                 <h3 className="text-base sm:text-lg font-bold text-slate-800">
-                  Exportação Integral do Banco de Dados
+                  {isAdmin
+                    ? 'Exportação Integral do Banco de Dados'
+                    : 'Exportação Pessoal (Cópia Parcial)'}
                 </h3>
                 <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-                  O arquivo JSON gerado contém toda a estrutura e registros do Diário de Classe em formato universal.
+                  {isAdmin
+                    ? 'O arquivo JSON gerado contém toda a base compartilhada, configurações e os dados de todos os docentes.'
+                    : 'Como docente, o arquivo contém apenas seus próprios lançamentos (não inclui diários dos demais professores).'}
                 </p>
               </div>
-              <span className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 text-xs font-semibold rounded-lg border border-emerald-200">
+              <span
+                className={`hidden sm:inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-lg border ${
+                  isAdmin
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    : 'bg-amber-50 text-amber-800 border-amber-200'
+                }`}
+              >
                 <Sparkles className="w-3.5 h-3.5" />
-                Compatibilidade 100%
+                {isAdmin ? 'Backup Completo (Desastre)' : 'Cópia Parcial'}
               </span>
             </div>
 
@@ -808,18 +856,25 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
             <div className="p-5 bg-gradient-to-r from-indigo-50/60 via-purple-50/40 to-slate-50 rounded-xl border border-indigo-100 flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="space-y-1 text-center sm:text-left">
                 <div className="text-sm font-bold text-slate-800">
-                  Pronto para gerar a cópia de segurança?
+                  {isAdmin
+                    ? 'Pronto para gerar a cópia integral de segurança?'
+                    : 'Exportar cópia pessoal dos seus lançamentos'}
                 </div>
                 <div className="text-xs text-slate-500">
-                  O download iniciará imediatamente no seu navegador em arquivo com extensão <code className="text-indigo-600 font-semibold">.json</code>.
+                  {isAdmin
+                    ? 'O arquivo JSON inclui toda a base compartilhada, configurações, H.A., grade, biblioteca e os diários de todos os docentes.'
+                    : 'Inclui apenas os seus próprios lançamentos pedagógicos e catálogos compartilhados (não substitui o backup de administrador).'}{' '}
+                  Extensão <code className="text-indigo-600 font-semibold">.json</code>.
                 </div>
               </div>
 
               <button
                 id="btn-export-full-backup-cta"
-                onClick={handleExportBackup}
+                onClick={() => handleExportBackup(!isAdmin)}
                 disabled={isExporting}
-                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-md transition transform active:scale-95 cursor-pointer"
+                className={`w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 disabled:opacity-50 text-white text-sm font-bold rounded-xl shadow-md transition transform active:scale-95 cursor-pointer ${
+                  isAdmin ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-amber-600 hover:bg-amber-700'
+                }`}
               >
                 {isExporting ? (
                   <>
@@ -829,7 +884,7 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                 ) : (
                   <>
                     <Download className="w-4 h-4" />
-                    <span>Baixar Backup Completo (.JSON)</span>
+                    <span>{isAdmin ? 'Baixar Backup Completo (.JSON)' : 'Baixar Cópia Pessoal (.JSON)'}</span>
                   </>
                 )}
               </button>
@@ -965,6 +1020,32 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                   </div>
                 </div>
 
+                {/* Alerta de Escopo do Arquivo (Completo vs Parcial) */}
+                {(parsedBackup.metadata.escopo === 'parcial' ||
+                  (parsedBackup.metadata.leiturasIncompletas?.length || 0) > 0) && (
+                  <div className="p-4 rounded-xl bg-red-50 border border-red-300 text-red-950 text-xs space-y-1.5">
+                    <div className="flex items-center gap-2 font-extrabold text-sm text-red-800">
+                      <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                      <span>ATENÇÃO: Este arquivo é um BACKUP PARCIAL (não serve para recuperação completa de desastre)</span>
+                    </div>
+                    <p>
+                      {(parsedBackup.metadata.leiturasIncompletas?.length || 0) > 0
+                        ? `Dados ausentes neste arquivo: ${parsedBackup.metadata.leiturasIncompletas!.join('; ')}.`
+                        : 'Este arquivo não contém a leitura integral de todos os professores.'}{' '}
+                      Para restaurar toda a rede após perda de dados, utilize um arquivo gerado por Administrador com escopo completo.
+                    </p>
+                  </div>
+                )}
+
+                {!parsedBackup.metadata.escopo && !parsedBackup.data?.allUsersPedagogical && (
+                  <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs flex items-start gap-2.5">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <span>
+                      Este arquivo é de uma versão anterior e não traz o mapa global de todos os docentes (<code>allUsersPedagogical</code>). Os dados pedagógicos do topo serão restaurados apenas para o perfil identificado no arquivo.
+                    </span>
+                  </div>
+                )}
+
                 {/* Resumo em Cards */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2 text-xs">
                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
@@ -1007,11 +1088,39 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
 
                 {/* Opções de Seleção de Módulos para Restaurar */}
                 <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
                       Selecione o que deseja restaurar:
                     </span>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRestoreOptions((prev) => ({
+                            ...prev,
+                            includeSchools: true,
+                            includeClassesAndStudents: true,
+                            includeTeachers: true,
+                            includeAssignments: true,
+                            includeSubjects: true,
+                            includeBNCC: true,
+                            includeCategories: true,
+                            includeEventTypes: true,
+                            includeAttendance: true,
+                            includeGrades: true,
+                            includeLessonPlans: true,
+                            includeEvents: true,
+                            includeLibrary: true,
+                            includeSettings: true,
+                            includePermissions: true
+                          }))
+                        }
+                        className="px-2.5 py-1 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100 text-xs font-bold cursor-pointer transition"
+                        title="Marca absolutamente todos os módulos, inclusive permissões de admins e bibliotecários, ideal para banco zerado/novo"
+                      >
+                        Modo Desastre (Banco Novo / Completo)
+                      </button>
+                      <span className="text-slate-300">|</span>
                       <button
                         type="button"
                         onClick={() =>
@@ -1182,6 +1291,42 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                     <label className="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200">
                       <input
                         type="checkbox"
+                        checked={restoreOptions.includeAssignments}
+                        onChange={(e) =>
+                          setRestoreOptions({ ...restoreOptions, includeAssignments: e.target.checked })
+                        }
+                        className="rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>Atribuições de turmas ({parsedBackup.metadata.recordCounts.assignments})</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={restoreOptions.includeCategories}
+                        onChange={(e) =>
+                          setRestoreOptions({ ...restoreOptions, includeCategories: e.target.checked })
+                        }
+                        className="rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>Categorias de planos ({parsedBackup.metadata.recordCounts.categories})</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={restoreOptions.includeEventTypes}
+                        onChange={(e) =>
+                          setRestoreOptions({ ...restoreOptions, includeEventTypes: e.target.checked })
+                        }
+                        className="rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>Tipos de ocorrência ({parsedBackup.metadata.recordCounts.eventTypes})</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200">
+                      <input
+                        type="checkbox"
                         checked={restoreOptions.includeLibrary !== false}
                         onChange={(e) =>
                           setRestoreOptions({ ...restoreOptions, includeLibrary: e.target.checked })
@@ -1209,7 +1354,13 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                         }
                         className="rounded text-indigo-600 focus:ring-indigo-500"
                       />
-                      <span>Configurações do sistema ({parsedBackup.metadata.recordCounts.settings || 0})</span>
+                      <span>
+                        Configurações, Sino e Rascunhos ({parsedBackup.metadata.recordCounts.settings || 0} nós
+                        {parsedBackup.metadata.recordCounts.simulacoesHorarios
+                          ? `, ${parsedBackup.metadata.recordCounts.simulacoesHorarios} rascunhos`
+                          : ''}
+                        )
+                      </span>
                     </label>
 
                     <label className="flex items-start gap-2 cursor-pointer bg-amber-50 p-2 rounded-lg border border-amber-300 sm:col-span-2">
@@ -1224,10 +1375,17 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                       <span>
                         Permissões: administradores e bibliotecários ({parsedBackup.metadata.recordCounts.permissions || 0}){' '}
                         <em className="text-amber-800 not-italic font-semibold">
-                          Desmarcado por padrão: concede acesso de volta a quem constava no backup.
+                          Desmarcado por padrão (marque em banco novo/desastre): concede acesso de volta a quem constava no backup.
                         </em>
                       </span>
                     </label>
+                  </div>
+
+                  <div className="p-2.5 rounded-lg bg-slate-100 border border-slate-200 text-[11px] text-slate-600 flex items-start gap-2">
+                    <Info className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Nota de desastre (Firebase Auth):</strong> senhas de login ficam protegidas no Firebase Authentication e não entram no JSON. Ao subir em um projeto Firebase novo, os usuários voltam a acessar criando/redefinindo a senha com o mesmo e-mail.
+                    </span>
                   </div>
                 </div>
 
@@ -1459,8 +1617,21 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                     {historyList.map((item) => (
                       <tr key={item.id} className="hover:bg-slate-50/80">
                         <td className="py-3 font-semibold text-slate-800 flex items-center gap-2">
-                          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                          <CheckCircle2
+                            className={`w-4 h-4 shrink-0 ${
+                              item.escopo === 'parcial' ? 'text-amber-500' : 'text-emerald-600'
+                            }`}
+                          />
                           <span>{item.dateStr}</span>
+                          {item.escopo === 'parcial' ? (
+                            <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-bold">
+                              Parcial
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                              Completo
+                            </span>
+                          )}
                         </td>
                         <td className="py-3 text-slate-600 font-mono text-[11px]">{item.filename}</td>
                         <td className="py-3 text-slate-700 font-semibold">{item.totalRecords} itens</td>
