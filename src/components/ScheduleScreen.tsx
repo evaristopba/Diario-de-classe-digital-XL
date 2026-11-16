@@ -48,6 +48,14 @@ import { formatFriendlyError } from '../lib/errorHandler';
 import { definirAula, removerAula, trocarAulas } from '../lib/gradeHoraria';
 import { exportToExcelJS, ExcelColumnDef } from '../lib/excelExport';
 import {
+  isSpecialistTeacherDocente,
+  collectTeacherAliasKeys,
+  isSlotEspecialistaEfetivo,
+  resolveRegenteForClass,
+  intervalosSeSobrepoem,
+  RegenteResolvido
+} from '../lib/regenteHA';
+import {
   Calendar,
   Clock,
   Printer,
@@ -106,6 +114,10 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
   const [classes, setClasses] = useState<{ id: string; val: ClassRoom }[]>([]);
   const [teachers, setTeachers] = useState<{ id: string; val: Teacher }[]>([]);
   const [subjects, setSubjects] = useState<SubjectItem[]>([]);
+  const [atribuicoes, setAtribuicoes] = useState<Record<string, Record<string, boolean>>>({});
+  const [adminIds, setAdminIds] = useState<Record<string, boolean>>({});
+  const [editingRegenteTurma, setEditingRegenteTurma] = useState(false);
+  const [savingRegenteTurma, setSavingRegenteTurma] = useState(false);
 
   // Filtros e seleção
   const [selectedSchoolId, setSelectedSchoolId] = useState<string>('all');
@@ -156,13 +168,15 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
   const loadAllData = async () => {
     setLoading(true);
     try {
-      const [schoolsSnap, classesSnap, teachersSnap, subjectsSnap, sinoSnap, haSnap] = await Promise.all([
+      const [schoolsSnap, classesSnap, teachersSnap, subjectsSnap, sinoSnap, haSnap, atribsSnap, adminsSnap] = await Promise.all([
         get(ref(rtdb, 'diario-classe/escolas')),
         get(ref(rtdb, 'diario-classe/turmas')),
         get(ref(rtdb, 'diario-classe/professores')),
         get(ref(rtdb, 'diario-classe/disciplinas')),
         get(ref(rtdb, 'diario-classe/config/sino')).catch(() => null),
-        get(ref(rtdb, 'diario-classe/config/horaAtividade')).catch(() => null)
+        get(ref(rtdb, 'diario-classe/config/horaAtividade')).catch(() => null),
+        get(ref(rtdb, 'diario-classe/atribuicoes')).catch(() => null),
+        get(ref(rtdb, 'diario-classe/admins')).catch(() => null)
       ]);
 
       const rawSino = sinoSnap?.exists() ? (sinoSnap.val() as SinoConfig) : undefined;
@@ -171,6 +185,8 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
 
       const rawHA = (haSnap?.exists() ? haSnap.val() : {}) as Record<string, Record<string, HoraAtividade>>;
       setHaPorProfessor(rawHA);
+      setAtribuicoes(atribsSnap?.exists() ? (atribsSnap.val() as Record<string, Record<string, boolean>>) : {});
+      setAdminIds(adminsSnap?.exists() ? (adminsSnap.val() as Record<string, boolean>) : {});
 
       const loadedSchools = (schoolsSnap.exists() ? schoolsSnap.val() : {}) as Record<string, School>;
       setSchools(loadedSchools);
@@ -300,35 +316,13 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
     }
   }, [selectedClassId, selectedClass?.intervaloGrupoPorDia]);
 
-  // Identifica se um docente atua como especialista com base nas disciplinas cadastradas no banco
+  useEffect(() => {
+    setEditingRegenteTurma(false);
+  }, [selectedClassId]);
+
+  // Identifica se um docente atua como especialista (unificando critério com a Sugestão de Especialistas)
   const isSpecialistTeacher = (teacherVal?: Teacher | null): boolean => {
-    if (!teacherVal?.subject) return false;
-    const subStr = teacherVal.subject.trim().toLowerCase();
-    // Docentes regentes polivalentes/gerais NÃO são especialistas de grade diversificada:
-    if (
-      subStr.includes('polivalente') ||
-      subStr.includes('regente') ||
-      subStr.includes('geral') ||
-      subStr.includes('pedagog') ||
-      subStr.includes('classe')
-    ) {
-      return false;
-    }
-    // Gestão de biblioteca / sala de leitura é suporte/apoio extraclasse:
-    if (subStr.includes('biblioteca') || subStr.includes('leitura')) {
-      return false;
-    }
-    // Se a matéria coincidir com disciplina da base diversificada cadastrada no banco:
-    const matched = subjects.find(
-      (s) =>
-        (s.name || '').trim().toLowerCase() === subStr ||
-        (s.id || '').trim().toLowerCase() === subStr ||
-        subStr.includes((s.name || '').trim().toLowerCase()) ||
-        (s.name || '').trim().toLowerCase().includes(subStr)
-    );
-    if (matched) return matched.category === 'diversificada';
-    // Se tem matéria informada que não é regente polivalente geral:
-    return true;
+    return isSpecialistTeacherDocente(teacherVal, subjects);
   };
 
   // Professores especialistas da escola
@@ -336,11 +330,80 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
     return teachers.filter((t) => isSpecialistTeacher(t.val));
   }, [teachers, subjects]);
 
+  // Regente resolvido de cada turma (explícito em `turma.teacherId` ou fallback via `atribuicoes`)
+  const regenteByClassId = useMemo(() => {
+    const map: Record<string, RegenteResolvido> = {};
+    classes.forEach((c) => {
+      map[c.id] = resolveRegenteForClass({
+        classId: c.id,
+        classVal: c.val,
+        teachers,
+        atribuicoes,
+        subjects,
+        adminIds
+      });
+    });
+    return map;
+  }, [classes, teachers, atribuicoes, subjects, adminIds]);
+
+  const regenteResolvidoSelected = useMemo(() => {
+    if (!selectedClassId) return null;
+    return regenteByClassId[selectedClassId] || null;
+  }, [regenteByClassId, selectedClassId]);
+
   // Professor regente da turma atual (se houver)
   const regenteTeacher = useMemo(() => {
-    if (!selectedClass?.teacherId) return null;
-    return teachers.find((t) => t.id === selectedClass.teacherId)?.val || null;
-  }, [selectedClass, teachers]);
+    return regenteResolvidoSelected?.teacher?.val || null;
+  }, [regenteResolvidoSelected]);
+
+  // Salvar/alterar Professor Regente Titular da turma (apenas Admin)
+  const handleUpdateRegenteTurma = async (classId: string, newTeacherId: string) => {
+    if (!canEditClass || !classId) return;
+    setSavingRegenteTurma(true);
+    try {
+      const updates: Record<string, any> = {
+        [`diario-classe/turmas/${classId}/teacherId`]: newTeacherId || null,
+        [`diario-classe/turmas/${classId}/updatedAt`]: Date.now()
+      };
+      if (newTeacherId) {
+        updates[`diario-classe/atribuicoes/${newTeacherId}/${classId}`] = true;
+        const profObj = teachers.find((t) => t.id === newTeacherId);
+        if (profObj?.val.authUid && profObj.val.authUid !== newTeacherId) {
+          updates[`diario-classe/atribuicoes/${profObj.val.authUid}/${classId}`] = true;
+        }
+      }
+      await update(ref(rtdb), updates);
+      setClasses((prev) =>
+        prev.map((c) =>
+          c.id === classId
+            ? { ...c, val: { ...c.val, teacherId: newTeacherId || undefined } }
+            : c
+        )
+      );
+      if (newTeacherId) {
+        setAtribuicoes((prev) => {
+          const next = { ...prev };
+          next[newTeacherId] = { ...(next[newTeacherId] || {}), [classId]: true };
+          const profObj = teachers.find((t) => t.id === newTeacherId);
+          if (profObj?.val.authUid && profObj.val.authUid !== newTeacherId) {
+            next[profObj.val.authUid] = { ...(next[profObj.val.authUid] || {}), [classId]: true };
+          }
+          return next;
+        });
+      }
+      setEditingRegenteTurma(false);
+    } catch (err: any) {
+      setModal({
+        isOpen: true,
+        type: 'alert',
+        title: 'Erro ao Definir Regente',
+        message: formatFriendlyError(err, 'Não foi possível atualizar o professor regente da turma.'),
+        icon: '❌'
+      });
+    } finally {
+      setSavingRegenteTurma(false);
+    }
+  };
 
   // Checa se um professor tem folga / dia livre no dia informado
   const checkTeacherAvailability = (
@@ -369,28 +432,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
 
   // Coleta chaves-espelho de um docente (id, authUid e cadastros com mesmo e-mail)
   const getTeacherAliasKeys = (teacherId: string): Set<string> => {
-    const keys = new Set<string>();
-    if (!teacherId) return keys;
-    keys.add(teacherId);
-    const base = teachers.find((t) => t.id === teacherId || t.val.authUid === teacherId);
-    if (!base) return keys;
-    keys.add(base.id);
-    if (base.val.authUid) keys.add(base.val.authUid);
-    const bMail = (base.val.email || '').trim().toLowerCase();
-    const bAuthMail = ((base.val as any).authEmail || '').trim().toLowerCase();
-    teachers.forEach((other) => {
-      const oMail = (other.val.email || '').trim().toLowerCase();
-      const oAuthMail = ((other.val as any).authEmail || '').trim().toLowerCase();
-      const sameId = other.id === base.id || other.id === base.val.authUid || other.val.authUid === base.id;
-      const sameMail =
-        (bMail && (oMail === bMail || oAuthMail === bMail)) ||
-        (bAuthMail && (oMail === bAuthMail || oAuthMail === bAuthMail));
-      if (sameId || sameMail) {
-        keys.add(other.id);
-        if (other.val.authUid) keys.add(other.val.authUid);
-      }
-    });
-    return keys;
+    return collectTeacherAliasKeys(teacherId, teachers);
   };
 
   // Checa se um professor já está ocupado em outra turma no mesmo dia com sobreposição ou deslocamento < 15 min
@@ -512,11 +554,14 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
       const subObj = subjects.find((s) => s.id === slotSubjectId);
       const subNome = subObj ? subObj.name : slotSubjectId;
       const subSigla = subObj?.shortName || subNome.substring(0, 4).toUpperCase();
-      const isEspecialista = subObj?.category === 'diversificada';
+      const selectedSlotTeacher = slotTeacherId
+        ? teachers.find((t) => t.id === slotTeacherId)?.val
+        : undefined;
+      const isEspecialista =
+        subObj?.category === 'diversificada' ||
+        (subObj?.category !== 'regente' && isSpecialistTeacher(selectedSlotTeacher));
 
-      const tNome = slotTeacherId
-        ? teachers.find((t) => t.id === slotTeacherId)?.val.name || ''
-        : '';
+      const tNome = selectedSlotTeacher?.name || '';
 
       const newSlot: HorarioSlot = {
         disciplinaId: slotSubjectId,
@@ -798,7 +843,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
 
     Object.values(grade).forEach((slot: any) => {
       total++;
-      if (slot.isEspecialista) {
+      if (isSlotEspecialistaEfetivo(slot, teachers, subjects)) {
         especialista++;
         porMateria[slot.disciplinaNome] = (porMateria[slot.disciplinaNome] || 0) + 1;
       } else {
@@ -807,7 +852,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
     });
 
     return { total, regente, especialista, porMateria };
-  }, [selectedClass]);
+  }, [selectedClass, teachers, subjects]);
 
   // Especialista selecionado para visão do professor
   const activeSpecialist = useMemo(() => {
@@ -1126,9 +1171,18 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
       const teacherId = t.id;
       const teacherVal = t.val;
       const isSpec = isSpecialistTeacher(teacherVal);
+      const aliasKeys = collectTeacherAliasKeys(teacherId, teachers);
 
-      // Turmas onde este professor é o regente
-      const regenteClasses = classes.filter((c) => c.val.teacherId === teacherId);
+      const isTeacherMatch = (id?: string) => Boolean(id && aliasKeys.has(id));
+      const isClassRegenteForTeacher = (classId: string, classTeacherId?: string) => {
+        if (isTeacherMatch(classTeacherId)) return true;
+        const resolved = regenteByClassId[classId]?.teacher;
+        if (!resolved) return false;
+        return aliasKeys.has(resolved.id) || (resolved.val.authUid ? aliasKeys.has(resolved.val.authUid) : false);
+      };
+
+      // Turmas onde este professor é o regente (via teacherId explícito ou atribuição única)
+      const regenteClasses = classes.filter((c) => isClassRegenteForTeacher(c.id, c.val.teacherId));
       const classesAsRegente = regenteClasses.map((c) => ({
         id: c.id,
         name: `${c.val.year}º ${c.val.letter}`,
@@ -1170,11 +1224,25 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
         if (c.val.schoolId) schoolIdsSet.add(c.val.schoolId);
       });
 
-      // 1. Processa todas as turmas do sistema
+      // 1A. Coleta primeiro as aulas diretas com alunos para evitar gerar H.A. se o docente estiver em outra sala no mesmo horário
+      const candidateRegenteHASlots: {
+        dia: DiaSemana;
+        diaNome: string;
+        ordem: number;
+        classId: string;
+        className: string;
+        schoolName: string;
+        especialistaNome: string;
+        disciplinaNome: string;
+        horarioInicio: string;
+        horarioFim: string;
+        origem: string;
+      }[] = [];
+
       classes.forEach((c) => {
         const cGrade = c.val.gradeHoraria;
         if (!cGrade) return;
-        const isRegenteOfClass = c.val.teacherId === teacherId;
+        const isRegenteOfClass = isClassRegenteForTeacher(c.id, c.val.teacherId);
         const schoolName = schools[c.val.schoolId]?.name || c.val.schoolName || 'Escola';
 
         for (let dia = 1; dia <= 5; dia++) {
@@ -1195,14 +1263,10 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
             const defaultTime = bell.aulas.find((b) => b.ordem === ordem);
             const horarioInicio = slot.horarioCustomInicio || defaultTime?.inicio || '';
             const horarioFim = slot.horarioCustomFim || defaultTime?.fim || '';
+            const isSlotEsp = isSlotEspecialistaEfetivo(slot, teachers, subjects);
 
-            // REGRA PEDAGÓGICA:
-            // Apenas o professor REGENTE POLIVALENTE (!isSpec) tem sua Hora-Atividade (H.A.) vinculada
-            // automaticamente quando um especialista leciona na sua sala.
-            // Para professores ESPECIALISTAS (isSpec), as H.A. NÃO são automáticas: elas são lançadas
-            // manualmente pela coordenação na Agenda do Especialista ou no painel de H.A.
-            if (!isSpec && isRegenteOfClass && slot.isEspecialista) {
-              haSlots.push({
+            if (!isSpec && isRegenteOfClass && isSlotEsp) {
+              candidateRegenteHASlots.push({
                 dia: dia as DiaSemana,
                 diaNome,
                 ordem,
@@ -1218,9 +1282,9 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
             }
 
             // Aulas com Alunos (docência direta em sala):
-            // - Especialista: qualquer aula alocada para ele (slot.teacherId === teacherId)
-            // - Regente: aulas alocadas para ele ou aulas regulares na sua turma regente sem especialista
-            if (slot.teacherId === teacherId || (isRegenteOfClass && !slot.isEspecialista)) {
+            // - Especialista ou docente alocado diretamente: slot.teacherId pertence às chaves do professor
+            // - Regente: aulas regulares na sua turma regente sem especialista
+            if (isTeacherMatch(slot.teacherId) || (isRegenteOfClass && !isSlotEsp)) {
               if (c.val.schoolId) schoolIdsSet.add(c.val.schoolId);
               studentSlots.push({
                 dia: dia as DiaSemana,
@@ -1235,6 +1299,19 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
               });
             }
           }
+        }
+      });
+
+      // 1B. Efetiva as H.A. naturais do regente apenas nos horários em que ele não está dando aula em outra turma
+      candidateRegenteHASlots.forEach((cand) => {
+        const temChoqueAula = studentSlots.some(
+          (st) =>
+            st.dia === cand.dia &&
+            st.classId !== cand.classId &&
+            intervalosSeSobrepoem(cand.horarioInicio, cand.horarioFim, st.horarioInicio, st.horarioFim)
+        );
+        if (!temChoqueAula) {
+          haSlots.push(cand);
         }
       });
 
@@ -1272,7 +1349,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
             ? TIPOS_HORA_ATIVIDADE.find((tp) => tp.id === haEstruturada.tipo)
             : undefined;
 
-          if (!haSlots.some((s) => s.dia === d && s.ordem === o)) {
+          if (!haSlots.some((s) => s.dia === d && s.ordem === o && s.horarioInicio === (haEstruturada?.inicio || defaultTime?.inicio || ''))) {
             haSlots.push({
               dia: d,
               diaNome,
@@ -1354,7 +1431,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
         situacao
       };
     });
-  }, [teachers, classes, schools, subjects, haPorProfessor, sinoConfig]);
+  }, [teachers, classes, schools, subjects, haPorProfessor, sinoConfig, regenteByClassId]);
 
   // Informações de H.A. consolidadas do especialista atualmente selecionado
   const activeSpecialistHAInfo = useMemo(() => {
@@ -1785,14 +1862,75 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
           {/* Resumo da Turma e Carga Horária */}
           {selectedClass && (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="bg-white p-3.5 rounded-xl border border-slate-200 flex items-center justify-between">
-                <div>
-                  <span className="text-[10px] font-bold uppercase text-slate-400">Professor(a) Regente</span>
-                  <p className="text-sm font-bold text-slate-800 truncate max-w-[200px]">
-                    {regenteTeacher?.name || 'Não atribuído'}
-                  </p>
+              <div className="bg-white p-3.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[10px] font-bold uppercase text-slate-400">Professor(a) Regente</span>
+                    {regenteResolvidoSelected?.source === 'atribuicao_unica' && (
+                      <span
+                        className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200"
+                        title="Identificado automaticamente pelas atribuições da turma"
+                      >
+                        Via Atribuições
+                      </span>
+                    )}
+                    {regenteResolvidoSelected?.source === 'multiplos_atribuidos' && (
+                      <span
+                        className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-amber-50 text-amber-800 border border-amber-200"
+                        title="Há mais de um docente atribuído a esta turma; selecione o regente titular"
+                      >
+                        {regenteResolvidoSelected.candidatosAtribuidos.length} atribuídos
+                      </span>
+                    )}
+                  </div>
+                  {editingRegenteTurma && canEditClass ? (
+                    <div className="flex items-center gap-1.5 mt-1">
+                      <select
+                        value={selectedClass.teacherId || regenteResolvidoSelected?.teacher?.id || ''}
+                        disabled={savingRegenteTurma}
+                        onChange={(e) => handleUpdateRegenteTurma(selectedClassId, e.target.value)}
+                        className="w-full max-w-[210px] text-xs font-semibold bg-slate-50 border border-indigo-300 rounded-lg px-2 py-1 text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="">Não atribuído (automático)</option>
+                        {teachers
+                          .filter((t) => !isSpecialistTeacher(t.val))
+                          .map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.val.name}
+                            </option>
+                          ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setEditingRegenteTurma(false)}
+                        className="p-1 text-slate-400 hover:text-slate-700 rounded cursor-pointer"
+                        title="Fechar seleção"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <p className="text-sm font-bold text-slate-800 truncate max-w-[190px]">
+                        {regenteTeacher?.name ||
+                          (regenteResolvidoSelected?.source === 'multiplos_atribuidos'
+                            ? 'Definir regente titular'
+                            : 'Não atribuído')}
+                      </p>
+                      {canEditClass && (
+                        <button
+                          type="button"
+                          onClick={() => setEditingRegenteTurma(true)}
+                          className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 hover:underline cursor-pointer shrink-0 print:hidden"
+                          title="Definir ou alterar o(a) professor(a) regente titular desta turma"
+                        >
+                          {regenteTeacher ? 'Alterar' : 'Definir'}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg">
+                <div className="p-2 bg-emerald-50 text-emerald-600 rounded-lg shrink-0">
                   <UserCheck className="w-5 h-5" />
                 </div>
               </div>
@@ -1921,10 +2059,12 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                   canEditClass ? 'cursor-pointer hover:bg-indigo-50/40' : ''
                                 }`}
                               >
-                                {slot ? (
+                                {slot ? (() => {
+                                  const isSlotEsp = isSlotEspecialistaEfetivo(slot, teachers, subjects);
+                                  return (
                                   <div
                                     className={`p-2.5 rounded-xl border text-xs relative group ${
-                                      slot.isEspecialista
+                                      isSlotEsp
                                         ? 'bg-indigo-50/80 border-indigo-200 text-indigo-900 shadow-2xs'
                                         : 'bg-emerald-50/60 border-emerald-200 text-emerald-900'
                                     }`}
@@ -1933,7 +2073,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                       <span className="font-extrabold text-[11px] uppercase tracking-wide">
                                         {slot.disciplinaNome}
                                       </span>
-                                      {slot.isEspecialista && (
+                                      {isSlotEsp && (
                                         <div className="flex items-center gap-1 flex-wrap justify-end">
                                           <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-indigo-600 text-white">
                                             Especialista
@@ -2007,7 +2147,8 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                       </div>
                                     )}
                                   </div>
-                                ) : (
+                                  );
+                                })() : (
                                   <div className="h-16 rounded-xl border border-dashed border-slate-200 flex items-center justify-center text-slate-400 text-[11px] hover:border-indigo-300">
                                     {canEditClass ? '+ Definir' : 'Livre'}
                                   </div>
@@ -2107,10 +2248,12 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                   canEditClass ? 'cursor-pointer hover:bg-indigo-50/40' : ''
                                 }`}
                               >
-                                {slot ? (
+                                {slot ? (() => {
+                                  const isSlotEsp = isSlotEspecialistaEfetivo(slot, teachers, subjects);
+                                  return (
                                   <div
                                     className={`p-2.5 rounded-xl border text-xs relative group ${
-                                      slot.isEspecialista
+                                      isSlotEsp
                                         ? 'bg-indigo-50/80 border-indigo-200 text-indigo-900 shadow-2xs'
                                         : 'bg-emerald-50/60 border-emerald-200 text-emerald-900'
                                     }`}
@@ -2119,7 +2262,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                       <span className="font-extrabold text-[11px] uppercase tracking-wide">
                                         {slot.disciplinaNome}
                                       </span>
-                                      {slot.isEspecialista && (
+                                      {isSlotEsp && (
                                         <div className="flex items-center gap-1 flex-wrap justify-end">
                                           <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-indigo-600 text-white">
                                             Especialista
@@ -2193,7 +2336,8 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                       </div>
                                     )}
                                   </div>
-                                ) : (
+                                  );
+                                })() : (
                                   <div className="h-16 rounded-xl border border-dashed border-slate-200 flex items-center justify-center text-slate-400 text-[11px] hover:border-indigo-300">
                                     {canEditClass ? '+ Definir' : 'Livre'}
                                   </div>
@@ -3967,8 +4111,9 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                         );
                         if (match) {
                           setSlotTeacherId(match.id);
-                        } else if (subSelected.category === 'regente' && selectedClass.teacherId) {
-                          setSlotTeacherId(selectedClass.teacherId);
+                        } else if (subSelected.category === 'regente') {
+                          const regId = selectedClass.teacherId || regenteResolvidoSelected?.teacher?.id;
+                          if (regId) setSlotTeacherId(regId);
                         }
                       }
                     }}

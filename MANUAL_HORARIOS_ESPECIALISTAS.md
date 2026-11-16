@@ -39,7 +39,7 @@ Auxiliar a coordenação pedagógica a montar, **por unidade escolar** e de form
    - O algoritmo garante **0 aulas** no dia de folga do docente, aproveitando esse dia para encaixar os demais especialistas nas turmas.
 
 6. **Separação por Turno, Horário do Sino Configurável e Deslocamento entre Escolas (`3 aulas - intervalo - 2 aulas`)**:
-   - Os turnos **Matutino**, **Vespertino** e **Noturno** utilizam as faixas configuradas em **`⏰ Horário do Sino`** (padrão da rede ou personalizado por escola em `diario-classe/config/sino`), considerando automaticamente os intervalos específicos de `1º Ano`, `2º/3º Anos` e `4º/5º Anos`.
+   - Os turnos **Matutino**, **Vespertino** e **Noturno** utilizam os perfis flexíveis de aulas e intervalos configurados em **`⏰ Horário do Sino`** (padrão da rede ou horário próprio por escola em `diario-classe/config/sino`), com vínculo automático por série, ajuste manual por turma e variação opcional por dia da semana (`intervaloGrupoPorDia`).
    - Quando um especialista divide o mesmo turno entre duas escolas da rede (ex.: 3 aulas antes do recreio na Escola A e 2 aulas após o recreio na Escola B), a opção **Outras Escolas no Turno** bloqueia choques com aulas já oficializadas nas outras escolas e exige **pelo menos 15 minutos de intervalo** para troca de unidade no mesmo dia (permitindo a transição natural no recreio de 20+ min, mas evitando aulas coladas com 0 min entre escolas diferentes).
 
 ---
@@ -98,7 +98,7 @@ Na aba **Por Especialista**, após revisar e ajustar as aulas da escola, a coord
 - **Proteção Automática Contra Sobreposição**:
   - Não é possível marcar H.A. no dia de folga semanal nem sobre horários ocupados.
   - Se o coordenador arrastar ou encaixar do Swap uma aula para uma lacuna que já tinha H.A., a H.A. conflitante daquele horário é removida automaticamente.
-- **Integração com o Quadro Oficial**: ao clicar em **"Confirmar e Gravar no Quadro Oficial da Escola"**, além das grades das turmas selecionadas (`turmas/{id}/gradeHoraria`), as H.A. dos especialistas são gravadas tanto em `diario-classe/professores/{id}/haHorariosFixos` quanto em `diario-classe/config/horaAtividade/{id}`, ficando imediatamente visíveis na **Agenda** e no **Saldo de H.A.** do Quadro de Horários.
+- **Integração com o Quadro Oficial e H.A. do Regente**: ao clicar em **"Confirmar e Gravar no Quadro Oficial da Escola"**, além das grades das turmas selecionadas (`turmas/{id}/gradeHoraria`), as H.A. dos especialistas são gravadas tanto em `diario-classe/professores/{id}/haHorariosFixos` quanto em `diario-classe/config/horaAtividade/{id}`, ficando imediatamente visíveis na **Agenda** e no **Saldo de H.A.** do Quadro de Horários. Simultaneamente, cada aula de especialista oficializada assegura a **H.A. natural** do(a) professor(a) regente da turma (definido na turma ou identificado automaticamente pelas atribuições, desde que sem choque com outra sala no mesmo horário).
 
 ---
 
@@ -107,7 +107,7 @@ Na aba **Por Especialista**, após revisar e ajustar as aulas da escola, a coord
 Após gerar, ajustar aulas e preencher as H.A. nas lacunas, a coordenação dispõe de 3 abas de conferência:
 1. **Por Turma**: grade semanal da sala selecionada (agrupada por turno no seletor), com horários de sino configurados para a escola, faixa de **Intervalo**, selo diário de conformidade (`Seg: 2 esp ✅`), arrastar/soltar, permutar e envio para a **Área de Swap (`📥`)**.
 2. **Por Especialista**: grades semanais **separadas por turno** (`☀️ Manhã`, `🌤️ Tarde`, `🌙 Noite`), exibidas juntas de forma compacta na **mesma folha** (com filtro rápido `Todos na mesma folha` ou turno isolado), faixas de intervalo dinâmicas da escola, aulas já oficializadas em outras escolas sinalizadas, destaque visual para a **Folga Livre**, bloqueio de troca entre turnos ao arrastar, **troca cruzada entre turmas**, envio para a **Área de Swap (`📥`)** e inserção direta de **⭐ H.A.** nas lacunas livres.
-3. **Aplicar ao Quadro Oficial**: resumo unificado com checklist das turmas aprovadas e conferência das **H.A. configuradas por especialista** antes da gravação definitiva no Firebase Realtime Database.
+3. **Aplicar ao Quadro Oficial**: resumo unificado com checklist das turmas aprovadas (exibindo quantas **H.A. p/ Regente** cada turma garante e o regente vinculado) e conferência das **H.A. configuradas por especialista** antes da gravação definitiva no Firebase Realtime Database.
 
 Também estão disponíveis opções completas de **exportação e impressão espelhando a tela "Por Especialista"** (para entrega individual a cada docente):
 

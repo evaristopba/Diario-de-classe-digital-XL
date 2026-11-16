@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import {
   ClassRoom,
   School,
+  Teacher,
+  SubjectItem,
   ModalConfig,
   GRADE_DIAS_SEMANA,
   normalizarIntervaloGrupoPorDia,
@@ -29,7 +31,11 @@ import {
   perfilPorAno,
   resolverPerfilIdTurma
 } from '../lib/sino';
-import { Users, Plus, Edit2, Trash2, Download, Upload, X, UserPlus, Clock } from 'lucide-react';
+import {
+  isSpecialistTeacherDocente,
+  resolveRegenteForClass
+} from '../lib/regenteHA';
+import { Users, Plus, Edit2, Trash2, Download, Upload, X, UserPlus, Clock, UserCheck } from 'lucide-react';
 
 interface ClassesScreenProps {
   currentYear: string;
@@ -50,12 +56,17 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
   const [year, setYear] = useState('');
   const [shift, setShift] = useState('');
   const [letter, setLetter] = useState('');
+  const [teacherId, setTeacherId] = useState('');
   const [intervaloGrupo, setIntervaloGrupo] = useState<string>('');
   const [intervaloGrupoPorDia, setIntervaloGrupoPorDia] = useState<Partial<Record<1 | 2 | 3 | 4 | 5, GrupoSinoId>>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [sinoConfig, setSinoConfig] = useState<SinoConfig | undefined>(undefined);
+  const [teachers, setTeachers] = useState<{ id: string; val: Teacher }[]>([]);
+  const [subjects, setSubjects] = useState<SubjectItem[]>([]);
+  const [atribuicoes, setAtribuicoes] = useState<Record<string, Record<string, boolean>>>({});
+  const [adminIds, setAdminIds] = useState<Record<string, boolean>>({});
 
   const loadSchools = async () => {
     try {
@@ -103,6 +114,27 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
         definirSinoConfig(val);
       })
       .catch(() => {});
+    Promise.all([
+      get(ref(rtdb, 'diario-classe/professores')).catch(() => null),
+      get(ref(rtdb, 'diario-classe/disciplinas')).catch(() => null),
+      get(ref(rtdb, 'diario-classe/atribuicoes')).catch(() => null),
+      get(ref(rtdb, 'diario-classe/admins')).catch(() => null)
+    ]).then(([profsSnap, subsSnap, atribsSnap, adminsSnap]) => {
+      if (profsSnap?.exists()) {
+        const raw = profsSnap.val() || {};
+        const list = Object.keys(raw)
+          .filter((id) => raw[id] && raw[id].status !== 'inactive')
+          .map((id) => ({ id, val: raw[id] as Teacher }))
+          .sort((a, b) => (a.val.name || '').localeCompare(b.val.name || ''));
+        setTeachers(list);
+      }
+      if (subsSnap?.exists()) {
+        const raw = subsSnap.val() || {};
+        setSubjects(Object.keys(raw).map((k) => ({ id: k, ...raw[k] })));
+      }
+      setAtribuicoes(atribsSnap?.exists() ? (atribsSnap.val() as Record<string, Record<string, boolean>>) : {});
+      setAdminIds(adminsSnap?.exists() ? (adminsSnap.val() as Record<string, boolean>) : {});
+    });
   }, [currentYear]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -148,6 +180,12 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
       anoLetivo: currentYear
     };
 
+    if (teacherId) {
+      data.teacherId = teacherId;
+    } else if (editingId) {
+      data.teacherId = null;
+    }
+
     if (suportaSino && Object.keys(cleanPorDia).length > 0) {
       data.intervaloGrupoPorDia = cleanPorDia;
     } else if (editingId) {
@@ -155,9 +193,23 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     }
 
     try {
+      let savedClassId = editingId;
       if (editingId) {
         data.updatedAt = Date.now();
-        await update(ref(rtdb, `diario-classe/turmas/${editingId}`), data);
+        const updates: Record<string, any> = {};
+        Object.keys(data).forEach((k) => {
+          if (data[k] !== undefined) {
+            updates[`diario-classe/turmas/${editingId}/${k}`] = data[k];
+          }
+        });
+        if (teacherId && isAdmin) {
+          updates[`diario-classe/atribuicoes/${teacherId}/${editingId}`] = true;
+          const profObj = teachers.find((t) => t.id === teacherId);
+          if (profObj?.val.authUid && profObj.val.authUid !== teacherId) {
+            updates[`diario-classe/atribuicoes/${profObj.val.authUid}/${editingId}`] = true;
+          }
+        }
+        await update(ref(rtdb), updates);
         setModal({
           isOpen: true,
           type: 'alert',
@@ -168,12 +220,20 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
       } else {
         const newRef = push(ref(rtdb, 'diario-classe/turmas'));
         const newId = newRef.key;
+        savedClassId = newId;
         data.createdAt = Date.now();
         data.criadoPor = uid;
 
         const updates: Record<string, any> = {};
         updates[`diario-classe/turmas/${newId}`] = data;
         updates[`diario-classe/atribuicoes/${uid}/${newId}`] = true;
+        if (teacherId && isAdmin) {
+          updates[`diario-classe/atribuicoes/${teacherId}/${newId}`] = true;
+          const profObj = teachers.find((t) => t.id === teacherId);
+          if (profObj?.val.authUid && profObj.val.authUid !== teacherId) {
+            updates[`diario-classe/atribuicoes/${profObj.val.authUid}/${newId}`] = true;
+          }
+        }
 
         await update(ref(rtdb), updates);
         setModal({
@@ -185,9 +245,18 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
         });
       }
 
+      if (teacherId && isAdmin && savedClassId) {
+        const targetCid = savedClassId;
+        setAtribuicoes((prev) => ({
+          ...prev,
+          [teacherId]: { ...(prev[teacherId] || {}), [targetCid]: true }
+        }));
+      }
+
       setYear('');
       setShift('');
       setLetter('');
+      setTeacherId('');
       setIntervaloGrupo('');
       setIntervaloGrupoPorDia({});
       setEditingId(null);
@@ -208,6 +277,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     setYear(item.val.year);
     setShift(item.val.shift);
     setLetter(item.val.letter);
+    setTeacherId(item.val.teacherId || '');
     const resolvedPid = resolverPerfilIdTurma(sinoConfig, {
       ...item.val,
       intervaloGrupoPorDia: undefined
@@ -222,6 +292,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     setYear('');
     setShift('');
     setLetter('');
+    setTeacherId('');
     setIntervaloGrupo('');
     setIntervaloGrupoPorDia({});
     setEditingId(null);
@@ -491,6 +562,29 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
               />
             </div>
 
+            {isAdmin && (
+              <div className="sm:col-span-2 md:col-span-3">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Professor(a) Regente Titular (opcional — assegura a H.A. automática)
+                </label>
+                <select
+                  id="class-regente-select"
+                  value={teacherId}
+                  onChange={(e) => setTeacherId(e.target.value)}
+                  className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+                >
+                  <option value="">Detectar automaticamente pelas atribuições</option>
+                  {teachers
+                    .filter((t) => !isSpecialistTeacherDocente(t.val, subjects))
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.val.name}{t.val.subject ? ` (${t.val.subject})` : ''}
+                      </option>
+                    ))}
+                </select>
+              </div>
+            )}
+
             {(shift === 'Manhã' || shift === 'Tarde') && (() => {
               const turnoForm: 'manha' | 'tarde' = shift === 'Tarde' ? 'tarde' : 'manha';
               const perfisForm = perfisDoTurno(sinoConfig, schoolId || undefined, turnoForm);
@@ -622,6 +716,14 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
           <div className="space-y-3">
             {classes.map(({ id, val }) => {
               const alunosCount = val.alunos ? Object.keys(val.alunos).length : 0;
+              const regenteRes = resolveRegenteForClass({
+                classId: id,
+                classVal: val,
+                teachers,
+                atribuicoes,
+                subjects,
+                adminIds
+              });
               return (
                 <div
                   key={id}
@@ -635,6 +737,19 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                       <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-700">
                         {alunosCount} {alunosCount === 1 ? 'aluno' : 'alunos'}
                       </span>
+                      {regenteRes.teacher && (
+                        <span
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800"
+                          title={
+                            regenteRes.source === 'explicit'
+                              ? 'Regente titular definido na turma'
+                              : 'Regente identificado automaticamente pelas atribuições'
+                          }
+                        >
+                          <UserCheck className="w-3 h-3" />
+                          Regente: {regenteRes.teacher.val.name}
+                        </span>
+                      )}
                       {(val.shift === 'Manhã' || val.shift === 'Tarde') && (() => {
                         const turnoVal: 'manha' | 'tarde' = val.shift === 'Tarde' ? 'tarde' : 'manha';
                         const perfisTurma = perfisDoTurno(sinoConfig, val.schoolId, turnoVal);

@@ -41,6 +41,7 @@ import {
   getCurrentAuthUid
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
+import { resolveRegenteForClass, contarHARegenteNaGrade } from '../lib/regenteHA';
 import {
   gerarSugestaoHorariosEspecialistasAsync,
   exportarSugestaoHorariosExcel,
@@ -5280,6 +5281,15 @@ export const SpecialistScheduleSuggestion: React.FC<SpecialistScheduleSuggestion
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                     {turmasComEspecialistasRegulares.map((c) => {
                       const isChecked = !!selectedClassesToApply[c.id];
+                      const gradeSug = resultado?.gradesPorTurma?.[c.id];
+                      const haRegenteQtd = contarHARegenteNaGrade(gradeSug, teachers, subjects);
+                      const regRes = resolveRegenteForClass({
+                        classId: c.id,
+                        classVal: c.val,
+                        teachers,
+                        atribuicoes: assignments,
+                        subjects
+                      });
 
                       return (
                         <div
@@ -5298,11 +5308,21 @@ export const SpecialistScheduleSuggestion: React.FC<SpecialistScheduleSuggestion
                               <Square className="w-4 h-4 text-slate-400" />
                             )}
                           </div>
-                          <div className="flex-1 min-w-0">
+                          <div className="flex-1 min-w-0 space-y-1">
                             <div className="font-bold text-sm">
                               {c.val.year}º {c.val.letter} — {c.val.shift}
                             </div>
                             <div className="text-xs text-slate-500 truncate">{c.val.schoolName}</div>
+                            <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-200">
+                                ⭐ {haRegenteQtd} H.A. p/ Regente
+                              </span>
+                              {regRes.teacher && (
+                                <span className="text-[10px] font-semibold text-emerald-700 truncate">
+                                  ({regRes.teacher.val.name})
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       );
