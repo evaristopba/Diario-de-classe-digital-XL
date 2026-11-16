@@ -5,6 +5,7 @@ import {
   ModalConfig,
   GRADE_DIAS_SEMANA,
   normalizarIntervaloGrupoPorDia,
+  getTurnoCanonical,
   GrupoSinoId
 } from '../types';
 import {
@@ -20,6 +21,14 @@ import {
 } from '../lib/firebase';
 import { formatFriendlyError } from '../lib/errorHandler';
 import { checkClassDeleteIntegrity } from '../lib/referentialIntegrity';
+import {
+  SinoConfig,
+  definirSinoConfig,
+  duracaoAulaMinutos,
+  perfisDoTurno,
+  perfilPorAno,
+  resolverPerfilIdTurma
+} from '../lib/sino';
 import { Users, Plus, Edit2, Trash2, Download, Upload, X, UserPlus, Clock } from 'lucide-react';
 
 interface ClassesScreenProps {
@@ -41,11 +50,12 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
   const [year, setYear] = useState('');
   const [shift, setShift] = useState('');
   const [letter, setLetter] = useState('');
-  const [intervaloGrupo, setIntervaloGrupo] = useState<'1' | 'A' | 'B'>('A');
+  const [intervaloGrupo, setIntervaloGrupo] = useState<string>('');
   const [intervaloGrupoPorDia, setIntervaloGrupoPorDia] = useState<Partial<Record<1 | 2 | 3 | 4 | 5, GrupoSinoId>>>({});
   const [editingId, setEditingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [sinoConfig, setSinoConfig] = useState<SinoConfig | undefined>(undefined);
 
   const loadSchools = async () => {
     try {
@@ -86,6 +96,13 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     loadSchools();
     loadClasses();
     verificarIsAdmin().then((admin) => setIsAdmin(admin));
+    get(ref(rtdb, 'diario-classe/config/sino'))
+      .then((snap) => {
+        const val = snap.exists() ? (snap.val() as SinoConfig) : undefined;
+        setSinoConfig(val);
+        definirSinoConfig(val);
+      })
+      .catch(() => {});
   }, [currentYear]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -105,8 +122,16 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     const uid = getCurrentAuthUid();
     if (!uid) return;
 
+    const turnoCanon = getTurnoCanonical(shift);
+    const suportaSino = turnoCanon === 'manha' || turnoCanon === 'tarde';
+    const perfisForm = suportaSino ? perfisDoTurno(sinoConfig, schoolId || undefined, turnoCanon) : [];
+    const perfilSugeridoId = suportaSino ? perfilPorAno(perfisForm, year).id : undefined;
+    const grupoParaSalvar = suportaSino
+      ? (perfisForm.some((p) => p.id === intervaloGrupo) ? intervaloGrupo : perfilSugeridoId)
+      : undefined;
+
     const cleanPorDia: Record<string, GrupoSinoId> = {};
-    if (shift === 'Manhã') {
+    if (suportaSino) {
       ([1, 2, 3, 4, 5] as const).forEach((d) => {
         const g = intervaloGrupoPorDia[d];
         if (g) cleanPorDia[`d${d}`] = g;
@@ -119,11 +144,11 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
       year,
       shift,
       letter: letter.trim().toUpperCase(),
-      intervaloGrupo: shift === 'Manhã' ? (intervaloGrupo || (year === '1' ? '1' : year === '4' || year === '5' ? 'B' : 'A')) : undefined,
+      intervaloGrupo: suportaSino && (turnoCanon === 'manha' || perfisForm.length > 1) ? grupoParaSalvar : undefined,
       anoLetivo: currentYear
     };
 
-    if (shift === 'Manhã' && Object.keys(cleanPorDia).length > 0) {
+    if (suportaSino && Object.keys(cleanPorDia).length > 0) {
       data.intervaloGrupoPorDia = cleanPorDia;
     } else if (editingId) {
       data.intervaloGrupoPorDia = null;
@@ -163,7 +188,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
       setYear('');
       setShift('');
       setLetter('');
-      setIntervaloGrupo('A');
+      setIntervaloGrupo('');
       setIntervaloGrupoPorDia({});
       setEditingId(null);
       loadClasses();
@@ -183,9 +208,11 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     setYear(item.val.year);
     setShift(item.val.shift);
     setLetter(item.val.letter);
-    const rawG = item.val.intervaloGrupo || (item.val.year === '1' ? '1' : item.val.year === '4' || item.val.year === '5' ? 'B' : 'A');
-    const g = rawG === '1' || rawG === 'ano1' ? '1' : rawG === 'B' || rawG === 'ano45' ? 'B' : 'A';
-    setIntervaloGrupo(g);
+    const resolvedPid = resolverPerfilIdTurma(sinoConfig, {
+      ...item.val,
+      intervaloGrupoPorDia: undefined
+    });
+    setIntervaloGrupo(resolvedPid);
     setIntervaloGrupoPorDia(normalizarIntervaloGrupoPorDia(item.val.intervaloGrupoPorDia));
     setEditingId(item.id);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -195,7 +222,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
     setYear('');
     setShift('');
     setLetter('');
-    setIntervaloGrupo('A');
+    setIntervaloGrupo('');
     setIntervaloGrupoPorDia({});
     setEditingId(null);
   };
@@ -401,12 +428,10 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                 onChange={(e) => {
                   const val = e.target.value;
                   setYear(val);
-                  if (val === '1') {
-                    setIntervaloGrupo('1');
-                  } else if (val === '4' || val === '5') {
-                    setIntervaloGrupo('B');
-                  } else if (val) {
-                    setIntervaloGrupo('A');
+                  const turnoCanon = getTurnoCanonical(shift);
+                  if (val && (turnoCanon === 'manha' || turnoCanon === 'tarde')) {
+                    const ps = perfisDoTurno(sinoConfig, schoolId || undefined, turnoCanon);
+                    setIntervaloGrupo(perfilPorAno(ps, val).id);
                   }
                 }}
                 className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
@@ -428,7 +453,17 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
               <select
                 id="class-shift-select"
                 value={shift}
-                onChange={(e) => setShift(e.target.value)}
+                onChange={(e) => {
+                  const novoTurno = e.target.value;
+                  setShift(novoTurno);
+                  const turnoCanon = getTurnoCanonical(novoTurno);
+                  if (turnoCanon === 'manha' || turnoCanon === 'tarde') {
+                    const ps = perfisDoTurno(sinoConfig, schoolId || undefined, turnoCanon);
+                    setIntervaloGrupo(perfilPorAno(ps, year).id);
+                  } else {
+                    setIntervaloGrupo('');
+                  }
+                }}
                 className="w-full px-3.5 py-2 text-sm bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
                 required
               >
@@ -456,96 +491,107 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
               />
             </div>
 
-            {shift === 'Manhã' && (
+            {(shift === 'Manhã' || shift === 'Tarde') && (() => {
+              const turnoForm: 'manha' | 'tarde' = shift === 'Tarde' ? 'tarde' : 'manha';
+              const perfisForm = perfisDoTurno(sinoConfig, schoolId || undefined, turnoForm);
+              if (turnoForm === 'tarde' && perfisForm.length <= 1 && Object.keys(intervaloGrupoPorDia).length === 0) {
+                return null;
+              }
+              const durForm = duracaoAulaMinutos(sinoConfig, schoolId || undefined, turnoForm);
+              const selecionadoId = perfisForm.some((p) => p.id === intervaloGrupo)
+                ? intervaloGrupo
+                : perfilPorAno(perfisForm, year).id;
+              const perfilBase = perfisForm[0];
+              const refOutro = perfisForm[1] || perfisForm[0];
+              return (
               <div className="sm:col-span-2 md:col-span-4 bg-indigo-50/70 p-3.5 rounded-xl border border-indigo-100 space-y-3">
                 <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
                   <div>
-                    <span className="text-xs font-bold text-indigo-950 block">Padrão de Sino / Intervalo (Matutino)</span>
-                    <span className="text-[11px] text-indigo-700">Início às 07:00 • 50 min/aula • Padrão da turma (pode variar por dia abaixo)</span>
+                    <span className="text-xs font-bold text-indigo-950 block">
+                      Padrão de Sino / Intervalo ({turnoForm === 'tarde' ? 'Vespertino' : 'Matutino'})
+                    </span>
+                    <span className="text-[11px] text-indigo-700">
+                      Início às {perfilBase?.cfg.aulas['1'].inicio} • {durForm} min/aula • Padrão da turma (pode variar por dia abaixo)
+                    </span>
                   </div>
                   <div className="flex items-center gap-3 text-xs flex-wrap">
-                    <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
-                      <input
-                        type="radio"
-                        name="intervaloGrupo"
-                        value="1"
-                        checked={intervaloGrupo === '1'}
-                        onChange={() => setIntervaloGrupo('1')}
-                        className="text-emerald-600 focus:ring-emerald-500"
-                      />
-                      <span>1º Ano (Recreio 09:10 • 5ª 11:10)</span>
-                    </label>
-                    <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
-                      <input
-                        type="radio"
-                        name="intervaloGrupo"
-                        value="A"
-                        checked={intervaloGrupo === 'A'}
-                        onChange={() => setIntervaloGrupo('A')}
-                        className="text-sky-600 focus:ring-sky-500"
-                      />
-                      <span>2º/3º Anos (Recreio 09:30 • 5ª 10:40)</span>
-                    </label>
-                    <label className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
-                      <input
-                        type="radio"
-                        name="intervaloGrupo"
-                        value="B"
-                        checked={intervaloGrupo === 'B'}
-                        onChange={() => setIntervaloGrupo('B')}
-                        className="text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span>4º/5º Anos (Recreio 09:55 • 5ª 11:10)</span>
-                    </label>
+                    {perfisForm.map((p) => (
+                      <label key={p.id} className="inline-flex items-center gap-1.5 cursor-pointer font-medium text-slate-700">
+                        <input
+                          type="radio"
+                          name="intervaloGrupo"
+                          value={p.id}
+                          checked={selecionadoId === p.id}
+                          onChange={() => setIntervaloGrupo(p.id)}
+                          className="text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <span>{p.nome} (Recreio {p.cfg.intervalo.inicio} • 5ª {p.cfg.aulas['5'].inicio})</span>
+                      </label>
+                    ))}
                   </div>
                 </div>
 
-                <div className="pt-2.5 border-t border-indigo-200/70">
-                  <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-                    <span className="text-[11px] font-bold text-indigo-900">
-                      Sino específico por dia da semana (opcional — ex.: Terça com 5ª aula às 10:40):
-                    </span>
-                    {Object.keys(intervaloGrupoPorDia).length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setIntervaloGrupoPorDia({})}
-                        className="text-[11px] font-semibold text-indigo-700 hover:underline cursor-pointer"
-                      >
-                        Usar padrão em todos os dias
-                      </button>
-                    )}
+                {perfisForm.length > 1 && (
+                  <div className="pt-2.5 border-t border-indigo-200/70">
+                    <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+                      <span className="text-[11px] font-bold text-indigo-900">
+                        Sino específico por dia da semana (opcional — ex.: Terça com 5ª aula às {refOutro?.cfg.aulas['5'].inicio}):
+                      </span>
+                      {Object.keys(intervaloGrupoPorDia).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setIntervaloGrupoPorDia({})}
+                          className="text-[11px] font-semibold text-indigo-700 hover:underline cursor-pointer"
+                        >
+                          Usar padrão em todos os dias
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                      {GRADE_DIAS_SEMANA.map((d) => {
+                        const rawValDia = intervaloGrupoPorDia[d.id] || '';
+                        const valDia = rawValDia
+                          ? perfisForm.some((p) => p.id === rawValDia)
+                            ? rawValDia
+                            : resolverPerfilIdTurma(sinoConfig, {
+                                schoolId: schoolId || undefined,
+                                shift,
+                                year,
+                                intervaloGrupo: rawValDia
+                              })
+                          : '';
+                        return (
+                          <div key={d.id} className="bg-white/90 rounded-lg border border-indigo-200/80 p-2">
+                            <label className="block text-[11px] font-bold text-slate-700 mb-1">{d.nome}</label>
+                            <select
+                              value={valDia}
+                              onChange={(e) => {
+                                const v = e.target.value as GrupoSinoId | '';
+                                setIntervaloGrupoPorDia((prev) => {
+                                  const next = { ...prev };
+                                  if (!v) delete next[d.id];
+                                  else next[d.id] = v;
+                                  return next;
+                                });
+                              }}
+                              className="w-full px-2 py-1 text-[11px] bg-slate-50 border border-slate-200 rounded-md outline-none focus:ring-1 focus:ring-indigo-500"
+                            >
+                              <option value="">Padrão da turma</option>
+                              {perfisForm.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.curto} (5ª {p.cfg.aulas['5'].inicio})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                    {GRADE_DIAS_SEMANA.map((d) => {
-                      const valDia = intervaloGrupoPorDia[d.id] || '';
-                      return (
-                        <div key={d.id} className="bg-white/90 rounded-lg border border-indigo-200/80 p-2">
-                          <label className="block text-[11px] font-bold text-slate-700 mb-1">{d.nome}</label>
-                          <select
-                            value={valDia}
-                            onChange={(e) => {
-                              const v = e.target.value as GrupoSinoId | '';
-                              setIntervaloGrupoPorDia((prev) => {
-                                const next = { ...prev };
-                                if (!v) delete next[d.id];
-                                else next[d.id] = v;
-                                return next;
-                              });
-                            }}
-                            className="w-full px-2 py-1 text-[11px] bg-slate-50 border border-slate-200 rounded-md outline-none focus:ring-1 focus:ring-indigo-500"
-                          >
-                            <option value="">Padrão da turma</option>
-                            <option value="G1">1º Ano (5ª 11:10)</option>
-                            <option value="G23">2º/3º (5ª 10:40)</option>
-                            <option value="G45">4º/5º (5ª 11:10)</option>
-                          </select>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                )}
               </div>
-            )}
+              );
+            })()}
           </div>
 
           <div className="flex justify-end gap-2 pt-2">
@@ -589,24 +635,31 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                       <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-700">
                         {alunosCount} {alunosCount === 1 ? 'aluno' : 'alunos'}
                       </span>
-                      {val.shift === 'Manhã' && (() => {
-                        const rawG = val.intervaloGrupo || (val.year === '1' ? '1' : val.year === '4' || val.year === '5' ? 'B' : 'A');
-                        const g = rawG === '1' || rawG === 'ano1' ? '1' : rawG === 'B' || rawG === 'ano45' ? 'B' : 'A';
+                      {(val.shift === 'Manhã' || val.shift === 'Tarde') && (() => {
+                        const turnoVal: 'manha' | 'tarde' = val.shift === 'Tarde' ? 'tarde' : 'manha';
+                        const perfisTurma = perfisDoTurno(sinoConfig, val.schoolId, turnoVal);
+                        const pidTurma = resolverPerfilIdTurma(sinoConfig, {
+                          ...val,
+                          intervaloGrupoPorDia: undefined
+                        });
+                        const idxPerfil = Math.max(0, perfisTurma.findIndex((p) => p.id === pidTurma));
+                        const perfilTurma = perfisTurma[idxPerfil] || perfisTurma[0];
                         const porDiaNorm = normalizarIntervaloGrupoPorDia(val.intervaloGrupoPorDia);
                         const diasCustom = Object.entries(porDiaNorm);
+                        if (turnoVal === 'tarde' && perfisTurma.length <= 1 && diasCustom.length === 0) {
+                          return null;
+                        }
+                        const badgePalette = [
+                          'bg-emerald-100 text-emerald-800 border-emerald-200',
+                          'bg-sky-100 text-sky-800 border-sky-200',
+                          'bg-indigo-100 text-indigo-800 border-indigo-200',
+                          'bg-purple-100 text-purple-800 border-purple-200'
+                        ];
                         return (
                           <>
-                            {g === '1' ? (
-                              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                Sino: 1º Ano (Recreio 09:10 – 09:30)
-                              </span>
-                            ) : g === 'B' ? (
-                              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
-                                Sino: 4º/5º Anos (Recreio 09:55 – 10:15)
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-sky-100 text-sky-800 border border-sky-200">
-                                Sino: 2º/3º Anos (Recreio 09:30 – 09:50)
+                            {perfilTurma && (
+                              <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border ${badgePalette[idxPerfil % badgePalette.length]}`}>
+                                Sino: {perfilTurma.nome} (Recreio {perfilTurma.cfg.intervalo.inicio} – {perfilTurma.cfg.intervalo.fim})
                               </span>
                             )}
                             {diasCustom.length > 0 && (
@@ -615,8 +668,13 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
                                 {diasCustom
                                   .map(([dStr, grp]) => {
                                     const dNome = GRADE_DIAS_SEMANA.find((x) => x.id === Number(dStr))?.curto || dStr;
-                                    const gLabel = grp === 'G1' ? '1º (11:10)' : grp === 'G23' ? '2º/3º (10:40)' : '4º/5º (11:10)';
-                                    return `${dNome}: ${gLabel}`;
+                                    const pidDia = resolverPerfilIdTurma(sinoConfig, {
+                                      ...val,
+                                      intervaloGrupo: grp,
+                                      intervaloGrupoPorDia: undefined
+                                    });
+                                    const pDia = perfisTurma.find((p) => p.id === pidDia) || perfilTurma;
+                                    return `${dNome}: ${pDia.curto} (${pDia.cfg.aulas['5'].inicio})`;
                                   })
                                   .join(' • ')}
                               </span>

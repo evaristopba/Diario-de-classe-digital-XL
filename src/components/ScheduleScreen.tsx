@@ -18,13 +18,20 @@ import {
   resolverDiasDisponiveisDocente,
   obterDiasFolga,
   normalizarIntervaloGrupoPorDia,
-  grupoDaTurma,
-  GRUPOS_SINO,
-  type GrupoSinoId
+  perfisDoTurno,
+  resolverPerfilIdTurma
 } from '../types';
 import {
   SinoConfig,
-  definirSinoConfig
+  definirSinoConfig,
+  sinoEfetivo,
+  rotulosDasAulas,
+  intervalosTurno,
+  aulasAntesDoIntervalo,
+  faixaTurno,
+  duracaoAulaMinutos,
+  posicaoIntervaloTurno,
+  minutosDe
 } from '../lib/sino';
 import SinoEditorModal from './SinoEditorModal';
 import { SpecialistScheduleSuggestion } from './SpecialistScheduleSuggestion';
@@ -692,8 +699,8 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
     return warnings;
   };
 
-  // Alternar grupo de intervalo/sino padrão da turma (1º Ano vs 2º/3º Anos vs 4º/5º Anos)
-  const handleToggleIntervaloGrupo = async (novoGrupo: '1' | 'A' | 'B') => {
+  // Alternar perfil de intervalo/sino padrão da turma
+  const handleToggleIntervaloGrupo = async (novoGrupo: string) => {
     if (!canEditClass || !selectedClassId || !selectedClass) return;
     try {
       await update(ref(rtdb, `diario-classe/turmas/${selectedClassId}`), {
@@ -725,8 +732,8 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
     }
   };
 
-  // Sobrescrever ou limpar o grupo de intervalo/sino para um dia específico da semana (Seg..Sex)
-  const handleSetIntervaloGrupoDia = async (dia: DiaSemana, novoGrupo: GrupoSinoId | '') => {
+  // Sobrescrever ou limpar o perfil de intervalo/sino para um dia específico da semana (Seg..Sex)
+  const handleSetIntervaloGrupoDia = async (dia: DiaSemana, novoGrupo: string) => {
     if (!canEditClass || !selectedClassId || !selectedClass) return;
     try {
       const mapaAtual = normalizarIntervaloGrupoPorDia(selectedClass.intervaloGrupoPorDia);
@@ -735,7 +742,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
       } else {
         delete mapaAtual[dia];
       }
-      const cleanPorDia: Record<string, GrupoSinoId> = {};
+      const cleanPorDia: Record<string, string> = {};
       ([1, 2, 3, 4, 5] as const).forEach((d) => {
         const g = mapaAtual[d];
         if (g) cleanPorDia[`d${d}`] = g;
@@ -962,7 +969,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
     }
 
     return { alerts, slotFlags };
-  }, [specialistWeeklyGrid, schools]);
+  }, [specialistWeeklyGrid, schools, sinoConfig]);
 
   // Atualizar Meta de H.A. do professor no banco de dados
   const handleUpdateTeacherMetaHA = async (teacherId: string, novaMeta: number) => {
@@ -1604,12 +1611,53 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
               </div>
             </div>
 
-            {/* Alternador de Grupo de Intervalo (apenas para Matutino / Manhã) */}
-            {selectedClass && getTurnoCanonical(selectedClass.shift) === 'manha' && (() => {
-              const rawG = selectedClass.intervaloGrupo || (selectedClass.year === '1' ? '1' : selectedClass.year === '4' || selectedClass.year === '5' ? 'B' : 'A');
-              const activeG = rawG === '1' || rawG === 'ano1' ? '1' : rawG === 'B' || rawG === 'ano45' ? 'B' : 'A';
+            {/* Alternador de Perfil de Intervalo / Sino (Matutino e Vespertino, conforme perfis da escola) */}
+            {selectedClass && (getTurnoCanonical(selectedClass.shift) === 'manha' || getTurnoCanonical(selectedClass.shift) === 'tarde') && (() => {
+              const turnoSel: 'manha' | 'tarde' = getTurnoCanonical(selectedClass.shift) === 'tarde' ? 'tarde' : 'manha';
+              const perfis = perfisDoTurno(sinoConfig, selectedClass.schoolId, turnoSel);
+              const activePid = resolverPerfilIdTurma(sinoConfig, {
+                ...selectedClass,
+                intervaloGrupoPorDia: undefined
+              });
               const overridesPorDia = normalizarIntervaloGrupoPorDia(selectedClass.intervaloGrupoPorDia);
               const qtdOverrides = Object.keys(overridesPorDia).length;
+              const tituloGrupo = (nome: string, g: (typeof perfis)[number]['cfg']) => {
+                const partes = [
+                  g.complementar ? `Lanche ${g.complementar.inicio}–${g.complementar.fim}` : '',
+                  `Recreio ${g.intervalo.inicio}–${g.intervalo.fim}`,
+                  `3ª Aula ${g.aulas['3'].inicio}–${g.aulas['3'].fim}`,
+                  `4ª Aula ${g.aulas['4'].inicio}–${g.aulas['4'].fim}`,
+                  `5ª Aula ${g.aulas['5'].inicio}–${g.aulas['5'].fim}`,
+                  g.refeicaoFinal ? `Refeição ${g.refeicaoFinal.inicio}–${g.refeicaoFinal.fim}` : ''
+                ].filter(Boolean);
+                return `${nome}: ${partes.join(', ')}`;
+              };
+
+              if (turnoSel === 'tarde' && perfis.length <= 1 && qtdOverrides === 0) {
+                const p0 = perfis[0];
+                return (
+                  <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl">
+                    <span className="text-xs font-semibold text-amber-900">Intervalo Vespertino:</span>
+                    <span className="text-xs font-bold text-amber-800 bg-white px-2.5 py-1 rounded-md border border-amber-200 shadow-2xs">
+                      {p0.cfg.intervalo.inicio} às {p0.cfg.intervalo.fim} ({p0.nome})
+                    </span>
+                  </div>
+                );
+              }
+
+              const btnColors = [
+                'bg-emerald-600 text-white shadow-2xs',
+                'bg-sky-600 text-white shadow-2xs',
+                'bg-indigo-600 text-white shadow-2xs',
+                'bg-purple-600 text-white shadow-2xs',
+                'bg-teal-600 text-white shadow-2xs'
+              ];
+              const refOutro = perfis[1] || perfis[0];
+
+              const usaProprioEscola = Boolean(
+                sinoConfig?.escolas?.[selectedClass.schoolId]?.[turnoSel === 'tarde' ? 'vespertino' : 'matutino']
+              );
+
               return (
                 <div className="flex flex-col gap-1.5 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl">
                   <div className="flex items-center gap-2 flex-wrap">
@@ -1617,72 +1665,77 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                       <Clock className="w-3.5 h-3.5 text-indigo-600" />
                       Sino / Intervalo:
                     </span>
+                    <span
+                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${
+                        usaProprioEscola
+                          ? 'bg-amber-50 text-amber-800 border-amber-200'
+                          : 'bg-white text-slate-500 border-slate-200'
+                      }`}
+                      title={
+                        usaProprioEscola
+                          ? 'Esta escola possui configuração própria de sino neste turno e não segue o Padrão da rede'
+                          : 'Esta escola segue o Padrão da rede neste turno'
+                      }
+                    >
+                      {usaProprioEscola ? 'Horário próprio' : 'Padrão da rede'}
+                    </span>
                     <div className="flex items-center gap-1 flex-wrap">
-                      <button
-                        onClick={() => handleToggleIntervaloGrupo('1')}
-                        disabled={!canEditClass}
-                        className={`px-2.5 py-1 text-xs font-bold rounded-md transition cursor-pointer ${
-                          activeG === '1'
-                            ? 'bg-emerald-600 text-white shadow-2xs'
-                            : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                        }`}
-                        title="1º Ano: Leitura/Lanche 08:40–09:10, Recreio 09:10–09:30, 3ª Aula 09:30–10:20, 5ª Aula 11:10–12:00"
-                      >
-                        1º Ano (09:10)
-                      </button>
-                      <button
-                        onClick={() => handleToggleIntervaloGrupo('A')}
-                        disabled={!canEditClass}
-                        className={`px-2.5 py-1 text-xs font-bold rounded-md transition cursor-pointer ${
-                          activeG === 'A'
-                            ? 'bg-sky-600 text-white shadow-2xs'
-                            : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                        }`}
-                        title="2º e 3º Anos: Recreio 09:30–09:50, 5ª Aula 10:40–11:30, Refeição 11:30–12:00"
-                      >
-                        2º/3º Anos (09:30)
-                      </button>
-                      <button
-                        onClick={() => handleToggleIntervaloGrupo('B')}
-                        disabled={!canEditClass}
-                        className={`px-2.5 py-1 text-xs font-bold rounded-md transition cursor-pointer ${
-                          activeG === 'B'
-                            ? 'bg-indigo-600 text-white shadow-2xs'
-                            : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                        }`}
-                        title="4º e 5º Anos: Leitura/Lanche 09:30–09:55, Recreio 09:55–10:15, 4ª Aula 10:20–11:10, 5ª Aula 11:10–12:00"
-                      >
-                        4º/5º Anos (09:55)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowDayBellOverrides((v) => !v)}
-                        className={`px-2 py-1 text-[11px] font-bold rounded-md border transition cursor-pointer flex items-center gap-1 ${
-                          qtdOverrides > 0
-                            ? 'bg-amber-100 text-amber-900 border-amber-300'
-                            : showDayBellOverrides
-                            ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                            : 'bg-white text-slate-600 hover:bg-slate-100 border-slate-200'
-                        }`}
-                        title="Definir sino diferente para dias específicos da semana (ex.: Terça com 5ª aula às 10:40)"
-                      >
-                        <Sliders className="w-3 h-3" />
-                        <span>Por dia{qtdOverrides > 0 ? ` (${qtdOverrides})` : ''}</span>
-                      </button>
+                      {perfis.map((p, idx) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => handleToggleIntervaloGrupo(p.id)}
+                          disabled={!canEditClass}
+                          className={`px-2.5 py-1 text-xs font-bold rounded-md transition cursor-pointer ${
+                            activePid === p.id
+                              ? btnColors[idx % btnColors.length]
+                              : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                          }`}
+                          title={tituloGrupo(p.nome, p.cfg)}
+                        >
+                          {p.nome} ({p.cfg.intervalo.inicio})
+                        </button>
+                      ))}
+                      {(perfis.length > 1 || qtdOverrides > 0) && (
+                        <button
+                          type="button"
+                          onClick={() => setShowDayBellOverrides((v) => !v)}
+                          className={`px-2 py-1 text-[11px] font-bold rounded-md border transition cursor-pointer flex items-center gap-1 ${
+                            qtdOverrides > 0
+                              ? 'bg-amber-100 text-amber-900 border-amber-300'
+                              : showDayBellOverrides
+                              ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                              : 'bg-white text-slate-600 hover:bg-slate-100 border-slate-200'
+                          }`}
+                          title={`Definir sino diferente para dias específicos da semana (ex.: Terça com 5ª aula às ${refOutro?.cfg.aulas['5'].inicio || ''})`}
+                        >
+                          <Sliders className="w-3 h-3" />
+                          <span>Por dia{qtdOverrides > 0 ? ` (${qtdOverrides})` : ''}</span>
+                        </button>
+                      )}
                     </div>
                   </div>
 
                   {showDayBellOverrides && (
                     <div className="pt-1.5 border-t border-slate-200/80 grid grid-cols-2 sm:grid-cols-5 gap-1.5">
                       {GRADE_DIAS_SEMANA.map((d) => {
-                        const valDia = overridesPorDia[d.id] || '';
+                        const rawValDia = overridesPorDia[d.id] || '';
+                        const valDia = rawValDia
+                          ? perfis.some((p) => p.id === rawValDia)
+                            ? rawValDia
+                            : resolverPerfilIdTurma(sinoConfig, {
+                                ...selectedClass,
+                                intervaloGrupo: rawValDia,
+                                intervaloGrupoPorDia: undefined
+                              })
+                          : '';
                         return (
                           <div key={d.id} className="flex flex-col gap-0.5">
                             <span className="text-[10px] font-bold text-slate-500 uppercase">{d.curto}</span>
                             <select
                               value={valDia}
                               disabled={!canEditClass}
-                              onChange={(e) => handleSetIntervaloGrupoDia(d.id, e.target.value as GrupoSinoId | '')}
+                              onChange={(e) => handleSetIntervaloGrupoDia(d.id, e.target.value)}
                               className={`px-1.5 py-1 text-[11px] font-semibold rounded-md border outline-none transition ${
                                 valDia
                                   ? 'bg-amber-50 border-amber-300 text-amber-900'
@@ -1690,9 +1743,11 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                               }`}
                             >
                               <option value="">Padrão turma</option>
-                              <option value="G1">1º Ano (5ª 11:10)</option>
-                              <option value="G23">2º/3º (5ª 10:40)</option>
-                              <option value="G45">4º/5º (5ª 11:10)</option>
+                              {perfis.map((p) => (
+                                <option key={p.id} value={p.id}>
+                                  {p.curto} (5ª {p.cfg.aulas['5'].inicio})
+                                </option>
+                              ))}
                             </select>
                           </div>
                         );
@@ -1702,16 +1757,6 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                 </div>
               );
             })()}
-
-            {/* Indicador Informativo de Recreio para Vespertino / Tarde */}
-            {selectedClass && getTurnoCanonical(selectedClass.shift) === 'tarde' && (
-              <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl">
-                <span className="text-xs font-semibold text-amber-900">Intervalo Vespertino:</span>
-                <span className="text-xs font-bold text-amber-800 bg-white px-2.5 py-1 rounded-md border border-amber-200 shadow-2xs">
-                  15:00 às 15:20 (Recreio Único)
-                </span>
-              </div>
-            )}
 
             <div className="flex items-center gap-2 flex-wrap">
               {isAdmin && (
@@ -1768,7 +1813,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                 <div>
                   <span className="text-[10px] font-bold uppercase text-slate-400">Hora-Atividade do Regente</span>
                   <p className="text-sm font-bold text-emerald-700">
-                    {classScheduleStats.especialista * 50} min ({classScheduleStats.especialista} aulas livres)
+                    {classScheduleStats.especialista * (bellSchedule.aulas[0]?.duracaoMin || 50)} min ({classScheduleStats.especialista} aulas livres)
                   </p>
                 </div>
                 <div className="p-2 bg-purple-50 text-purple-600 rounded-lg">
@@ -1812,28 +1857,41 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                   <thead>
                     <tr className="bg-slate-100 text-slate-700 text-xs font-bold border-b border-slate-200">
                       <th className="py-3 px-3 w-32 text-center border-r border-slate-200">Horário / Aula</th>
-                      {GRADE_DIAS_SEMANA.map((dia) => {
+                      {(() => {
+                        const turnoClass = getTurnoCanonical(selectedClass.shift) === 'tarde' ? 'tarde' : 'manha';
+                        const perfisClass = perfisDoTurno(sinoConfig, selectedClass.schoolId, turnoClass);
                         const overridesPorDia = normalizarIntervaloGrupoPorDia(selectedClass.intervaloGrupoPorDia);
-                        const gDia = overridesPorDia[dia.id];
-                        const gInfo = gDia ? GRUPOS_SINO.find((g) => g.id === gDia) : null;
-                        return (
-                          <th key={dia.id} className="py-3 px-3 text-center border-r border-slate-200 last:border-r-0">
-                            <span className="block text-sm">{dia.nome}</span>
-                            {gInfo ? (
-                              <span className="inline-block mt-0.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold">
-                                Sino {gInfo.curto}
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-normal text-slate-500">50 minutos</span>
-                            )}
-                          </th>
-                        );
-                      })}
+                        return GRADE_DIAS_SEMANA.map((dia) => {
+                          const gDia = overridesPorDia[dia.id];
+                          const resolvedDia = gDia
+                            ? resolverPerfilIdTurma(sinoConfig, {
+                                ...selectedClass,
+                                intervaloGrupo: gDia,
+                                intervaloGrupoPorDia: undefined
+                              })
+                            : null;
+                          const gInfo = resolvedDia ? perfisClass.find((p) => p.id === resolvedDia) : null;
+                          return (
+                            <th key={dia.id} className="py-3 px-3 text-center border-r border-slate-200 last:border-r-0">
+                              <span className="block text-sm">{dia.nome}</span>
+                              {gInfo ? (
+                                <span className="inline-block mt-0.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold">
+                                  Sino {gInfo.curto}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-normal text-slate-500">{bellSchedule.aulas[0]?.duracaoMin || 50} minutos</span>
+                              )}
+                            </th>
+                          );
+                        });
+                      })()}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs">
-                    {/* Aulas 1 a 3 */}
-                    {[1, 2, 3].map((ordem) => {
+                    {/* Aulas antes do intervalo */}
+                    {[1, 2, 3, 4, 5]
+                      .slice(0, Math.max(1, Math.min(4, aulasAntesDoIntervalo(bellSchedule) || 3)))
+                      .map((ordem) => {
                       const aulaDef = bellSchedule.aulas.find((a) => a.ordem === ordem);
                       const faixasDia = Array.from(
                         new Set(
@@ -1970,7 +2028,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                         </div>
                         {!hasVaryingBellByDay ? (
                           <span className="text-[10px] text-amber-700 block font-normal">
-                            {bellSchedule.intervalo.inicio} – {bellSchedule.intervalo.fim} (20 min)
+                            {bellSchedule.intervalo.inicio} – {bellSchedule.intervalo.fim} ({bellSchedule.intervalo.duracaoMin} min)
                           </span>
                         ) : (
                           <span className="text-[10px] text-amber-700 block font-normal">Varia por dia</span>
@@ -2016,8 +2074,10 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                       )}
                     </tr>
 
-                    {/* Aulas 4 e 5 */}
-                    {[4, 5].map((ordem) => {
+                    {/* Aulas após o intervalo */}
+                    {[1, 2, 3, 4, 5]
+                      .slice(Math.max(1, Math.min(4, aulasAntesDoIntervalo(bellSchedule) || 3)))
+                      .map((ordem) => {
                       const aulaDef = bellSchedule.aulas.find((a) => a.ordem === ordem);
                       const faixasDia = Array.from(
                         new Set(
@@ -2401,26 +2461,87 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
               const renderShiftTable = (turnoKey: 'manha' | 'tarde') => {
                 const isManha = turnoKey === 'manha';
                 const turnoNome = isManha ? 'Turno Matutino' : 'Turno Vespertino (Tarde)';
-                const turnoHorario = isManha ? '07:00 às 12:00' : '12:30 às 17:00';
                 const badgeColor = isManha
                   ? 'bg-amber-100 text-amber-900 border-amber-300'
                   : 'bg-indigo-100 text-indigo-900 border-indigo-300';
 
-                const aulasDef: { ordem: number; label: string; sub?: string }[] = isManha
-                  ? [
-                      { ordem: 1, label: '07:00 – 07:50', sub: 'Padrão da rede' },
-                      { ordem: 2, label: '07:50 – 08:40', sub: 'Padrão da rede' },
-                      { ordem: 3, label: '08:40 / 09:30', sub: '2º-5º: 08:40 | 1º: 09:30' },
-                      { ordem: 4, label: '09:50 / 10:20', sub: '2º/3º: 09:50 | 1º/4º/5º: 10:20' },
-                      { ordem: 5, label: '10:40 / 11:10', sub: '2º/3º: 10:40 | 1º/4º/5º: 11:10' }
-                    ]
-                  : [
-                      { ordem: 1, label: '12:30 – 13:20' },
-                      { ordem: 2, label: '13:20 – 14:10' },
-                      { ordem: 3, label: '14:10 – 15:00' },
-                      { ordem: 4, label: '15:20 – 16:10' },
-                      { ordem: 5, label: '16:10 – 17:00' }
-                    ];
+                // Escolas onde o especialista atua neste turno (ou escola do perfil / padrão da rede)
+                const escolasNoTurnoRaw = Array.from(
+                  new Set(
+                    Object.entries(specialistWeeklyGrid)
+                      .filter(([k]) => k.startsWith(`${turnoKey}_`))
+                      .map(([, item]) => item.turma.schoolId)
+                      .filter(Boolean)
+                  )
+                );
+                const escolasConsideradas: (string | undefined)[] =
+                  escolasNoTurnoRaw.length > 0
+                    ? escolasNoTurnoRaw
+                    : [activeSpecialist?.val.schoolId || undefined];
+
+                // Deduplica escolas que possuem exatamente o mesmo sino efetivo neste turno
+                const sinoPorEscolaDistinta: { schoolId: string | undefined; nome: string; efetivo: ReturnType<typeof sinoEfetivo> }[] = [];
+                const vistosSino = new Set<string>();
+                escolasConsideradas.forEach((sid) => {
+                  const ef = sinoEfetivo(sinoConfig, sid);
+                  const chave = JSON.stringify(isManha ? ef.matutino : ef.vespertinoPerfis);
+                  if (!vistosSino.has(chave)) {
+                    vistosSino.add(chave);
+                    sinoPorEscolaDistinta.push({
+                      schoolId: sid,
+                      nome: sid ? schools[sid]?.name || 'Escola' : 'Padrão da rede',
+                      efetivo: ef
+                    });
+                  }
+                });
+
+                const schoolIdPrincipal = sinoPorEscolaDistinta[0]?.schoolId;
+                const multiSino = sinoPorEscolaDistinta.length > 1;
+                const faixaTurnoStr = (() => {
+                  const faixas = sinoPorEscolaDistinta.map((s) => faixaTurno(sinoConfig, s.schoolId, turnoKey));
+                  if (faixas.length === 1) return faixas[0].rotulo;
+                  const ini = faixas.reduce((acc, f) => (f.inicio < acc ? f.inicio : acc), faixas[0].inicio);
+                  const fim = faixas.reduce((acc, f) => (f.fim > acc ? f.fim : acc), faixas[0].fim);
+                  return `${ini} às ${fim}`;
+                })();
+                const durAulaMin = duracaoAulaMinutos(sinoConfig, schoolIdPrincipal, turnoKey);
+                const intervaloPos = Math.max(
+                  ...sinoPorEscolaDistinta.map((s) => posicaoIntervaloTurno(sinoConfig, s.schoolId, turnoKey))
+                );
+
+                const rotsBase = rotulosDasAulas(sinoConfig, schoolIdPrincipal, turnoKey);
+                const origemSinoSub =
+                  !multiSino && schoolIdPrincipal && sinoConfig?.escolas?.[schoolIdPrincipal]?.[isManha ? 'matutino' : 'vespertino']
+                    ? 'Sino da escola'
+                    : !multiSino
+                    ? 'Padrão da rede'
+                    : undefined;
+
+                const aulasDef: { ordem: number; label: string; sub?: string }[] = [1, 2, 3, 4, 5].map((ord) => {
+                  if (!multiSino) {
+                    const r = rotsBase.find((x) => x.ordem === ord);
+                    const linhas = r?.linhas || [];
+                    if (linhas.length <= 1) {
+                      return { ordem: ord, label: linhas[0] || '', sub: origemSinoSub };
+                    }
+                    const inicios = linhas.map((l) => l.split(': ').pop()?.split(' – ')[0] || '').filter(Boolean);
+                    return {
+                      ordem: ord,
+                      label: inicios.join(' / '),
+                      sub: linhas.join(' | ')
+                    };
+                  }
+                  const linhasEsc = sinoPorEscolaDistinta.map((s) => {
+                    const r = rotulosDasAulas(sinoConfig, s.schoolId, turnoKey).find((x) => x.ordem === ord);
+                    return `${s.nome.split(' ').slice(0, 2).join(' ')}: ${(r?.linhas || []).join(' / ')}`;
+                  });
+                  const r0 = rotsBase.find((x) => x.ordem === ord);
+                  return {
+                    ordem: ord,
+                    label: r0?.linhas[0] || `${ord}ª Aula`,
+                    sub: linhasEsc.join(' • ')
+                  };
+                });
 
                 return (
                   <div
@@ -2433,10 +2554,10 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                           {isManha ? '☀️ Manhã' : '🌤️ Tarde'}
                         </span>
                         <h4 className="text-sm font-bold text-slate-800">
-                          {turnoNome} • {turnoHorario}
+                          {turnoNome} • {faixaTurnoStr}
                         </h4>
                       </div>
-                      <span className="text-[11px] text-slate-500 font-medium">50 minutos por aula</span>
+                      <span className="text-[11px] text-slate-500 font-medium">{durAulaMin} minutos por aula</span>
                     </div>
 
                     <div className="overflow-x-auto">
@@ -2465,8 +2586,8 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 text-xs">
-                          {/* Aulas 1 a 3 */}
-                          {[1, 2, 3].map((ordem) => {
+                          {/* Aulas antes do intervalo */}
+                          {[1, 2, 3, 4, 5].slice(0, intervaloPos).map((ordem) => {
                             const def = aulasDef.find((a) => a.ordem === ordem);
                             return (
                               <tr key={ordem} className="hover:bg-slate-50/60 transition">
@@ -2511,11 +2632,27 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                       )
                                     : null;
                                   const slotAlert = item ? specialistScheduleAudit.slotFlags[slotKey] : undefined;
-                                  const grupoDia = item
-                                    ? grupoDaTurma(item.turma.year, item.turma.intervaloGrupo, dia.id, item.turma.intervaloGrupoPorDia)
+                                  const perfisItem = item
+                                    ? perfisDoTurno(sinoConfig, item.turma.schoolId, turnoKey)
+                                    : [];
+                                  const perfilPadraoId = item
+                                    ? resolverPerfilIdTurma(sinoConfig, { ...item.turma, intervaloGrupoPorDia: undefined })
                                     : null;
+                                  const perfilDiaId = item
+                                    ? resolverPerfilIdTurma(sinoConfig, item.turma, dia.id)
+                                    : null;
+                                  const perfilDiaObj = perfilDiaId
+                                    ? perfisItem.find((p) => p.id === perfilDiaId)
+                                    : undefined;
                                   const temOverrideDia = Boolean(
-                                    item && normalizarIntervaloGrupoPorDia(item.turma.intervaloGrupoPorDia)[dia.id]
+                                    item &&
+                                      normalizarIntervaloGrupoPorDia(item.turma.intervaloGrupoPorDia)[dia.id] &&
+                                      perfilDiaId !== perfilPadraoId
+                                  );
+                                  const horarioDifereDoPadraoAula = Boolean(
+                                    perfisItem.length > 1 &&
+                                      slotTime &&
+                                      perfisItem.some((p) => p.cfg.aulas[String(ordem)]?.inicio !== slotTime.inicioStr)
                                   );
 
                                   return (
@@ -2551,13 +2688,13 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                               <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1 py-0.2 rounded border border-amber-200">
                                                 Ajustado
                                               </span>
-                                            ) : isManha && grupoDia === 'G1' ? (
-                                              <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1 py-0.2 rounded border border-emerald-200">
-                                                1º Ano
-                                              </span>
-                                            ) : isManha && temOverrideDia ? (
+                                            ) : temOverrideDia && perfilDiaObj ? (
                                               <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1 py-0.2 rounded border border-amber-200">
-                                                Sino {GRUPOS_SINO.find((g) => g.id === grupoDia)?.curto}
+                                                Sino {perfilDiaObj.curto}
+                                              </span>
+                                            ) : horarioDifereDoPadraoAula && perfilDiaObj ? (
+                                              <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1 py-0.2 rounded border border-emerald-200">
+                                                {perfilDiaObj.curto}
                                               </span>
                                             ) : null}
                                             {slotAlert && (
@@ -2644,37 +2781,86 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                             );
                           })}
 
-                          {/* Linha de Intervalo com os 3 Sinos da Rede */}
+                          {/* Linha de Intervalo dinâmica a partir do Horário do Sino */}
                           <tr className="bg-amber-50/50 border-y border-amber-200 text-amber-900 font-semibold text-[11px]">
                             <td className="py-2.5 px-2 text-center border-r border-amber-200 font-bold bg-amber-100/60">
                               <Coffee className="w-3.5 h-3.5 mx-auto mb-0.5 text-amber-700" />
                               <span className="text-[10px] uppercase tracking-wider block">Intervalos</span>
                             </td>
                             <td colSpan={5} className="py-2.5 px-3 text-center">
-                              {isManha ? (
-                                <div className="flex items-center justify-center gap-2 md:gap-3 flex-wrap text-[11px]">
-                                  <span className="inline-flex items-center gap-1 bg-white text-emerald-900 px-2 py-0.5 rounded-md border border-emerald-300 shadow-2xs">
-                                    🥪 <strong>1º Ano:</strong> Lanche 08:40–09:10 • Recreio <strong>09:10–09:30</strong> (3ª aula 09:30–10:20)
-                                  </span>
-                                  <span className="inline-flex items-center gap-1 bg-white text-sky-900 px-2 py-0.5 rounded-md border border-sky-300 shadow-2xs">
-                                    🥪 <strong>2º e 3º Anos:</strong> Recreio <strong>09:30–09:50</strong> • Refeição 11:30–12:00
-                                  </span>
-                                  <span className="inline-flex items-center gap-1 bg-white text-indigo-900 px-2 py-0.5 rounded-md border border-indigo-300 shadow-2xs">
-                                    🥪 <strong>4º e 5º Anos:</strong> Lanche 09:30–09:55 • Recreio <strong>09:55–10:15</strong>
-                                  </span>
-                                </div>
-                              ) : (
-                                <div className="flex items-center justify-center gap-2 text-[11px]">
-                                  <span className="inline-flex items-center gap-1 bg-white text-amber-900 px-3 py-1 rounded-md border border-amber-300 shadow-2xs">
-                                    🥪 <strong>Recreio Vespertino:</strong> 15:00 às 15:20 (20 min)
-                                  </span>
-                                </div>
-                              )}
+                              <div className="space-y-1.5">
+                                {sinoPorEscolaDistinta.map((itemSino, sIdx) => {
+                                  const perfisLinha = intervalosTurno(sinoConfig, itemSino.schoolId, turnoKey);
+                                  const chipStyles = [
+                                    'text-emerald-900 border-emerald-300',
+                                    'text-sky-900 border-sky-300',
+                                    'text-indigo-900 border-indigo-300',
+                                    'text-purple-900 border-purple-300',
+                                    'text-amber-900 border-amber-300'
+                                  ];
+                                  const aula3Base = perfisLinha[0]?.cfg.aulas['3']?.inicio;
+                                  const temAula3Diferente = perfisLinha.some(
+                                    (p) => p.cfg.aulas['3']?.inicio !== aula3Base
+                                  );
+                                  return (
+                                    <div key={sIdx} className="flex items-center justify-center gap-2 md:gap-3 flex-wrap text-[11px]">
+                                      {multiSino && (
+                                        <span className="font-bold text-amber-950 text-[10px] uppercase tracking-wide">
+                                          {itemSino.nome}:
+                                        </span>
+                                      )}
+                                      {perfisLinha.map((gm, gIdx) => {
+                                        const durIv =
+                                          (minutosDe(gm.intervalo.fim) ?? 0) - (minutosDe(gm.intervalo.inicio) ?? 0);
+                                        const mesmaAula3DaMaioria =
+                                          perfisLinha.filter((x) => x.cfg.aulas['3']?.inicio === gm.cfg.aulas['3']?.inicio)
+                                            .length >
+                                          perfisLinha.length / 2;
+                                        return (
+                                          <span
+                                            key={gm.id}
+                                            className={`inline-flex items-center gap-1 bg-white px-2.5 py-0.5 rounded-md border shadow-2xs ${
+                                              perfisLinha.length === 1
+                                                ? 'text-amber-900 border-amber-300'
+                                                : chipStyles[gIdx % chipStyles.length]
+                                            }`}
+                                          >
+                                            🥪 <strong>{gm.nome}:</strong>
+                                            {gm.cfg.complementar && (
+                                              <span>
+                                                {' '}
+                                                Lanche {gm.cfg.complementar.inicio}–{gm.cfg.complementar.fim} •
+                                              </span>
+                                            )}
+                                            <span>
+                                              {' '}
+                                              Recreio <strong>{gm.intervalo.inicio}–{gm.intervalo.fim}</strong>
+                                              {perfisLinha.length === 1 && durIv > 0 ? ` (${durIv} min)` : ''}
+                                            </span>
+                                            {temAula3Diferente && !mesmaAula3DaMaioria && (
+                                              <span>
+                                                {' '}
+                                                (3ª aula {gm.cfg.aulas['3'].inicio}–{gm.cfg.aulas['3'].fim})
+                                              </span>
+                                            )}
+                                            {gm.cfg.refeicaoFinal && (
+                                              <span>
+                                                {' '}
+                                                • Refeição {gm.cfg.refeicaoFinal.inicio}–{gm.cfg.refeicaoFinal.fim}
+                                              </span>
+                                            )}
+                                          </span>
+                                        );
+                                      })}
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             </td>
                           </tr>
 
-                          {/* Aulas 4 e 5 */}
-                          {[4, 5].map((ordem) => {
+                          {/* Aulas após o intervalo */}
+                          {[1, 2, 3, 4, 5].slice(intervaloPos).map((ordem) => {
                             const def = aulasDef.find((a) => a.ordem === ordem);
                             return (
                               <tr key={ordem} className="hover:bg-slate-50/60 transition">
@@ -2719,11 +2905,27 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                       )
                                     : null;
                                   const slotAlert = item ? specialistScheduleAudit.slotFlags[slotKey] : undefined;
-                                  const grupoDia = item
-                                    ? grupoDaTurma(item.turma.year, item.turma.intervaloGrupo, dia.id, item.turma.intervaloGrupoPorDia)
+                                  const perfisItem = item
+                                    ? perfisDoTurno(sinoConfig, item.turma.schoolId, turnoKey)
+                                    : [];
+                                  const perfilPadraoId = item
+                                    ? resolverPerfilIdTurma(sinoConfig, { ...item.turma, intervaloGrupoPorDia: undefined })
                                     : null;
+                                  const perfilDiaId = item
+                                    ? resolverPerfilIdTurma(sinoConfig, item.turma, dia.id)
+                                    : null;
+                                  const perfilDiaObj = perfilDiaId
+                                    ? perfisItem.find((p) => p.id === perfilDiaId)
+                                    : undefined;
                                   const temOverrideDia = Boolean(
-                                    item && normalizarIntervaloGrupoPorDia(item.turma.intervaloGrupoPorDia)[dia.id]
+                                    item &&
+                                      normalizarIntervaloGrupoPorDia(item.turma.intervaloGrupoPorDia)[dia.id] &&
+                                      perfilDiaId !== perfilPadraoId
+                                  );
+                                  const horarioDifereDoPadraoAula = Boolean(
+                                    perfisItem.length > 1 &&
+                                      slotTime &&
+                                      perfisItem.some((p) => p.cfg.aulas[String(ordem)]?.inicio !== slotTime.inicioStr)
                                   );
 
                                   return (
@@ -2759,13 +2961,13 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                                               <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1 py-0.2 rounded border border-amber-200">
                                                 Ajustado
                                               </span>
-                                            ) : isManha && grupoDia === 'G1' ? (
-                                              <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1 py-0.2 rounded border border-emerald-200">
-                                                1º Ano
-                                              </span>
-                                            ) : isManha && temOverrideDia ? (
+                                            ) : temOverrideDia && perfilDiaObj ? (
                                               <span className="text-[9px] font-bold text-amber-800 bg-amber-100 px-1 py-0.2 rounded border border-amber-200">
-                                                Sino {GRUPOS_SINO.find((g) => g.id === grupoDia)?.curto}
+                                                Sino {perfilDiaObj.curto}
+                                              </span>
+                                            ) : horarioDifereDoPadraoAula && perfilDiaObj ? (
+                                              <span className="text-[9px] font-bold text-emerald-800 bg-emerald-100 px-1 py-0.2 rounded border border-emerald-200">
+                                                {perfilDiaObj.curto}
                                               </span>
                                             ) : null}
                                             {slotAlert && (
@@ -4002,18 +4204,30 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
         <SinoEditorModal
           schools={schools}
           config={sinoConfig}
-          escolaInicial={selectedSchoolId !== 'all' ? selectedSchoolId : undefined}
+          escolaInicial={
+            selectedSchoolId !== 'all'
+              ? selectedSchoolId
+              : selectedClass?.schoolId &&
+                sinoConfig?.escolas?.[selectedClass.schoolId]?.[
+                  getTurnoCanonical(selectedClass.shift) === 'tarde' ? 'vespertino' : 'matutino'
+                ]
+              ? selectedClass.schoolId
+              : undefined
+          }
           onFechar={() => setSinoEditorAberto(false)}
-          onSalvo={(nova) => {
+          onSalvo={(nova, fecharModal = true) => {
             setSinoConfig(nova);
             definirSinoConfig(nova);
-            setModal({
-              isOpen: true,
-              type: 'alert',
-              title: 'Horário do Sino Atualizado',
-              message: 'A configuração de horários e intervalos foi salva com sucesso!',
-              icon: '⏰'
-            });
+            if (fecharModal) {
+              setSinoEditorAberto(false);
+              setModal({
+                isOpen: true,
+                type: 'alert',
+                title: 'Horário do Sino Atualizado',
+                message: 'A configuração de horários e intervalos foi salva com sucesso!',
+                icon: '⏰'
+              });
+            }
           }}
         />
       )}

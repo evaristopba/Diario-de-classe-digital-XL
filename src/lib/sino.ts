@@ -1,19 +1,21 @@
 /**
- * Sino (horários das aulas e dos intervalos) CONFIGURÁVEL por escola.
+ * Sino (horários das aulas e dos intervalos) CONFIGURÁVEL por escola, turno e perfil/faixa.
  *
  * Lógica PURA (sem Firebase/React). A configuração fica em `diario-classe/config/sino`:
  *   padrao/{matutino|vespertino}                 -> padrão da rede
  *   escolas/{schoolId}/{matutino|vespertino}     -> sobrescreve o padrão numa escola
- * Resolução: escola -> padrão da rede -> SINO_PADRAO (embutido). A busca é feita grupo a grupo, então uma
- * escola pode configurar só o que difere.
  *
- * No matutino há 3 grupos de recreio, conforme a série: 1º ano, 2º e 3º anos, 4º e 5º anos.
+ * Cada turno pode ter quantos perfis de horário a escola precisar (1, 2, 3, 4...),
+ * cada um com nome livre (ex.: "1º ao 3º Ano", "4º e 5º Anos"), séries sugeridas,
+ * 5 aulas, intervalo/recreio e blocos opcionais de lanche e refeição.
+ * Resolução por turno: escola (se tiver >=1 perfil válido) -> padrão da rede -> SINO_PADRAO (embutido).
  */
 import { minutosDe } from './horaAtividade';
+export { minutosDe };
 
-export type GrupoSinoId = 'G1' | 'G23' | 'G45';
+export type GrupoSinoId = string;
 
-export const GRUPOS_SINO: { id: GrupoSinoId; nome: string; curto: string }[] = [
+export const GRUPOS_SINO: { id: 'G1' | 'G23' | 'G45'; nome: string; curto: string }[] = [
   { id: 'G1', nome: '1º ano', curto: '1º' },
   { id: 'G23', nome: '2º e 3º anos', curto: '2º/3º' },
   { id: 'G45', nome: '4º e 5º anos', curto: '4º/5º' }
@@ -25,6 +27,14 @@ export interface FaixaHora {
 }
 
 export interface SinoGrupoCfg {
+  /** Nome amigável do perfil (ex.: "1º ao 3º Ano", "4º e 5º Anos"). */
+  nome?: string;
+  /** Rótulo curto para badges/colunas (ex.: "1º–3º", "4º/5º"). */
+  curto?: string;
+  /** Ordem de exibição do perfil no turno. */
+  ordem?: number;
+  /** Séries vinculadas automaticamente quando a turma não escolheu manualmente (ex.: ['1', '2', '3']). */
+  anosSugeridos?: string[];
   intervalo: FaixaHora;
   /** Bloco de leitura/lanche antes do recreio (opcional). */
   complementar?: FaixaHora;
@@ -35,8 +45,8 @@ export interface SinoGrupoCfg {
 }
 
 export interface SinoEscolaCfg {
-  matutino?: Partial<Record<GrupoSinoId, SinoGrupoCfg>>;
-  vespertino?: SinoGrupoCfg;
+  matutino?: Record<string, SinoGrupoCfg>;
+  vespertino?: SinoGrupoCfg | Record<string, SinoGrupoCfg>;
 }
 
 export interface SinoConfig {
@@ -44,77 +54,174 @@ export interface SinoConfig {
   escolas?: Record<string, SinoEscolaCfg>;
 }
 
+export interface PerfilSino {
+  id: string;
+  nome: string;
+  curto: string;
+  ordem: number;
+  anosSugeridos: string[];
+  cfg: SinoGrupoCfg;
+}
+
 const f = (inicio: string, fim: string): FaixaHora => ({ inicio, fim });
 
 /** Padrão embutido (usado quando nada foi configurado). */
-export const SINO_PADRAO: Required<SinoEscolaCfg> & { matutino: Record<GrupoSinoId, SinoGrupoCfg> } = {
+export const SINO_PADRAO: {
+  matutino: Record<'G1' | 'G23' | 'G45', SinoGrupoCfg>;
+  vespertino: SinoGrupoCfg;
+} = {
   matutino: {
     // 1º ano: 2 aulas, complementar, recreio 09:10–09:30 e 3 aulas depois
     G1: {
+      nome: '1º ano',
+      curto: '1º',
+      ordem: 1,
+      anosSugeridos: ['1'],
       intervalo: f('09:10', '09:30'),
       complementar: f('08:40', '09:10'),
       aulas: { '1': f('07:00', '07:50'), '2': f('07:50', '08:40'), '3': f('09:30', '10:20'), '4': f('10:20', '11:10'), '5': f('11:10', '12:00') }
     },
     // 2º e 3º anos: 3 aulas, recreio 09:30–09:50, 2 aulas e refeição/saída
     G23: {
+      nome: '2º e 3º anos',
+      curto: '2º/3º',
+      ordem: 2,
+      anosSugeridos: ['2', '3', 'infantil'],
       intervalo: f('09:30', '09:50'),
       refeicaoFinal: f('11:30', '12:00'),
       aulas: { '1': f('07:00', '07:50'), '2': f('07:50', '08:40'), '3': f('08:40', '09:30'), '4': f('09:50', '10:40'), '5': f('10:40', '11:30') }
     },
     // 4º e 5º anos: 3 aulas, complementar, recreio 09:55–10:15 e 2 aulas
     G45: {
+      nome: '4º e 5º anos',
+      curto: '4º/5º',
+      ordem: 3,
+      anosSugeridos: ['4', '5'],
       intervalo: f('09:55', '10:15'),
       complementar: f('09:30', '09:55'),
       aulas: { '1': f('07:00', '07:50'), '2': f('07:50', '08:40'), '3': f('08:40', '09:30'), '4': f('10:20', '11:10'), '5': f('11:10', '12:00') }
     }
   },
   vespertino: {
+    nome: 'Vespertino (Todas as Turmas)',
+    curto: 'Único',
+    ordem: 1,
     intervalo: f('15:00', '15:20'),
     aulas: { '1': f('12:30', '13:20'), '2': f('13:20', '14:10'), '3': f('14:10', '15:00'), '4': f('15:20', '16:10'), '5': f('16:10', '17:00') }
   }
 };
 
 /**
- * Modelo para escolas em que as aulas depois do recreio são 10:20–11:10 e 11:10–12:00
- * (ex.: EMEF Capitão Neves): o mesmo desenho para os três grupos, com recreio 10:00–10:20.
+ * Modelo com 2 horários de intervalo no matutino:
+ *  - 1º ao 3º ano: recreio 09:30–09:50
+ *  - 4º e 5º anos: lanche 09:30–09:55 e recreio 09:55–10:15
  */
-export function modeloPosRecreio1020(): Record<GrupoSinoId, SinoGrupoCfg> {
-  const base = (): SinoGrupoCfg => ({
-    intervalo: f('10:00', '10:20'),
-    complementar: f('09:30', '10:00'),
-    aulas: { '1': f('07:00', '07:50'), '2': f('07:50', '08:40'), '3': f('08:40', '09:30'), '4': f('10:20', '11:10'), '5': f('11:10', '12:00') }
-  });
-  return { G1: base(), G23: base(), G45: base() };
+export function modeloDoisIntervalos(): Record<string, SinoGrupoCfg> {
+  return {
+    P123: {
+      nome: '1º, 2º e 3º anos',
+      curto: '1º–3º',
+      ordem: 1,
+      anosSugeridos: ['1', '2', '3', 'infantil'],
+      intervalo: f('09:30', '09:50'),
+      refeicaoFinal: f('11:30', '12:00'),
+      aulas: { '1': f('07:00', '07:50'), '2': f('07:50', '08:40'), '3': f('08:40', '09:30'), '4': f('09:50', '10:40'), '5': f('10:40', '11:30') }
+    },
+    P45: {
+      nome: '4º e 5º anos',
+      curto: '4º/5º',
+      ordem: 2,
+      anosSugeridos: ['4', '5'],
+      intervalo: f('09:55', '10:15'),
+      complementar: f('09:30', '09:55'),
+      aulas: { '1': f('07:00', '07:50'), '2': f('07:50', '08:40'), '3': f('08:40', '09:30'), '4': f('10:20', '11:10'), '5': f('11:10', '12:00') }
+    }
+  };
+}
+
+/**
+ * Modelo para escolas com recreio único 10:00–10:20 e aulas após o recreio 10:20–11:10 e 11:10–12:00
+ * (ex.: EMEF Capitão Neves).
+ */
+export function modeloPosRecreio1020(): Record<string, SinoGrupoCfg> {
+  return {
+    UNICO: {
+      nome: 'Todas as turmas (1º ao 5º)',
+      curto: 'Único',
+      ordem: 1,
+      anosSugeridos: ['1', '2', '3', '4', '5', 'infantil'],
+      intervalo: f('10:00', '10:20'),
+      complementar: f('09:30', '10:00'),
+      aulas: { '1': f('07:00', '07:50'), '2': f('07:50', '08:40'), '3': f('08:40', '09:30'), '4': f('10:20', '11:10'), '5': f('11:10', '12:00') }
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------------------------
-// Grupo de cada turma
+// Metadados padrão e normalização de nomes/séries
 // ---------------------------------------------------------------------------------------------
+
+const PADRAO_META: Record<string, { nome: string; curto: string; ordem: number; anosSugeridos: string[] }> = {
+  G1: { nome: '1º ano', curto: '1º', ordem: 1, anosSugeridos: ['1'] },
+  G23: { nome: '2º e 3º anos', curto: '2º/3º', ordem: 2, anosSugeridos: ['2', '3', 'infantil'] },
+  G45: { nome: '4º e 5º anos', curto: '4º/5º', ordem: 3, anosSugeridos: ['4', '5'] },
+  T: { nome: 'Vespertino (Todas as Turmas)', curto: 'Único', ordem: 1, anosSugeridos: ['1', '2', '3', '4', '5', 'infantil'] }
+};
+
+export function sugerirNomeCurto(nome: string): string {
+  const limpo = (nome || '').trim();
+  if (!limpo) return 'Perfil';
+  if (limpo.length <= 10) return limpo;
+  return limpo.slice(0, 10).trim();
+}
 
 const digitosDoAno = (year?: string) => String(year ?? '').replace(/\D/g, '');
 
-/** Grupo padrão pela série: 1º ano -> G1; 4º e 5º -> G45; demais (Infantil, 2º, 3º) -> G23. */
-export function grupoPorAno(year?: string): GrupoSinoId {
+const serieTokenDaTurma = (year?: string): string => {
+  const raw = String(year ?? '').trim().toLowerCase();
+  const n = digitosDoAno(raw);
+  if (n) return n;
+  if (raw.includes('inf') || raw.includes('pré') || raw.includes('pre') || raw.includes('creche') || raw.includes('mat')) {
+    return 'infantil';
+  }
+  return '';
+};
+
+const normalizarAnosSugeridos = (raw: unknown): string[] => {
+  if (!Array.isArray(raw)) return [];
+  const res: string[] = [];
+  raw.forEach((item) => {
+    const s = String(item ?? '').trim().toLowerCase();
+    if (!s) return;
+    const norm = s === 'infantil' ? 'infantil' : digitosDoAno(s) || s;
+    if (norm && !res.includes(norm)) res.push(norm);
+  });
+  return res;
+};
+
+/** Grupo padrão legado pela série: 1º ano -> G1; 4º e 5º -> G45; demais (Infantil, 2º, 3º) -> G23. */
+export function grupoPorAno(year?: string): 'G1' | 'G23' | 'G45' {
   const n = digitosDoAno(year);
   if (n === '1') return 'G1';
   if (n === '4' || n === '5') return 'G45';
   return 'G23';
 }
 
-export function tokenParaGrupo(raw?: unknown): GrupoSinoId | null {
+export function tokenParaGrupo(raw?: unknown): string | null {
   const s = String(raw ?? '').trim();
+  if (!s) return null;
   if (s === 'G1' || s === '1' || s === 'ano1') return 'G1';
   if (s === 'G23' || s === 'A' || s === 'ano23') return 'G23';
   if (s === 'G45' || s === 'B' || s === 'ano45') return 'G45';
-  return null;
+  return s;
 }
 
 /**
  * Normaliza `intervaloGrupoPorDia` vindo do Realtime Database (que pode serializar
  * chaves '1'..'5' tanto como objeto quanto como array esparso `[null, "G1", ...]`).
  */
-export function normalizarIntervaloGrupoPorDia(raw: unknown): Partial<Record<1 | 2 | 3 | 4 | 5, GrupoSinoId>> {
-  const res: Partial<Record<1 | 2 | 3 | 4 | 5, GrupoSinoId>> = {};
+export function normalizarIntervaloGrupoPorDia(raw: unknown): Partial<Record<1 | 2 | 3 | 4 | 5, string>> {
+  const res: Partial<Record<1 | 2 | 3 | 4 | 5, string>> = {};
   if (!raw) return res;
   if (Array.isArray(raw)) {
     for (let d = 1; d <= 5; d++) {
@@ -136,19 +243,15 @@ export function normalizarIntervaloGrupoPorDia(raw: unknown): Partial<Record<1 |
 }
 
 /**
- * Grupo efetivo de uma turma (opcionalmente considerando o dia da semana 1..5).
- * Turmas antigas guardam 'A' ou 'B' (só havia dois grupos):
- *  - se o valor guardado coincide com o que o sistema antigo escolhia pela série, era o padrão automático
- *    e passa a seguir a série (assim os 1º anos deixam de cair no recreio das 09:30);
- *  - se difere, foi escolha manual da secretaria: A -> 2º e 3º, B -> 4º e 5º.
- * Já `intervaloGrupoPorDia` representa escolha explícita por dia e é aplicada diretamente.
+ * Grupo legado da turma (para compatibilidade com chamadas antigas sem `config/sino`).
+ * Para resolução completa considerando perfis livres da escola, use `resolverPerfilIdTurma`.
  */
 export function grupoDaTurma(
   year?: string,
   intervaloGrupo?: string,
   dia?: number,
   intervaloGrupoPorDia?: unknown
-): GrupoSinoId {
+): string {
   if (typeof dia === 'number' && dia >= 1 && dia <= 5 && intervaloGrupoPorDia) {
     const mapa = normalizarIntervaloGrupoPorDia(intervaloGrupoPorDia);
     const grupoDia = mapa[dia as 1 | 2 | 3 | 4 | 5];
@@ -163,11 +266,12 @@ export function grupoDaTurma(
     if (intervaloGrupo === padraoAntigo) return grupoPorAno(year);
     return intervaloGrupo === 'A' ? 'G23' : 'G45';
   }
+  if (intervaloGrupo && intervaloGrupo.trim()) return intervaloGrupo.trim();
   return grupoPorAno(year);
 }
 
 // ---------------------------------------------------------------------------------------------
-// Configuração efetiva
+// Configuração efetiva e lista de perfis por escola/turno
 // ---------------------------------------------------------------------------------------------
 
 /** Aceita só uma configuração de grupo bem formada (intervalo e as 5 aulas com HH:MM válidos). */
@@ -181,26 +285,139 @@ export function grupoCfgValido(raw: any): SinoGrupoCfg | null {
     intervalo: limpa(raw.intervalo),
     aulas: Object.fromEntries(['1', '2', '3', '4', '5'].map((o) => [o, limpa(raw.aulas[o])]))
   };
+  if (typeof raw.nome === 'string' && raw.nome.trim()) resultado.nome = raw.nome.trim();
+  if (typeof raw.curto === 'string' && raw.curto.trim()) resultado.curto = raw.curto.trim();
+  if (typeof raw.ordem === 'number' && Number.isFinite(raw.ordem)) resultado.ordem = raw.ordem;
+  const anos = normalizarAnosSugeridos(raw.anosSugeridos);
+  if (anos.length > 0) resultado.anosSugeridos = anos;
   if (faixaOk(raw.complementar)) resultado.complementar = limpa(raw.complementar);
   if (faixaOk(raw.refeicaoFinal)) resultado.refeicaoFinal = limpa(raw.refeicaoFinal);
   return resultado;
 }
 
-export interface SinoEfetivo {
-  matutino: Record<GrupoSinoId, SinoGrupoCfg>;
-  vespertino: SinoGrupoCfg;
+function extrairMapaPerfis(raw: unknown): Record<string, SinoGrupoCfg> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  // Formato legado de objeto único (vespertino antigo)
+  const unico = grupoCfgValido(raw);
+  if (unico) {
+    return { T: unico };
+  }
+  const mapa: Record<string, SinoGrupoCfg> = {};
+  Object.entries(raw as Record<string, unknown>).forEach(([id, val]) => {
+    const ok = grupoCfgValido(val);
+    if (ok) mapa[id] = ok;
+  });
+  return Object.keys(mapa).length > 0 ? mapa : null;
 }
 
-/** Resolve, grupo a grupo: escola -> padrão da rede -> padrão embutido. */
+export interface SinoEfetivo {
+  matutino: Record<string, SinoGrupoCfg>;
+  vespertino: SinoGrupoCfg;
+  vespertinoPerfis: Record<string, SinoGrupoCfg>;
+}
+
+/** Resolve por turno completo: escola (se tiver >=1 perfil válido) -> padrão da rede -> padrão embutido. */
 export function sinoEfetivo(config: SinoConfig | undefined | null, schoolId?: string): SinoEfetivo {
   const escola = schoolId ? config?.escolas?.[schoolId] : undefined;
   const rede = config?.padrao;
-  const grupo = (g: GrupoSinoId) =>
-    grupoCfgValido(escola?.matutino?.[g]) || grupoCfgValido(rede?.matutino?.[g]) || SINO_PADRAO.matutino[g];
+
+  const matutino =
+    extrairMapaPerfis(escola?.matutino) ||
+    extrairMapaPerfis(rede?.matutino) ||
+    SINO_PADRAO.matutino;
+
+  const vespertinoPerfis =
+    extrairMapaPerfis(escola?.vespertino) ||
+    extrairMapaPerfis(rede?.vespertino) ||
+    { T: SINO_PADRAO.vespertino };
+
+  const primeiroVespertino = Object.values(vespertinoPerfis)[0] || SINO_PADRAO.vespertino;
+
   return {
-    matutino: { G1: grupo('G1'), G23: grupo('G23'), G45: grupo('G45') },
-    vespertino: grupoCfgValido(escola?.vespertino) || grupoCfgValido(rede?.vespertino) || SINO_PADRAO.vespertino
+    matutino,
+    vespertino: primeiroVespertino,
+    vespertinoPerfis
   };
+}
+
+/** Lista ordenada de perfis configurados para a escola e turno informados. */
+export function perfisDoTurno(
+  config: SinoConfig | undefined | null,
+  schoolId: string | undefined,
+  turno: 'manha' | 'tarde'
+): PerfilSino[] {
+  const ef = sinoEfetivo(config, schoolId);
+  const mapa = turno === 'tarde' ? ef.vespertinoPerfis : ef.matutino;
+  return Object.entries(mapa)
+    .map(([id, cfg], idx) => {
+      const def = PADRAO_META[id];
+      const nome = cfg.nome || def?.nome || `Perfil ${id}`;
+      const curto = cfg.curto || def?.curto || sugerirNomeCurto(nome);
+      const ordem = cfg.ordem ?? def?.ordem ?? idx + 10;
+      const anosSugeridos = cfg.anosSugeridos || def?.anosSugeridos || [];
+      return { id, nome, curto, ordem, anosSugeridos, cfg };
+    })
+    .sort((a, b) => a.ordem - b.ordem || a.nome.localeCompare(b.nome));
+}
+
+export function perfilPorAno(perfis: PerfilSino[], year?: string): PerfilSino {
+  const serie = serieTokenDaTurma(year);
+  if (serie) {
+    const porAnos = perfis.find((p) => p.anosSugeridos.includes(serie));
+    if (porAnos) return porAnos;
+  }
+  const legadoId = grupoPorAno(year);
+  const legado = perfis.find((p) => p.id === legadoId);
+  if (legado) return legado;
+  return perfis[0];
+}
+
+/** Resolve o ID do perfil efetivo de uma turma (considerando override do dia, vínculo da turma e série). */
+export function resolverPerfilIdTurma(
+  config: SinoConfig | undefined | null,
+  turma: { shift?: string; year?: string; intervaloGrupo?: string; intervaloGrupoPorDia?: unknown; schoolId?: string },
+  dia?: number
+): string {
+  const ehVesp = ehVespertino(turma.shift);
+  const perfis = perfisDoTurno(config, turma.schoolId, ehVesp ? 'tarde' : 'manha');
+  const ids = new Set(perfis.map((p) => p.id));
+
+  // 1. Sobrescrita explícita por dia da semana
+  if (typeof dia === 'number' && dia >= 1 && dia <= 5 && turma.intervaloGrupoPorDia) {
+    const mapa = normalizarIntervaloGrupoPorDia(turma.intervaloGrupoPorDia);
+    const rawDia = mapa[dia as 1 | 2 | 3 | 4 | 5];
+    if (rawDia) {
+      if (ids.has(rawDia)) return rawDia;
+      const tok = tokenParaGrupo(rawDia);
+      if (tok && ids.has(tok)) return tok;
+    }
+  }
+
+  // 2. Vínculo explícito da turma (se o perfil ainda existir nesta escola)
+  const rawGrupo = String(turma.intervaloGrupo ?? '').trim();
+  if (rawGrupo) {
+    if (ids.has(rawGrupo)) return rawGrupo;
+
+    if (!ehVesp) {
+      if (rawGrupo === 'A' || rawGrupo === 'B') {
+        const temLegados = ids.has('G1') && ids.has('G23') && ids.has('G45');
+        if (temLegados) {
+          const n = digitosDoAno(turma.year);
+          const padraoAntigo = n === '4' || n === '5' ? 'B' : 'A';
+          if (rawGrupo !== padraoAntigo) {
+            return rawGrupo === 'A' ? 'G23' : 'G45';
+          }
+          // Era o padrão antigo automático: deixa cair na correspondência por série (ex.: 1º ano -> G1)
+        }
+      } else {
+        const tok = tokenParaGrupo(rawGrupo);
+        if (tok && ids.has(tok)) return tok;
+      }
+    }
+  }
+
+  // 3. Automático pela série (anosSugeridos -> legado -> primeiro perfil)
+  return perfilPorAno(perfis, turma.year).id;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -221,7 +438,7 @@ const dur = (x: FaixaHora) => (minutosDe(x.fim) ?? 0) - (minutosDe(x.inicio) ?? 
 const faixaTxt = (x: FaixaHora) => `${x.inicio} – ${x.fim}`;
 
 export interface HorarioTurma {
-  grupo: GrupoSinoId | 'T';
+  grupo: string;
   nome: string;
   intervalo: { inicio: string; fim: string; duracaoMin: number; rotulo: string };
   complementar?: { inicio: string; fim: string; duracaoMin: number; rotulo: string };
@@ -229,7 +446,7 @@ export interface HorarioTurma {
   aulas: { ordem: number; nome: string; inicio: string; fim: string; duracaoMin: number }[];
 }
 
-function montar(cfg: SinoGrupoCfg, grupo: GrupoSinoId | 'T', nome: string): HorarioTurma {
+function montar(cfg: SinoGrupoCfg, grupo: string, nome: string): HorarioTurma {
   const bloco = (x: FaixaHora, prefixo: string) => ({ inicio: x.inicio, fim: x.fim, duracaoMin: dur(x), rotulo: `${prefixo} (${faixaTxt(x)})` });
   const resultado: HorarioTurma = {
     grupo,
@@ -259,27 +476,25 @@ export function horarioDaTurma(
   turma: { shift?: string; year?: string; intervaloGrupo?: string; intervaloGrupoPorDia?: unknown; schoolId?: string },
   dia?: number
 ): HorarioTurma {
-  const efetivo = sinoEfetivo(config, turma.schoolId);
-  if (ehVespertino(turma.shift)) return montar(efetivo.vespertino, 'T', 'Vespertino (Todas as Turmas)');
-  const g = grupoDaTurma(turma.year, turma.intervaloGrupo, dia, turma.intervaloGrupoPorDia);
-  return montar(efetivo.matutino[g], g, GRUPOS_SINO.find((x) => x.id === g)!.nome);
+  const turno: 'manha' | 'tarde' = ehVespertino(turma.shift) ? 'tarde' : 'manha';
+  const perfis = perfisDoTurno(config, turma.schoolId, turno);
+  const pid = resolverPerfilIdTurma(config, turma, dia);
+  const perfil = perfis.find((p) => p.id === pid) || perfis[0];
+  return montar(perfil.cfg, perfil.id, perfil.nome);
 }
 
-/** Linhas de rótulo de cada aula do turno: um horário só, ou um por grupo quando diferem. */
+/** Linhas de rótulo de cada aula do turno: um horário só, ou um por perfil quando diferem. */
 export function rotulosDasAulas(
   config: SinoConfig | undefined | null,
   schoolId: string | undefined,
   turno: 'manha' | 'tarde'
 ): { ordem: number; linhas: string[] }[] {
-  const ef = sinoEfetivo(config, schoolId);
-  if (turno === 'tarde') {
-    return ['1', '2', '3', '4', '5'].map((o) => ({ ordem: Number(o), linhas: [faixaTxt(ef.vespertino.aulas[o])] }));
-  }
+  const perfis = perfisDoTurno(config, schoolId, turno);
   return ['1', '2', '3', '4', '5'].map((o) => {
     const porHorario = new Map<string, string[]>();
-    GRUPOS_SINO.forEach((g) => {
-      const t = faixaTxt(ef.matutino[g.id].aulas[o]);
-      porHorario.set(t, [...(porHorario.get(t) || []), g.curto]);
+    perfis.forEach((p) => {
+      const t = faixaTxt(p.cfg.aulas[o]);
+      porHorario.set(t, [...(porHorario.get(t) || []), p.curto]);
     });
     if (porHorario.size === 1) return { ordem: Number(o), linhas: [Array.from(porHorario.keys())[0]] };
     return { ordem: Number(o), linhas: Array.from(porHorario.entries()).map(([t, gs]) => `${gs.join(' e ')}: ${t}`) };
@@ -292,13 +507,91 @@ export function aulasAntesDoIntervalo(h: { intervalo: { inicio: string }; aulas:
   return h.aulas.filter((a) => (minutosDe(a.fim) ?? 0) <= ini).length;
 }
 
-/** Recreio de cada grupo (matutino) na escola, para exibir em avisos. */
+/** Recreio de cada perfil do turno na escola. */
+export function intervalosTurno(
+  config: SinoConfig | undefined | null,
+  schoolId: string | undefined,
+  turno: 'manha' | 'tarde'
+): { id: string; curto: string; nome: string; intervalo: FaixaHora; cfg: SinoGrupoCfg }[] {
+  return perfisDoTurno(config, schoolId, turno).map((p) => ({
+    id: p.id,
+    curto: p.curto,
+    nome: p.nome,
+    intervalo: p.cfg.intervalo,
+    cfg: p.cfg
+  }));
+}
+
+/** Recreio de cada perfil (matutino) na escola, para exibir em avisos. */
 export function intervalosMatutino(
   config: SinoConfig | undefined | null,
   schoolId?: string
-): { id: GrupoSinoId; curto: string; nome: string; intervalo: FaixaHora }[] {
-  const ef = sinoEfetivo(config, schoolId);
-  return GRUPOS_SINO.map((g) => ({ id: g.id, curto: g.curto, nome: g.nome, intervalo: ef.matutino[g.id].intervalo }));
+): { id: string; curto: string; nome: string; intervalo: FaixaHora; cfg: SinoGrupoCfg }[] {
+  return intervalosTurno(config, schoolId, 'manha');
+}
+
+/** Duração padrão da aula em minutos no turno informado para a escola. */
+export function duracaoAulaMinutos(
+  config: SinoConfig | undefined | null,
+  schoolId: string | undefined,
+  turno: 'manha' | 'tarde'
+): number {
+  const perfis = perfisDoTurno(config, schoolId, turno);
+  const grupo = perfis[0]?.cfg;
+  const d = grupo ? dur(grupo.aulas['1']) : 50;
+  return d > 0 ? d : 50;
+}
+
+/** Horário inicial e final do turno considerando aulas e refeição final da escola. */
+export function faixaTurno(
+  config: SinoConfig | undefined | null,
+  schoolId: string | undefined,
+  turno: 'manha' | 'tarde'
+): { inicio: string; fim: string; rotulo: string } {
+  const grupos = perfisDoTurno(config, schoolId, turno).map((p) => p.cfg);
+  let minIni = Infinity;
+  let maxFim = -Infinity;
+  let inicioStr = turno === 'tarde' ? '12:30' : '07:00';
+  let fimStr = turno === 'tarde' ? '17:00' : '12:00';
+
+  grupos.forEach((g) => {
+    Object.values(g.aulas).forEach((a) => {
+      const i = minutosDe(a.inicio);
+      const fi = minutosDe(a.fim);
+      if (i !== null && i < minIni) {
+        minIni = i;
+        inicioStr = a.inicio;
+      }
+      if (fi !== null && fi > maxFim) {
+        maxFim = fi;
+        fimStr = a.fim;
+      }
+    });
+    if (g.refeicaoFinal) {
+      const fi = minutosDe(g.refeicaoFinal.fim);
+      if (fi !== null && fi > maxFim) {
+        maxFim = fi;
+        fimStr = g.refeicaoFinal.fim;
+      }
+    }
+  });
+
+  return { inicio: inicioStr, fim: fimStr, rotulo: `${inicioStr} às ${fimStr}` };
+}
+
+/** Posição do divisor de intervalo na tabela de 5 aulas (entre 1 e 4, padrão 3). */
+export function posicaoIntervaloTurno(
+  config: SinoConfig | undefined | null,
+  schoolId: string | undefined,
+  turno: 'manha' | 'tarde'
+): number {
+  const grupos = perfisDoTurno(config, schoolId, turno).map((p) => p.cfg);
+  const posicoes = grupos.map((g) => {
+    const ini = minutosDe(g.intervalo.inicio) ?? 0;
+    return ['1', '2', '3', '4', '5'].filter((o) => (minutosDe(g.aulas[o].fim) ?? 0) <= ini).length;
+  });
+  const maior = Math.max(...posicoes);
+  return Math.max(1, Math.min(4, maior || 3));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -312,6 +605,9 @@ export interface AvisoSino {
 
 export function validarSinoGrupo(cfg: SinoGrupoCfg): AvisoSino[] {
   const out: AvisoSino[] = [];
+  if (cfg.nome !== undefined && !cfg.nome.trim()) {
+    out.push({ nivel: 'erro', mensagem: 'Informe um nome para o perfil de horário.' });
+  }
   const faixa = (nome: string, x?: FaixaHora): [number, number] | null => {
     if (!x) return null;
     const i = minutosDe(x.inicio);

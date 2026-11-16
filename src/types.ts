@@ -6,12 +6,23 @@ import {
   grupoDaTurma,
   normalizarIntervaloGrupoPorDia,
   GRUPOS_SINO,
+  perfisDoTurno,
+  resolverPerfilIdTurma,
   type HorarioTurma,
   type GrupoSinoId,
+  type PerfilSino,
   SINO_PADRAO
 } from './lib/sino';
 
-export { grupoDaTurma, normalizarIntervaloGrupoPorDia, GRUPOS_SINO, type GrupoSinoId };
+export {
+  grupoDaTurma,
+  normalizarIntervaloGrupoPorDia,
+  GRUPOS_SINO,
+  perfisDoTurno,
+  resolverPerfilIdTurma,
+  type GrupoSinoId,
+  type PerfilSino
+};
 
 export interface School {
   id?: string;

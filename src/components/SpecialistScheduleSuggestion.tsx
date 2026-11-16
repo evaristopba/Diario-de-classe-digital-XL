@@ -20,10 +20,12 @@ import {
   SinoConfig,
   definirSinoConfig,
   getSinoConfigAtiva,
-  sinoEfetivo,
   rotulosDasAulas,
   intervalosMatutino,
-  aulasAntesDoIntervalo
+  intervalosTurno,
+  aulasAntesDoIntervalo,
+  faixaTurno,
+  posicaoIntervaloTurno
 } from '../lib/sino';
 import {
   rtdb,
@@ -1645,6 +1647,8 @@ export const SpecialistScheduleSuggestion: React.FC<SpecialistScheduleSuggestion
             haPorEspecialista: haSanitizado,
             ocupacoesExternasPorProfessor: ocupacoesExternasExport,
             escolaNome: escolaAtual?.name || 'Unidade Escolar',
+            schoolId: selectedSchoolId,
+            sinoConfig: getSinoConfigAtiva(),
             especialistaIdUnico: acao.especialistaIdUnico,
             versaoInfo,
             versaoSufixoArquivo
@@ -1675,6 +1679,8 @@ export const SpecialistScheduleSuggestion: React.FC<SpecialistScheduleSuggestion
           haPorEspecialista: haSanitizado,
           ocupacoesExternasPorProfessor: ocupacoesExternasExport,
           escolaNome: escolaAtual?.name || 'Unidade Escolar',
+          schoolId: selectedSchoolId,
+          sinoConfig: getSinoConfigAtiva(),
           especialistaIdUnico: acao.especialistaIdUnico,
           versaoInfo,
           versaoSufixoArquivo
@@ -4361,7 +4367,15 @@ export const SpecialistScheduleSuggestion: React.FC<SpecialistScheduleSuggestion
                   : isTarde
                   ? 'Turno Vespertino (Tarde)'
                   : 'Turno Noturno (Noite)';
-                const horarioTurno = isManha ? '07:00 às 12:00' : isTarde ? '12:30 às 17:00' : '19:00 às 22:30';
+                const sinoAtivo = getSinoConfigAtiva();
+                const horarioTurno =
+                  isManha || isTarde
+                    ? faixaTurno(sinoAtivo, selectedSchoolId, isManha ? 'manha' : 'tarde').rotulo
+                    : '19:00 às 22:30';
+                const intervaloPosEsp =
+                  isManha || isTarde
+                    ? posicaoIntervaloTurno(sinoAtivo, selectedSchoolId, isManha ? 'manha' : 'tarde')
+                    : 3;
                 const badgeTurno = isManha ? '☀️ Manhã' : isTarde ? '🌤️ Tarde' : '🌙 Noite';
                 const headerColors = isManha
                   ? 'bg-amber-50 border-amber-200 text-amber-950'
@@ -4369,8 +4383,6 @@ export const SpecialistScheduleSuggestion: React.FC<SpecialistScheduleSuggestion
                   ? 'bg-indigo-50 border-indigo-200 text-indigo-950'
                   : 'bg-slate-100 border-slate-300 text-slate-900';
 
-                const sinoAtivo = getSinoConfigAtiva();
-                const sinoEsc = sinoEfetivo(sinoAtivo, selectedSchoolId);
                 const aulasTurnoLabel: Record<number, { faixa: string; detalhe?: string }> = {};
                 if (isManha || isTarde) {
                   const rots = rotulosDasAulas(sinoAtivo, selectedSchoolId, isManha ? 'manha' : 'tarde');
@@ -4935,18 +4947,24 @@ export const SpecialistScheduleSuggestion: React.FC<SpecialistScheduleSuggestion
                                 );
                               })}
                             </tr>
-                            {ordem === 3 && (
+                            {ordem === intervaloPosEsp && (
                               <tr className="bg-amber-50/60 border-y border-amber-200 text-amber-900 text-[10px] font-semibold">
                                 <td className="py-1 px-2.5 text-left font-bold bg-amber-100/70 border-r border-amber-200">
                                   ☕ Intervalo
                                 </td>
                                 <td colSpan={5} className="py-1 px-2 text-center">
-                                  {isManha
-                                    ? `${intervalosMatutino(sinoAtivo, selectedSchoolId)
-                                        .map((iv) => `${iv.nome}: ${iv.intervalo.inicio}–${iv.intervalo.fim}`)
-                                        .join(' • ')} (deslocamento entre escolas)`
-                                    : isTarde
-                                    ? `Recreio Vespertino: ${sinoEsc.vespertino.intervalo.inicio} às ${sinoEsc.vespertino.intervalo.fim} (deslocamento entre escolas)`
+                                  {isManha || isTarde
+                                    ? (() => {
+                                        const ivs = isManha
+                                          ? intervalosMatutino(sinoAtivo, selectedSchoolId)
+                                          : intervalosTurno(sinoAtivo, selectedSchoolId, 'tarde');
+                                        if (!isManha && ivs.length === 1) {
+                                          return `Recreio Vespertino: ${ivs[0].intervalo.inicio} às ${ivs[0].intervalo.fim} (deslocamento entre escolas)`;
+                                        }
+                                        return `${ivs
+                                          .map((iv) => `${iv.nome}: ${iv.intervalo.inicio}–${iv.intervalo.fim}`)
+                                          .join(' • ')} (deslocamento entre escolas)`;
+                                      })()
                                     : 'Intervalo Noturno: 21:15 às 21:30'}
                                 </td>
                               </tr>

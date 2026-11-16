@@ -17,12 +17,21 @@ import {
   getHorariosTurma,
   getSlotTimeRange,
   getTurnoCanonical,
-  grupoDaTurma,
   normalizarDiasDisponiveis,
   obterDiasFolga,
   formatarDiasFolgaResumo
 } from '../types';
-import { aulasAntesDoIntervalo } from './sino';
+import {
+  aulasAntesDoIntervalo,
+  SinoConfig,
+  getSinoConfigAtiva,
+  rotulosDasAulas,
+  intervalosMatutino,
+  intervalosTurno,
+  faixaTurno,
+  posicaoIntervaloTurno,
+  minutosDe
+} from './sino';
 import ExcelJS from 'exceljs';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -1911,15 +1920,19 @@ export async function gerarSugestaoHorariosEspecialistasAsync(
             );
             if (livres2.length === 0) continue;
 
-            // Prioriza 3ª aula para 2º–5º em modo misto (preservando [1,2] e [4,5]); para 1º ano mantém preferência por [1,2] antes do lanche
+            // Prioriza 3ª aula quando ela fica antes do intervalo em modo misto (preservando [1,2] e [4,5]); quando o intervalo ocorre após a 2ª aula, mantém preferência por [1,2]
             const pref3Dia1 =
               formatoAulas === 'misto' &&
               livres1.includes(3) &&
-              grupoDaTurma(turma.year, turma.intervaloGrupo, dia1, turma.intervaloGrupoPorDia) !== 'G1';
+              aulasAntesDoIntervalo(
+                getHorariosTurma(turma.shift, turma.intervaloGrupo, turma.year, turma.schoolId, dia1, turma.intervaloGrupoPorDia)
+              ) >= 3;
             const pref3Dia2 =
               formatoAulas === 'misto' &&
               livres2.includes(3) &&
-              grupoDaTurma(turma.year, turma.intervaloGrupo, dia2, turma.intervaloGrupoPorDia) !== 'G1';
+              aulasAntesDoIntervalo(
+                getHorariosTurma(turma.shift, turma.intervaloGrupo, turma.year, turma.schoolId, dia2, turma.intervaloGrupoPorDia)
+              ) >= 3;
             const o1 = pref3Dia1 ? 3 : livres1[0];
             const o2 = pref3Dia2 ? 3 : livres2[0];
 
@@ -2271,6 +2284,8 @@ export interface OpcoesExportacaoEspecialistas {
   haPorEspecialista?: Record<string, string[]>;
   ocupacoesExternasPorProfessor?: Record<string, OcupacaoExternaProfessor[]>;
   escolaNome?: string;
+  schoolId?: string;
+  sinoConfig?: SinoConfig;
   especialistaIdUnico?: string;
   versaoInfo?: string;
   versaoSufixoArquivo?: string;
@@ -2278,48 +2293,59 @@ export interface OpcoesExportacaoEspecialistas {
 
 type TurnoPadrao = 'manha' | 'tarde' | 'noite';
 
-function getAulasTurnoMeta(turno: TurnoPadrao) {
+function getAulasTurnoMeta(turno: TurnoPadrao, schoolId?: string, sinoCfg?: SinoConfig) {
   const isManha = turno === 'manha';
   const isTarde = turno === 'tarde';
+  const cfg = sinoCfg ?? getSinoConfigAtiva();
 
   const tituloTurno = isManha
     ? 'Turno Matutino (Manhã)'
     : isTarde
     ? 'Turno Vespertino (Tarde)'
     : 'Turno Noturno (Noite)';
-  const horarioTurno = isManha ? '07:00 às 12:00' : isTarde ? '12:30 às 17:00' : '19:00 às 22:30';
+  const horarioTurno =
+    isManha || isTarde ? faixaTurno(cfg, schoolId, isManha ? 'manha' : 'tarde').rotulo : '19:00 às 22:30';
   const badgeTurno = isManha ? '☀️ Manhã' : isTarde ? '🌤️ Tarde' : '🌙 Noite';
+  const ivsTarde = isTarde ? intervalosTurno(cfg, schoolId, 'tarde') : [];
+  const durVesp =
+    ivsTarde.length === 1
+      ? (minutosDe(ivsTarde[0].intervalo.fim) ?? 0) - (minutosDe(ivsTarde[0].intervalo.inicio) ?? 0)
+      : 0;
   const intervaloTexto = isManha
-    ? '1º Ano: 09:10–09:30 • 2º/3º Anos: 09:30–09:50 • 4º/5º Anos: 09:55–10:15 (deslocamento entre escolas)'
+    ? `${intervalosMatutino(cfg, schoolId)
+        .map((iv) => `${iv.nome}: ${iv.intervalo.inicio}–${iv.intervalo.fim}`)
+        .join(' • ')} (deslocamento entre escolas)`
     : isTarde
-    ? 'Recreio Vespertino: 15:00 às 15:20 (20 min — deslocamento entre escolas)'
+    ? ivsTarde.length > 1
+      ? `${ivsTarde
+          .map((iv) => `${iv.nome}: ${iv.intervalo.inicio}–${iv.intervalo.fim}`)
+          .join(' • ')} (deslocamento entre escolas)`
+      : `Recreio Vespertino: ${ivsTarde[0]?.intervalo.inicio || '15:00'} às ${ivsTarde[0]?.intervalo.fim || '15:20'} (${durVesp > 0 ? durVesp : 20} min — deslocamento entre escolas)`
     : 'Intervalo Noturno: 21:15 às 21:30';
 
-  const horarios: Record<number, { faixa: string; detalhe?: string }> = isManha
-    ? {
-        1: { faixa: '07:00 – 07:50' },
-        2: { faixa: '07:50 – 08:40' },
-        3: { faixa: '08:40 / 09:30', detalhe: '1º ano: 09:30' },
-        4: { faixa: '09:50 / 10:20', detalhe: '2º/3º: 09:50' },
-        5: { faixa: '10:40 / 11:10', detalhe: '2º/3º: 10:40' }
-      }
-    : isTarde
-    ? {
-        1: { faixa: '12:30 – 13:20' },
-        2: { faixa: '13:20 – 14:10' },
-        3: { faixa: '14:10 – 15:00' },
-        4: { faixa: '15:20 – 16:10' },
-        5: { faixa: '16:10 – 17:00' }
-      }
-    : {
-        1: { faixa: '19:00 – 19:45' },
-        2: { faixa: '19:45 – 20:30' },
-        3: { faixa: '20:30 – 21:15' },
-        4: { faixa: '21:30 – 22:15' },
-        5: { faixa: '22:15 – 23:00' }
+  const horarios: Record<number, { faixa: string; detalhe?: string }> = {};
+  if (isManha || isTarde) {
+    const rots = rotulosDasAulas(cfg, schoolId, isManha ? 'manha' : 'tarde');
+    rots.forEach((r) => {
+      horarios[r.ordem] = {
+        faixa: r.linhas[0] || '',
+        detalhe: r.linhas.length > 1 ? r.linhas.slice(1).join(' | ') : undefined
       };
+    });
+  } else {
+    Object.assign(horarios, {
+      1: { faixa: '19:00 – 19:45' },
+      2: { faixa: '19:45 – 20:30' },
+      3: { faixa: '20:30 – 21:15' },
+      4: { faixa: '21:30 – 22:15' },
+      5: { faixa: '22:15 – 23:00' }
+    });
+  }
 
-  return { tituloTurno, horarioTurno, badgeTurno, intervaloTexto, horarios };
+  const intervaloApos =
+    isManha || isTarde ? posicaoIntervaloTurno(cfg, schoolId, isManha ? 'manha' : 'tarde') : 3;
+
+  return { tituloTurno, horarioTurno, badgeTurno, intervaloTexto, horarios, intervaloApos };
 }
 
 function gerarNomeAbaUnicoExcel(base: string, usados: Set<string>): string {
@@ -2559,7 +2585,7 @@ export async function exportarSugestaoHorariosExcel(
     ws.addRow([]);
 
     turnosPresentes.forEach((turnoKey) => {
-      const meta = getAulasTurnoMeta(turnoKey);
+      const meta = getAulasTurnoMeta(turnoKey, opcoes?.schoolId, opcoes?.sinoConfig);
       const slotsTurno = slots.filter((s) => s.turno === turnoKey);
       const externosTurno = externos.filter((ext) => ext.turno === turnoKey);
 
@@ -2640,7 +2666,7 @@ export async function exportarSugestaoHorariosExcel(
           }
         });
 
-        if (ordem === 3) {
+        if (ordem === meta.intervaloApos) {
           const rowInt = ws.addRow(['☕ Intervalo', meta.intervaloTexto]);
           ws.mergeCells(rowInt.number, 2, rowInt.number, 6);
           rowInt.height = 20;
@@ -2872,7 +2898,7 @@ export function exportarSugestaoHorariosPDF(
     let currentY = drawCabecalhoDocente(false);
 
     turnosPresentes.forEach((turnoKey, tIdx) => {
-      const meta = getAulasTurnoMeta(turnoKey);
+      const meta = getAulasTurnoMeta(turnoKey, opcoes?.schoolId, opcoes?.sinoConfig);
       const slotsTurno = slots.filter((s) => s.turno === turnoKey);
       const externosTurno = externos.filter((ext) => ext.turno === turnoKey);
 
@@ -2896,7 +2922,7 @@ export function exportarSugestaoHorariosPDF(
         });
         bodyRows.push(rowCells);
 
-        if (ordem === 3) {
+        if (ordem === meta.intervaloApos) {
           const intIdx = bodyRows.length;
           cellTipos[`${intIdx}_intervalo`] = 'intervalo';
           bodyRows.push([
