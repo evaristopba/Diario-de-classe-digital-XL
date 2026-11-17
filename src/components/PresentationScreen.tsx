@@ -366,7 +366,7 @@ export const PresentationScreen: React.FC<PresentationScreenProps> = ({
       doc.text('Apresentado a: Secretaria Municipal de Educação', 14, 42);
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
-      doc.text(`Data de Emissão: ${new Date().toLocaleDateString('pt-BR')} • Versão da Plataforma: 2026 Pro`, 14, 48);
+      doc.text(`Data de Emissão: ${new Date().toLocaleDateString('pt-BR')} • Versão da Plataforma: ${new Date().getFullYear()} Pro`, 14, 48);
 
       // Resumo Executivo
       doc.setFontSize(12);

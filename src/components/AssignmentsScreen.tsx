@@ -170,6 +170,25 @@ export const AssignmentsScreen: React.FC<AssignmentsScreenProps> = ({
   const selectedTeacherAssignedSet = getTeacherAssignmentSet(selectedTeacher);
   const assignedCount = selectedTeacherAssignedSet.size;
 
+  const availableYears = React.useMemo(() => {
+    const set = new Set<string>();
+    const thisYear = new Date().getFullYear();
+    set.add(String(thisYear - 1));
+    set.add(String(thisYear));
+    set.add(String(thisYear + 1));
+    if (currentYear && /^\d{4}$/.test(String(currentYear).trim())) {
+      set.add(String(currentYear).trim());
+    }
+    if (filterYear && /^\d{4}$/.test(String(filterYear).trim())) {
+      set.add(String(filterYear).trim());
+    }
+    allClasses.forEach((c) => {
+      const y = String(c.val.anoLetivo || '').trim();
+      if (/^\d{4}$/.test(y)) set.add(y);
+    });
+    return Array.from(set).sort((a, b) => Number(b) - Number(a));
+  }, [allClasses, currentYear, filterYear]);
+
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
       {/* Header */}
@@ -196,9 +215,12 @@ export const AssignmentsScreen: React.FC<AssignmentsScreenProps> = ({
             onChange={(e) => setFilterYear(e.target.value)}
             className="text-sm font-bold text-indigo-600 bg-transparent outline-none cursor-pointer"
           >
-            <option value="2026">2026</option>
-            <option value="2025">2025</option>
-            <option value="2024">2024</option>
+            {availableYears.map((yr) => (
+              <option key={yr} value={yr}>
+                {yr}
+              </option>
+            ))}
+            <option value="">Todos</option>
           </select>
         </div>
       </div>

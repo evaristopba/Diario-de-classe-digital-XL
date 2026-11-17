@@ -36,7 +36,8 @@ import {
   isSpecialistTeacherDocente,
   resolveRegenteForClass
 } from '../lib/regenteHA';
-import { Users, Plus, Edit2, Trash2, Download, Upload, X, UserPlus, Clock, UserCheck } from 'lucide-react';
+import { Users, Plus, Edit2, Trash2, Download, Upload, X, UserPlus, Clock, UserCheck, RefreshCw } from 'lucide-react';
+import { ViradaAnoModal } from './ViradaAnoModal';
 
 interface ClassesScreenProps {
   currentYear: string;
@@ -52,6 +53,8 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
   onNavigateToSchedule
 }) => {
   const [classes, setClasses] = useState<{ id: string; val: ClassRoom }[]>([]);
+  const [allClassesAllYears, setAllClassesAllYears] = useState<{ id: string; val: ClassRoom }[]>([]);
+  const [viradaModalOpen, setViradaModalOpen] = useState(false);
   const [schools, setSchools] = useState<School[]>([]);
   const [schoolId, setSchoolId] = useState('');
   const [year, setYear] = useState('');
@@ -87,6 +90,7 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
       setLoading(true);
       const results = await carregarMinhasTurmas();
       results.sort((a, b) => (a.val.createdAt || 0) - (b.val.createdAt || 0));
+      setAllClassesAllYears(results);
       const filtered = results.filter(
         (r) => !r.val.anoLetivo || !currentYear || String(r.val.anoLetivo).trim() === String(currentYear).trim()
       );
@@ -431,7 +435,19 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
             Cadastre e organize as séries, turnos e vínculos escolares
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {isAdmin && (
+            <button
+              id="virada-ano-btn"
+              type="button"
+              onClick={() => setViradaModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors cursor-pointer"
+              title="Promover séries (1º→2º...4º→5º), exportar planilha editável em Excel (.xlsx) ou reimportar para o novo ano letivo"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Virada de Ano / Excel</span>
+            </button>
+          )}
           <button
             id="export-classes-btn"
             onClick={exportClassesJSON}
@@ -851,6 +867,19 @@ export const ClassesScreen: React.FC<ClassesScreenProps> = ({
           </div>
         )}
       </div>
+
+      {isAdmin && (
+        <ViradaAnoModal
+          isOpen={viradaModalOpen}
+          onClose={() => setViradaModalOpen(false)}
+          currentYear={currentYear}
+          allClassesAllYears={allClassesAllYears}
+          schools={schools}
+          sinoConfig={sinoConfig}
+          setModal={setModal}
+          onCompleted={loadClasses}
+        />
+      )}
     </div>
   );
 };

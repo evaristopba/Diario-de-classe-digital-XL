@@ -1189,7 +1189,7 @@ export const ReportsScreen: React.FC<ReportsScreenProps> = ({
                     type="text"
                     value={rankingYear}
                     onChange={(e) => setRankingYear(e.target.value)}
-                    placeholder="Ex: 2026"
+                    placeholder={`Ex: ${currentYear || new Date().getFullYear()}`}
                     className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 font-medium focus:ring-2 focus:ring-amber-500 text-xs"
                   />
                 </div>

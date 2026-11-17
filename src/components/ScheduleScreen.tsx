@@ -170,6 +170,16 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
   useEffect(() => {
     if (selectedTeacherForHAModal) {
       document.body.classList.add('ha-mirror-modal-open');
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+          setSelectedTeacherForHAModal(null);
+        }
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => {
+        document.body.classList.remove('ha-mirror-modal-open');
+        window.removeEventListener('keydown', handleKeyDown);
+      };
     } else {
       document.body.classList.remove('ha-mirror-modal-open');
     }
@@ -1204,10 +1214,13 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
         shift: c.val.shift || 'matutino'
       }));
 
+      type TurnoCanon = 'manha' | 'tarde' | 'noite' | 'outro';
+
       const haSlots: {
         dia: DiaSemana;
         diaNome: string;
         ordem: number;
+        turno: TurnoCanon;
         classId: string;
         className: string;
         schoolName: string;
@@ -1222,6 +1235,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
         dia: DiaSemana;
         diaNome: string;
         ordem: number;
+        turno: TurnoCanon;
         classId: string;
         className: string;
         schoolName: string;
@@ -1244,6 +1258,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
         dia: DiaSemana;
         diaNome: string;
         ordem: number;
+        turno: TurnoCanon;
         classId: string;
         className: string;
         schoolName: string;
@@ -1280,11 +1295,14 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
             const horarioFim = slot.horarioCustomFim || defaultTime?.fim || '';
             const isSlotEsp = isSlotEspecialistaEfetivo(slot, teachers, subjects);
 
+            const turnoTurma = getTurnoCanonical(c.val.shift);
+
             if (!isSpec && isRegenteOfClass && isSlotEsp) {
               candidateRegenteHASlots.push({
                 dia: dia as DiaSemana,
                 diaNome,
                 ordem,
+                turno: turnoTurma,
                 classId: c.id,
                 className: `${c.val.year}º ${c.val.letter} (${c.val.shift})`,
                 schoolName,
@@ -1305,6 +1323,7 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                 dia: dia as DiaSemana,
                 diaNome,
                 ordem,
+                turno: turnoTurma,
                 classId: c.id,
                 className: `${c.val.year}º ${c.val.letter} (${c.val.shift})`,
                 schoolName,
@@ -1365,16 +1384,30 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
             : undefined;
 
           if (!haSlots.some((s) => s.dia === d && s.ordem === o && s.horarioInicio === (haEstruturada?.inicio || defaultTime?.inicio || ''))) {
+            const inicioEfetivo = haEstruturada?.inicio || defaultTime?.inicio || '';
+            const horaIniFix = Number((inicioEfetivo || '07:00').split(':')[0]);
+            const turnoFix: TurnoCanon =
+              turnoLabel === 'Tarde'
+                ? 'tarde'
+                : parts.length >= 3 && parts[0] === 'noite'
+                ? 'noite'
+                : horaIniFix >= 18
+                ? 'noite'
+                : horaIniFix >= 12
+                ? 'tarde'
+                : 'manha';
+
             haSlots.push({
               dia: d,
               diaNome,
               ordem: o,
+              turno: turnoFix,
               classId: 'ha-lancada',
               className: turnoLabel ? `H.A. Lançada (${turnoLabel})` : 'H.A. Lançada (Planejamento)',
               schoolName: (haEstruturada?.schoolId && schools[haEstruturada.schoolId]?.name) || 'Extraclasse / Planejamento',
               especialistaNome: teacherVal.name,
               disciplinaNome: `${tipoInfo ? `${tipoInfo.emoji} ${tipoInfo.nome}` : 'Hora-Atividade'} (${teacherVal.subject || (isSpec ? 'Especialista' : 'Docente')})`,
-              horarioInicio: haEstruturada?.inicio || defaultTime?.inicio || '',
+              horarioInicio: inicioEfetivo,
               horarioFim: haEstruturada?.fim || defaultTime?.fim || '',
               origem: 'Lançado pela Coordenação'
             });
@@ -1390,7 +1423,10 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
           const d = bloco.dia as DiaSemana;
           if (d < 1 || d > 5) return;
           const diaNome = GRADE_DIAS_SEMANA.find((dia) => dia.id === d)?.nome || `Dia ${d}`;
-          const isTarde = Number(bloco.inicio.split(':')[0]) >= 12;
+          const horaIniBloco = Number(bloco.inicio.split(':')[0]);
+          const isTarde = horaIniBloco >= 12 && horaIniBloco < 18;
+          const isNoite = horaIniBloco >= 18;
+          const turnoBloco: TurnoCanon = isNoite ? 'noite' : isTarde ? 'tarde' : 'manha';
           const bellTurno = getHorariosTurma(isTarde ? 'vespertino' : 'matutino', 'A', '1', bloco.schoolId || teacherVal.schoolId);
           const aulaMatch = bellTurno.aulas.find((a) => a.inicio === bloco.inicio);
           const o = aulaMatch?.ordem || 1;
@@ -1400,8 +1436,9 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
             dia: d,
             diaNome,
             ordem: o,
+            turno: turnoBloco,
             classId: 'ha-config',
-            className: `H.A. (${isTarde ? 'Tarde' : 'Manhã'})`,
+            className: `H.A. (${isNoite ? 'Noite' : isTarde ? 'Tarde' : 'Manhã'})`,
             schoolName: (bloco.schoolId && schools[bloco.schoolId]?.name) || 'Extraclasse / Planejamento',
             especialistaNome: teacherVal.name,
             disciplinaNome: `${tipoInfo ? `${tipoInfo.emoji} ${tipoInfo.nome}` : 'Hora-Atividade'} (${teacherVal.subject || (isSpec ? 'Especialista' : 'Docente')})`,
@@ -3907,11 +3944,11 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
         return createPortal(
           <div
             id="teacher-ha-mirror-modal-root"
-            className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto"
+            className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-hidden overscroll-contain print:static print:inset-auto print:block print:p-0 print:bg-transparent print:overflow-visible"
           >
-            <div className="ha-mirror-modal-card bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 my-6">
+            <div className="ha-mirror-modal-card bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-5xl max-h-[calc(100dvh-1rem)] sm:max-h-[calc(100dvh-2rem)] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150 print:max-h-none print:overflow-visible">
               {/* Cabeçalho do Modal */}
-              <div className="p-4 sm:p-5 bg-gradient-to-r from-amber-600 to-orange-600 text-white flex items-center justify-between">
+              <div className="shrink-0 p-3.5 sm:p-5 bg-gradient-to-r from-amber-600 to-orange-600 text-white flex items-center justify-between gap-3">
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-white/20 text-amber-100">
@@ -3933,157 +3970,201 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                 <button
                   type="button"
                   onClick={() => setSelectedTeacherForHAModal(null)}
-                  className="p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-xl transition cursor-pointer print:hidden"
+                  className="p-2 text-white/80 hover:text-white hover:bg-white/10 rounded-xl transition cursor-pointer print:hidden shrink-0"
                   title="Fechar espelho semanal"
                 >
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              {/* Faixa de Métricas Rápidas */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-amber-50/50 border-b border-amber-200/60 text-xs print:grid-cols-4">
-                <div>
-                  <span className="text-[10px] font-bold uppercase text-slate-500">Aulas com Alunos</span>
-                  <p className="text-base font-extrabold text-slate-800">{item.totalAulasComAlunos} aulas</p>
+              {/* Corpo Rolável em Foco */}
+              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain print:overflow-visible">
+                {/* Faixa de Métricas Rápidas */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-amber-50/50 border-b border-amber-200/60 text-xs print:grid-cols-4">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-500">Aulas com Alunos</span>
+                    <p className="text-base font-extrabold text-slate-800">{item.totalAulasComAlunos} aulas</p>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-amber-700">⭐ H.A. Semanais</span>
+                    <p className="text-base font-extrabold text-amber-800">{item.haCount} aulas H.A.</p>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-500">Meta da Coordenação</span>
+                    <p className="text-base font-extrabold text-slate-800">
+                      {item.metaHA > 0 ? `${item.metaHA} H.A./sem` : 'Não definida'}
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-slate-500">Situação</span>
+                    <p className="text-base font-extrabold text-slate-800">
+                      {item.situacao === 'conforme'
+                        ? '✅ Conforme'
+                        : item.situacao === 'excedente'
+                        ? `⭐ +${item.saldoHA} Excedente`
+                        : item.situacao === 'pendente'
+                        ? `⚠️ Faltam ${Math.abs(item.saldoHA)} H.A.`
+                        : 'Sem Meta'}
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-[10px] font-bold uppercase text-amber-700">⭐ H.A. Semanais</span>
-                  <p className="text-base font-extrabold text-amber-800">{item.haCount} aulas H.A.</p>
-                </div>
-                <div>
-                  <span className="text-[10px] font-bold uppercase text-slate-500">Meta da Coordenação</span>
-                  <p className="text-base font-extrabold text-slate-800">
-                    {item.metaHA > 0 ? `${item.metaHA} H.A./sem` : 'Não definida'}
-                  </p>
-                </div>
-                <div>
-                  <span className="text-[10px] font-bold uppercase text-slate-500">Situação</span>
-                  <p className="text-base font-extrabold text-slate-800">
-                    {item.situacao === 'conforme'
-                      ? '✅ Conforme'
-                      : item.situacao === 'excedente'
-                      ? `⭐ +${item.saldoHA} Excedente`
-                      : item.situacao === 'pendente'
-                      ? `⚠️ Faltam ${Math.abs(item.saldoHA)} H.A.`
-                      : 'Sem Meta'}
-                  </p>
-                </div>
-              </div>
 
-              {/* Grade Semanal Completa */}
-              <div className="p-4 sm:p-5 overflow-x-auto space-y-4">
+                {/* Grade Semanal Completa */}
+                <div className="p-4 sm:p-5 overflow-x-auto space-y-4">
                 {(() => {
                   const diasEspelho = resolverDiasDisponiveisDocente({ id: item.id, val: item.teacher }, teachers);
                   const folgasEspelho = obterDiasFolga(diasEspelho);
+                  const turnosPresentes = (['manha', 'tarde', 'noite', 'outro'] as const).filter(
+                    (tk) =>
+                      item.studentSlots.some((s) => s.turno === tk) ||
+                      item.haSlots.some((s) => s.turno === tk)
+                  );
+                  const turnosParaExibir = turnosPresentes.length > 0 ? turnosPresentes : (['manha'] as const);
+                  const turnoMeta: Record<'manha' | 'tarde' | 'noite' | 'outro', { label: string; badge: string }> = {
+                    manha: { label: '☀️ Turno Manhã', badge: 'bg-sky-100 text-sky-800 border-sky-200' },
+                    tarde: { label: '🌤️ Turno Tarde', badge: 'bg-orange-100 text-orange-800 border-orange-200' },
+                    noite: { label: '🌙 Turno Noite', badge: 'bg-indigo-100 text-indigo-800 border-indigo-200' },
+                    outro: { label: '📚 Outro Turno', badge: 'bg-slate-100 text-slate-700 border-slate-200' }
+                  };
+
                   return (
-                    <table className="w-full min-w-[640px] print:min-w-0 text-xs border border-slate-200 rounded-xl overflow-hidden">
-                      <thead>
-                        <tr className="bg-slate-100 text-slate-700 border-b border-slate-200">
-                          <th className="py-2.5 px-3 font-bold text-center w-24">Aula</th>
-                          {GRADE_DIAS_SEMANA.map((dia) => {
-                            const isDiaFolga = folgasEspelho.includes(dia.id);
-                            return (
-                              <th
-                                key={dia.id}
-                                className={`py-2.5 px-3 font-bold text-center ${
-                                  isDiaFolga ? 'bg-rose-50/80 text-rose-800' : ''
-                                }`}
-                              >
-                                <span className="block">{dia.nome}</span>
-                                {isDiaFolga && (
-                                  <span className="text-[10px] font-bold text-rose-600">🏖️ Folga</span>
-                                )}
-                              </th>
-                            );
-                          })}
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200">
-                        {[1, 2, 3, 4, 5].map((ordem) => (
-                          <tr key={ordem} className="hover:bg-slate-50/50">
-                            <td className="py-3 px-2 text-center font-extrabold text-slate-700 bg-slate-50 border-r border-slate-200">
-                              {ordem}ª Aula
-                            </td>
-                            {GRADE_DIAS_SEMANA.map((dia) => {
-                              const haSlot = item.haSlots.find((s) => s.dia === dia.id && s.ordem === ordem);
-                              const stSlot = item.studentSlots.find((s) => s.dia === dia.id && s.ordem === ordem);
-                              const isDiaFolga = folgasEspelho.includes(dia.id);
+                    <div className="space-y-4">
+                      {turnosParaExibir.map((turnoKey) => {
+                        const turnoStSlots = item.studentSlots.filter((s) => s.turno === turnoKey);
+                        const turnoHaSlots = item.haSlots.filter((s) => s.turno === turnoKey);
+                        const metaT = turnoMeta[turnoKey];
 
-                              if (haSlot) {
-                                return (
-                                  <td
-                                    key={dia.id}
-                                    className="p-2 border-r border-slate-200 align-top bg-amber-50/80"
-                                  >
-                                    <div className="p-2 rounded-lg border border-amber-300 bg-white shadow-2xs space-y-1">
-                                      <div className="flex items-center gap-1">
-                                        <span className="text-[10px] font-black uppercase px-1.5 py-0.2 rounded bg-amber-500 text-white">
-                                          ⭐ H.A.
-                                        </span>
-                                      </div>
-                                      <p className="font-extrabold text-[11px] text-amber-900 leading-tight">
-                                        {haSlot.disciplinaNome}
-                                      </p>
-                                      <p className="text-[10px] text-amber-700">
-                                        Especialista: {haSlot.especialistaNome}
-                                      </p>
-                                      <p className="text-[10px] text-slate-500">
-                                        Turma: {haSlot.className}
-                                      </p>
-                                      {haSlot.horarioInicio && (
-                                        <span className="text-[9px] text-slate-600 block">
-                                          ⏱️ {haSlot.horarioInicio}–{haSlot.horarioFim}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </td>
-                                );
-                              }
+                        return (
+                          <div key={turnoKey} className="border border-slate-200 rounded-xl overflow-hidden">
+                            <div className="px-3.5 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-2 flex-wrap">
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-extrabold border ${metaT.badge}`}>
+                                {metaT.label}
+                              </span>
+                              <span className="text-[11px] font-bold text-slate-600">
+                                {turnoStSlots.length} aula{turnoStSlots.length === 1 ? '' : 's'} com alunos
+                                {turnoHaSlots.length > 0 ? ` • ${turnoHaSlots.length} H.A.` : ''}
+                              </span>
+                            </div>
 
-                              if (stSlot) {
-                                return (
-                                  <td
-                                    key={dia.id}
-                                    className="p-2 border-r border-slate-200 align-top bg-indigo-50/40"
-                                  >
-                                    <div className="p-2 rounded-lg border border-indigo-200 bg-white shadow-2xs space-y-1">
-                                      <span className="text-[10px] font-bold uppercase px-1.5 py-0.2 rounded bg-indigo-600 text-white">
-                                        🏫 Aula
-                                      </span>
-                                      <p className="font-extrabold text-[11px] text-indigo-900 leading-tight">
-                                        {stSlot.disciplinaNome}
-                                      </p>
-                                      <p className="text-[10px] text-slate-600">
-                                        Turma: {stSlot.className}
-                                      </p>
-                                      {stSlot.horarioInicio && (
-                                        <span className="text-[9px] text-slate-500 block">
-                                          ⏱️ {stSlot.horarioInicio}–{stSlot.horarioFim}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </td>
-                                );
-                              }
+                            <table className="w-full min-w-[640px] print:min-w-0 text-xs">
+                              <thead>
+                                <tr className="bg-slate-100 text-slate-700 border-b border-slate-200">
+                                  <th className="py-2.5 px-3 font-bold text-center w-24">Aula</th>
+                                  {GRADE_DIAS_SEMANA.map((dia) => {
+                                    const isDiaFolga = folgasEspelho.includes(dia.id);
+                                    return (
+                                      <th
+                                        key={dia.id}
+                                        className={`py-2.5 px-3 font-bold text-center ${
+                                          isDiaFolga ? 'bg-rose-50/80 text-rose-800' : ''
+                                        }`}
+                                      >
+                                        <span className="block">{dia.nome}</span>
+                                        {isDiaFolga && (
+                                          <span className="text-[10px] font-bold text-rose-600">🏖️ Folga</span>
+                                        )}
+                                      </th>
+                                    );
+                                  })}
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-200">
+                                {[1, 2, 3, 4, 5].map((ordem) => (
+                                  <tr key={ordem} className="hover:bg-slate-50/50">
+                                    <td className="py-3 px-2 text-center font-extrabold text-slate-700 bg-slate-50 border-r border-slate-200">
+                                      {ordem}ª Aula
+                                    </td>
+                                    {GRADE_DIAS_SEMANA.map((dia) => {
+                                      const cellHaSlots = turnoHaSlots.filter((s) => s.dia === dia.id && s.ordem === ordem);
+                                      const cellStSlots = turnoStSlots.filter((s) => s.dia === dia.id && s.ordem === ordem);
+                                      const isDiaFolga = folgasEspelho.includes(dia.id);
 
-                              if (isDiaFolga) {
-                                return (
-                                  <td key={dia.id} className="p-2 border-r border-slate-200 align-middle text-center bg-rose-50/30">
-                                    <span className="text-[11px] text-rose-500 font-semibold italic">🏖️ Dia Livre</span>
-                                  </td>
-                                );
-                              }
+                                      if (cellHaSlots.length > 0 || cellStSlots.length > 0) {
+                                        return (
+                                          <td
+                                            key={dia.id}
+                                            className={`p-2 border-r border-slate-200 align-top ${
+                                              cellHaSlots.length > 0 && cellStSlots.length === 0
+                                                ? 'bg-amber-50/80'
+                                                : 'bg-indigo-50/40'
+                                            }`}
+                                          >
+                                            <div className="space-y-1.5">
+                                              {cellHaSlots.map((haSlot, hIdx) => (
+                                                <div
+                                                  key={`ha-${hIdx}-${haSlot.classId}`}
+                                                  className="p-2 rounded-lg border border-amber-300 bg-white shadow-2xs space-y-1"
+                                                >
+                                                  <div className="flex items-center gap-1">
+                                                    <span className="text-[10px] font-black uppercase px-1.5 py-0.2 rounded bg-amber-500 text-white">
+                                                      ⭐ H.A.
+                                                    </span>
+                                                  </div>
+                                                  <p className="font-extrabold text-[11px] text-amber-900 leading-tight">
+                                                    {haSlot.disciplinaNome}
+                                                  </p>
+                                                  <p className="text-[10px] text-amber-700">
+                                                    Especialista: {haSlot.especialistaNome}
+                                                  </p>
+                                                  <p className="text-[10px] text-slate-500">
+                                                    Turma: {haSlot.className}
+                                                  </p>
+                                                  {haSlot.horarioInicio && (
+                                                    <span className="text-[9px] text-slate-600 block">
+                                                      ⏱️ {haSlot.horarioInicio}–{haSlot.horarioFim}
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              ))}
 
-                              return (
-                                <td key={dia.id} className="p-2 border-r border-slate-200 align-middle text-center">
-                                  <span className="text-[11px] text-slate-300 italic">Disponível</span>
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                                              {cellStSlots.map((stSlot, sIdx) => (
+                                                <div
+                                                  key={`st-${sIdx}-${stSlot.classId}`}
+                                                  className="p-2 rounded-lg border border-indigo-200 bg-white shadow-2xs space-y-1"
+                                                >
+                                                  <span className="text-[10px] font-bold uppercase px-1.5 py-0.2 rounded bg-indigo-600 text-white">
+                                                    🏫 Aula
+                                                  </span>
+                                                  <p className="font-extrabold text-[11px] text-indigo-900 leading-tight">
+                                                    {stSlot.disciplinaNome}
+                                                  </p>
+                                                  <p className="text-[10px] text-slate-600">
+                                                    Turma: {stSlot.className}
+                                                  </p>
+                                                  {stSlot.horarioInicio && (
+                                                    <span className="text-[9px] text-slate-500 block">
+                                                      ⏱️ {stSlot.horarioInicio}–{stSlot.horarioFim}
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              ))}
+                                            </div>
+                                          </td>
+                                        );
+                                      }
+
+                                      if (isDiaFolga) {
+                                        return (
+                                          <td key={dia.id} className="p-2 border-r border-slate-200 align-middle text-center bg-rose-50/30">
+                                            <span className="text-[11px] text-rose-500 font-semibold italic">🏖️ Dia Livre</span>
+                                          </td>
+                                        );
+                                      }
+
+                                      return (
+                                        <td key={dia.id} className="p-2 border-r border-slate-200 align-middle text-center">
+                                          <span className="text-[11px] text-slate-300 italic">Disponível</span>
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })}
+                    </div>
                   );
                 })()}
 
@@ -4092,10 +4173,11 @@ export const ScheduleScreen: React.FC<ScheduleScreenProps> = ({
                   * As Horas-Atividades (H.A.) identificadas em dourado (⭐) são computadas no horário em que os professores especialistas
                   assumem as turmas de regência polivalente, em estrito cumprimento às diretrizes da Secretaria de Educação.
                 </p>
+                </div>
               </div>
 
               {/* Rodapé do Modal */}
-              <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3 flex-wrap print:hidden">
+              <div className="shrink-0 p-3.5 sm:p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-3 flex-wrap print:hidden">
                 <div className="flex items-center gap-2">
                   <button
                     type="button"

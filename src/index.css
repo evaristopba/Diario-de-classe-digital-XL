@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+html:has(body.ha-mirror-modal-open),
+body.ha-mirror-modal-open {
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+}
+
 @media print {
   html, body, #root, #root > div, main {
     height: auto !important;
@@ -38,6 +44,8 @@
     box-shadow: none !important;
     border-radius: 0 !important;
     max-width: 100% !important;
+    max-height: none !important;
+    height: auto !important;
     width: 100% !important;
     margin: 0 !important;
     overflow: visible !important;
