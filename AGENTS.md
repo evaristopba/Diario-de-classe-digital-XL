@@ -2,8 +2,9 @@
 
 ## Regras Obrigatórias em Toda Implementação
 
-1. **Atualização Automática dos Pacotes de Distribuição**:
-   - Sempre que uma implementação for concluída ou modificada no código, executar `npm run pack` para atualizar:
+1. **Atualização Automática da Documentação e dos Pacotes de Distribuição**:
+   - Sempre que houver implementação relevante no código, atualizar a documentação correspondente (`README.md` e, quando aplicável, o manual específico em `MANUAL_*.md`).
+   - Sempre que uma implementação for concluída ou modificada no código ou na documentação, executar `npm run pack` para atualizar:
      - O arquivo ZIP completo do projeto (`public/diario-de-classe-projeto.zip`).
      - O arquivo HTML único autônomo (`public/app-unico.html` e `public/diario-de-classe.html`).
 

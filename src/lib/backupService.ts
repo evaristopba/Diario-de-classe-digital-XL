@@ -395,7 +395,8 @@ export async function generateFullBackup(
     settingsCount +
     permissionsCount +
     scheduleCount +
-    horaAtividadeCount;
+    horaAtividadeCount +
+    simulacoesHorariosCount;
 
   const now = new Date();
   const dateStr = now.toISOString().replace(/T/, '_').replace(/:/g, '-').slice(0, 16);

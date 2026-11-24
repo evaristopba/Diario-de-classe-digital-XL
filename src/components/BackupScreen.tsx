@@ -10,6 +10,7 @@ import {
   getBackupHistory,
   clearBackupHistory,
   BackupPackage,
+  BackupMetadata,
   BackupHistoryItem,
   RestoreOptions
 } from '../lib/backupService';
@@ -72,22 +73,7 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
 
   // Estados de exportação
   const [isExporting, setIsExporting] = useState(false);
-  const [exportStats, setExportStats] = useState<{
-    schools: number;
-    classes: number;
-    students: number;
-    teachers: number;
-    assignments: number;
-    attendances: number;
-    grades: number;
-    lessonPlans: number;
-    events: number;
-    subjects: number;
-    bncc: number;
-    categories: number;
-    eventTypes: number;
-    total: number;
-  } | null>(null);
+  const [exportStats, setExportStats] = useState<BackupMetadata['recordCounts'] | null>(null);
 
   // Estados de importação / restauração
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -181,22 +167,7 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
       }
       setExportAvisos(avisosExport);
 
-      setExportStats({
-        schools: meta.recordCounts.schools,
-        classes: meta.recordCounts.classes,
-        students: meta.recordCounts.students,
-        teachers: meta.recordCounts.teachers,
-        assignments: meta.recordCounts.assignments,
-        attendances: meta.recordCounts.attendances,
-        grades: meta.recordCounts.grades,
-        lessonPlans: meta.recordCounts.lessonPlans,
-        events: meta.recordCounts.events,
-        subjects: meta.recordCounts.subjects,
-        bncc: meta.recordCounts.bncc,
-        categories: meta.recordCounts.categories,
-        eventTypes: meta.recordCounts.eventTypes,
-        total: meta.recordCounts.totalRecords
-      });
+      setExportStats(meta.recordCounts);
 
       setModal({
         isOpen: true,
@@ -522,6 +493,80 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
         refreshStatus();
       }
     });
+  };
+
+  const renderRecordCountsGrid = (
+    counts: BackupMetadata['recordCounts'],
+    variant: 'export' | 'import'
+  ) => {
+    const libraryTotal =
+      (counts.books || 0) +
+      (counts.holdings || 0) +
+      (counts.loans || 0) +
+      (counts.reservations || 0) +
+      (counts.movements || 0) +
+      (counts.readingCorners || 0);
+
+    const cardClass =
+      variant === 'export'
+        ? 'bg-white/85 p-2.5 rounded-lg border border-emerald-100'
+        : 'p-2.5 bg-slate-50 rounded-xl border border-slate-200';
+
+    const items = [
+      { label: 'Escolas', value: counts.schools },
+      { label: 'Turmas', value: counts.classes },
+      { label: 'Alunos', value: counts.students },
+      { label: 'Professores', value: counts.teachers },
+      { label: 'Atribuições', value: counts.assignments },
+      { label: 'Grade Horária', value: counts.schedule || 0 },
+      { label: 'Blocos de H.A.', value: counts.horaAtividade || 0 },
+      { label: 'Chamadas', value: counts.attendances },
+      { label: 'Notas', value: counts.grades },
+      { label: 'Planos de Aula', value: counts.lessonPlans },
+      { label: 'Ocorrências', value: counts.events },
+      { label: 'Disciplinas', value: counts.subjects },
+      { label: 'BNCC', value: counts.bncc },
+      { label: 'Categorias', value: counts.categories },
+      { label: 'Tipos de Ocorr.', value: counts.eventTypes },
+      { label: 'Config. / Sino', value: counts.settings || 0 },
+      { label: 'Rascunhos Horários', value: counts.simulacoesHorarios || 0 },
+      { label: 'Permissões', value: counts.permissions || 0 }
+    ];
+
+    return (
+      <div className="space-y-2.5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2 text-xs">
+          {items.map((item) => (
+            <div key={item.label} className={cardClass}>
+              <span className="text-slate-500 block text-[11px] truncate">{item.label}:</span>
+              <strong className="text-slate-800 text-sm">{item.value}</strong>
+            </div>
+          ))}
+        </div>
+
+        {/* Detalhamento da Biblioteca Escolar */}
+        <div
+          className={`p-3 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
+            variant === 'export'
+              ? 'bg-white/90 border-emerald-200 text-emerald-950'
+              : 'bg-teal-50/50 border-teal-200 text-slate-800'
+          }`}
+        >
+          <div className="flex items-center gap-2 font-bold">
+            <BookMarked className="w-4 h-4 text-teal-700 shrink-0" />
+            <span>Biblioteca Escolar: {libraryTotal} registro(s)</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600">
+            <span>Livros: <strong className="text-slate-800">{counts.books || 0}</strong></span>
+            <span>Acervos p/ Escola: <strong className="text-slate-800">{counts.holdings || 0}</strong></span>
+            <span>Empréstimos: <strong className="text-slate-800">{counts.loans || 0}</strong></span>
+            <span>Reservas: <strong className="text-slate-800">{counts.reservations || 0}</strong></span>
+            <span>Movimentações: <strong className="text-slate-800">{counts.movements || 0}</strong></span>
+            <span>Cantinho da Leitura: <strong className="text-slate-800">{counts.readingCorners || 0}</strong></span>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -892,37 +937,17 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
 
             {/* Resumo do Último Export Realizado na Sessão */}
             {exportStats && (
-              <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-200 text-emerald-950 space-y-2">
-                <div className="flex items-center gap-2 font-bold text-xs sm:text-sm text-emerald-900">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  <span>Resumo do Backup Gerado com Sucesso:</span>
+              <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-200 text-emerald-950 space-y-3">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-2 font-bold text-xs sm:text-sm text-emerald-900">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>Resumo do Backup Gerado com Sucesso:</span>
+                  </div>
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold">
+                    Total: {exportStats.totalRecords} registros
+                  </span>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2 text-xs">
-                  <div className="bg-white/80 p-2 rounded-lg border border-emerald-100">
-                    <span className="text-slate-500 block">Escolas:</span>
-                    <strong className="text-slate-800 text-sm">{exportStats.schools}</strong>
-                  </div>
-                  <div className="bg-white/80 p-2 rounded-lg border border-emerald-100">
-                    <span className="text-slate-500 block">Turmas:</span>
-                    <strong className="text-slate-800 text-sm">{exportStats.classes}</strong>
-                  </div>
-                  <div className="bg-white/80 p-2 rounded-lg border border-emerald-100">
-                    <span className="text-slate-500 block">Alunos:</span>
-                    <strong className="text-slate-800 text-sm">{exportStats.students}</strong>
-                  </div>
-                  <div className="bg-white/80 p-2 rounded-lg border border-emerald-100">
-                    <span className="text-slate-500 block">Professores:</span>
-                    <strong className="text-slate-800 text-sm">{exportStats.teachers}</strong>
-                  </div>
-                  <div className="bg-white/80 p-2 rounded-lg border border-emerald-100">
-                    <span className="text-slate-500 block">Chamadas:</span>
-                    <strong className="text-slate-800 text-sm">{exportStats.attendances}</strong>
-                  </div>
-                  <div className="bg-white/80 p-2 rounded-lg border border-emerald-100">
-                    <span className="text-slate-500 block">Notas:</span>
-                    <strong className="text-slate-800 text-sm">{exportStats.grades}</strong>
-                  </div>
-                </div>
+                {renderRecordCountsGrid(exportStats, 'export')}
                 {exportAvisos.length > 0 && (
                   <div className="mt-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs space-y-1">
                     {exportAvisos.map((a, i) => (
@@ -1047,44 +1072,7 @@ export const BackupScreen: React.FC<BackupScreenProps> = ({ setModal, onNavigate
                 )}
 
                 {/* Resumo em Cards */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2 text-xs">
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-                    <span className="text-slate-500 block">Escolas:</span>
-                    <strong className="text-base text-slate-800">
-                      {parsedBackup.metadata.recordCounts.schools}
-                    </strong>
-                  </div>
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-                    <span className="text-slate-500 block">Turmas:</span>
-                    <strong className="text-base text-slate-800">
-                      {parsedBackup.metadata.recordCounts.classes}
-                    </strong>
-                  </div>
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-                    <span className="text-slate-500 block">Alunos:</span>
-                    <strong className="text-base text-slate-800">
-                      {parsedBackup.metadata.recordCounts.students}
-                    </strong>
-                  </div>
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-                    <span className="text-slate-500 block">Professores:</span>
-                    <strong className="text-base text-slate-800">
-                      {parsedBackup.metadata.recordCounts.teachers}
-                    </strong>
-                  </div>
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-                    <span className="text-slate-500 block">Chamadas:</span>
-                    <strong className="text-base text-slate-800">
-                      {parsedBackup.metadata.recordCounts.attendances}
-                    </strong>
-                  </div>
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-                    <span className="text-slate-500 block">Notas:</span>
-                    <strong className="text-base text-slate-800">
-                      {parsedBackup.metadata.recordCounts.grades}
-                    </strong>
-                  </div>
-                </div>
+                {renderRecordCountsGrid(parsedBackup.metadata.recordCounts, 'import')}
 
                 {/* Opções de Seleção de Módulos para Restaurar */}
                 <div className="space-y-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
